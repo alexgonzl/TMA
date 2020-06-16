@@ -1,0 +1,11 @@
+numpy~=1.18.2
+pathlib~=1.0.1
+h5py~=2.10.0
+scipy~=1.4.1
+pandas~=1.0.3
+seaborn~=0.10.0
+treemazeanalyses2~=0.2
+nept~=0.1.0
+matplotlib~=3.2.1
+fooof~=0.1.3
+spikesorters~=0.2.5
