@@ -82,7 +82,7 @@ def process_tetrode(task, save_format='npy', overwrite_flag=0):
         print('\nTime to filter tetrode {0:0.2f}s'.format(t1 - t0))
         del raw_signals
 
-        f_signals = f_signals.astype(np.float32)
+        f_signals = f_signals.astype(np.float16)
         save_probe(f_signals, sp, fn, save_format)
 
         # save tetrode info
@@ -585,7 +585,6 @@ def get_signals_mad(signals, mask=None):
             return rs.mad(signals)
         else:
             return rs.mad(signals[mask])
-
     elif signals.ndim > 1:
         n_chans, n_samps = signals.shape
 

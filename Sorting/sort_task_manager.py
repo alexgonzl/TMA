@@ -1,19 +1,11 @@
 import sys
-import os
 import getopt
 import json
 import time
-import datetime
 import warnings
 import traceback
 from pathlib import Path
-
-# script_dir = os.path.dirname(os.path.abspath(__file__))
-# task_table_dir = Path(script_dir, 'TaskDir')
-# if not task_table_dir.exists():
-#     sys.exit('Task directory not found.')
-
-import Pre_Processing.pre_process_functions as pp
+from sort_functions import sort_main
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
@@ -21,7 +13,7 @@ if __name__ == '__main__':
     # Store taskID and TaskFile
     task_num = -1
     task_num_str = ''
-    sorter = ''
+    sorter = 'KS2'
     subject_id = ''
     data_dir = ''
     overwrite_flag = False
@@ -68,16 +60,17 @@ if __name__ == '__main__':
         sys.exit('Could not get Task Table. Aborting.')
 
     if task_num >= 0:
-        tasks_info = task_table[task_num_str]
-        session_name = tasks_info['session_name']
-        n_files = tasks_info['n_files']
-        task_list = tasks_info['files']
+        subtask_info = task_table[task_num_str]
+        session_name = subtask_info['session_name']
+        n_files = subtask_info['n_files']
+        subtask_list = subtask_info['files']
         print("Processing Session {}".format(session_name))
 
-        for task_id, task in task_list.items():
+        for subtask_id, subtask in subtask_list.items():
             try:
+                print("Sorting Tetrode # {}".format(subtask['tt_id']))
                 t1 = time.time()
-
+                sort_main(subtask, overwrite_flag)
                 t2 = time.time()
                 print("Task Completed. Total Task Time {0:0.2f}s".format(t2 - t1))
             except KeyboardInterrupt:
@@ -85,7 +78,7 @@ if __name__ == '__main__':
                 sys.exit()
             except:
                 print("Error", sys.exc_info()[0], sys.exc_info()[1], sys.exc_info()[2].tb_lineno)
-                print("Unable to process task {} of {}".format(task['tt_id'], session_name))
+                print("Unable to process task {} of {}".format(subtask['tt_id'], session_name))
                 traceback.print_exc(file=sys.stdout)
     else:
         sys.exit('Invalid task number.')
