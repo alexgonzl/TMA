@@ -1,0 +1,16 @@
+For an example animal: AI
+
+Preprocessing:
+Change directory to the Pre_Processing subdirectory.
+For data in path: Data/Raw/AI
+To save pp data in: Data/PreProcessed/AI
+
+1. Create a JSON table establishing where the data is and where it should be saved after processing.
+    $ python pre_process_task_table.py -a AI -d Data/Raw -o Data/PreProcessed
+2. After you see how many tasks the table has edit the bash file pre_process_scheduler.bash
+    id=AI
+    n_tasks = 81
+    path = /Data/PreProcessed
+3. Check results in the post_
+
+Sorting:

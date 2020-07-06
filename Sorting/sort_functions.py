@@ -25,7 +25,7 @@ import seaborn as sns
 
 sns.set(style='whitegrid', palette='muted')
 
-icPath = '/home/alexgonzalez/Documents/MATLAB/ironclust/'
+icPath = '/home/alexgonzalez/Documents/MATLAB/ironclust/matlab/'
 ks2Path = '/home/alexgonzalez/Documents/MATLAB/Kilosort2/'
 
 
@@ -78,23 +78,32 @@ def sort_main(task, overwrite_flag=0):
 
             # sort data
             sort = sort_data(spk_data_masked, save_path, sorter=task['task_type'])
+            if sort is not None:
+                # export data to phy
+                st.postprocessing.export_to_phy(recording=spk_data_masked, sorting=sort,
+                                                output_folder=str(save_path),
+                                                compute_pc_features=False, compute_amplitudes=False,
+                                                max_channels_per_template=4)
 
-            # export data to phy
-            st.postprocessing.export_to_phy(recording=spk_data_masked, sorting=sort,
-                                            output_folder=str(save_path),
-                                            compute_pc_features=False, compute_amplitudes=False,
-                                            max_channels_per_template=4)
+                # get cluster stats
+                cluster_stats = get_cluster_stats(sort, spk_data_masked.get_traces(), data_info)
+                cluster_stats_file_path = Path(save_path, 'cluster_stats.csv')
+                cluster_stats.to_csv(cluster_stats_file_path)
+
+                print('Successful sort.')
+            else:
+                print('Uncesseful sort.')
+
             # save header
             updated_file_header_path = Path(task['save_path'], Path(task['file_header_path']).name)
             with updated_file_header_path.open(mode='wb') as file_handle:
                 pickle.dump(data_info, file_handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-            # get cluster stats
-            cluster_stats = get_cluster_stats(sort, spk_data_masked.get_traces(), data_info)
-            cluster_stats_file_path = Path(save_path, 'cluster_stats.csv')
-            cluster_stats.to_csv(cluster_stats_file_path)
         else:
             print('Sorting Done and overwrite flag is False, skipping this sort.')
+    except KeyboardInterrupt:
+        print('Keyboard Interrupt Detected. Aborting Task Processing.')
+        sys.exit()
 
     except:
         print("Error", sys.exc_info()[0], sys.exc_info()[1], sys.exc_info()[2].tb_lineno)
@@ -168,7 +177,7 @@ def sort_data(recording, store_dir, sorter='KS2', dthr=5):
                                     delete_output_folder=True, raise_error=True, verbose=False, **params)
                 t1 = time.time()
                 print('Time to sort using {0} = {1:0.2f}s'.format(sorter, t1 - t0))
-                print('Found {} clusters'.format(len(out[sorter].get_unit_ids())))
+                print('Found {} clusters'.format(len(out.get_unit_ids())))
 
         except TimeoutError:
             print()
