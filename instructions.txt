@@ -7,10 +7,37 @@ To save pp data in: Data/PreProcessed/AI
 
 1. Create a JSON table establishing where the data is and where it should be saved after processing.
     $ python pre_process_task_table.py -a AI -d Data/Raw -o Data/PreProcessed
+    The output [pp_table_AI.json] of this command [will be saved in the /Data/PreProcessed/AI/TasksDir] folder.
 2. After you see how many tasks the table has edit the bash file pre_process_scheduler.bash
     id=AI
     n_tasks = 81
     path = /Data/PreProcessed
-3. Check results in the post_
+3. Check results in the post_processing_assesment notebook and create the channel_table
+    this should be saved as an csv file chan_table_{}.csv; where the {} is replaced by the subjects id
+    This csv file should be saved in the PreProcessed Directory; eg. /Data/PreProcessed/AI/chan_table_AI.csv
 
 Sorting:
+Change directoru to the Sorting subdirectory:
+For data in /Data/PreProcessed/AI
+To save sorted data in: /Data/Sorted/AI
+For sorter 'KS2'
+
+1. Create a JSON table (as above)
+    $ python sort_task_table.py -a AI -d /Data/PreProcessed -o /Data/Sorted -s KS2
+   The output [sort_AI_KS2.json] of this command will be saved in the /Data/Sorted/AI/TasksDir folder.
+
+2. Check how many task the tables has (output of the above command), and edit the sort_scheduler.bash
+    id=AI
+    n_tasks = 70
+    path = /Data/PreProcessed #
+
+3. Sorted Data for session Ai_TaskX_DateX would be in:
+   /Data/Sorted/AI/AI_TaskX_DateX/tt_2/KS2
+
+
+
+## to curate data
+activate environment
+$ conda activate spk_phy2
+$ phy template-gui params.py
+
