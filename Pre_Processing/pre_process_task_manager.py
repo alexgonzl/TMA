@@ -1,14 +1,10 @@
 import sys
-import os
 import getopt
 import json
 import time
 import warnings
 import traceback
-import pandas as pd
-import pickle
 from pathlib import Path
-from datetime import datetime
 from pre_process_functions import process_tetrode, process_events, process_video, post_process_channel_table
 
 warnings.simplefilter(action='ignore', category=FutureWarning)

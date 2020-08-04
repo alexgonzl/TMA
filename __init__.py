@@ -3,4 +3,4 @@
 # import Utils
 # import Analyses
 
-from .Analyses.data_paths import DataPaths
+from .Analyses.subject_info import SubjectInfo
