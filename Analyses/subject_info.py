@@ -115,16 +115,21 @@ class SubjectInfo(object):
 
         paths['BehavTrackDat'] = paths['Results'] / ('BehTrackVariables_{}ms.h5'.format(int(time_step * 1000)))
 
+        # these paths are mostly legacy
+        paths['Spike_IDs'] = paths['Results'] / 'Spike_IDs.json'
         for ut in ['Cell', 'Mua']:
+            paths[ut + '_wf_info'] = paths['Results'] / (ut + '_wf_info.pkl')
             paths[ut + '_Spikes'] = paths['Results'] / (ut + '_Spikes.json')
             paths[ut + '_WaveForms'] = paths['Results'] / (ut + '_WaveForms.pkl')
-            paths[ut + '_WaveFormInfo'] = paths['Results'] / (ut + '_WaveFormInfo.pkl')
             paths[ut + '_Bin_Spikes'] = paths['Results'] / ('{}_Bin_Spikes_{}ms.npy'.format(ut, int(time_step * 1000)))
             paths[ut + '_FR'] = paths['Results'] / ('{}_FR_{}ms.npy'.format(ut, int(time_step * 1000)))
 
-        paths['cluster_spikes'] = paths['Results'] / 'cluster_spikes.npy'
-        paths['cluster_spikes_ids'] = paths['Results'] / 'cluster_spikes_ids.json'
-        paths['Spike_IDs'] = paths['Results'] / 'Spike_IDs.json'
+        paths['cluster_spikes'] = paths['Results'] / 'spikes.npy'
+        paths['cluster_spikes_ids'] = paths['Results'] / 'spikes_ids.json'
+        paths['cluster_wf_info'] = paths['Results'] / 'wf_info.pkl'
+        paths['cluster_binned_spikes'] = paths['Results'] / f'binned_spikes_{int(time_step*1000)}ms.npy'
+        paths['cluster_fr'] = paths['Results'] / 'fr.npy'
+
         paths['ZoneAnalyses'] = paths['Results'] / 'ZoneAnalyses.pkl'
 
         paths['TrialInfo'] = paths['Results'] / 'TrInfo.pkl'

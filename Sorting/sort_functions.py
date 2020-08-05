@@ -56,14 +56,14 @@ def sort_main(task, overwrite_flag=0):
                 data_info = pickle.load(f)
 
             # prepare filter
-            SOS, _ = pp.get_sos_filter_bank(['Sp'], fs=data_info['fs'])
+            sos, _ = pp.get_sos_filter_bank(['Sp'], fs=data_info['fs'])
             spk_data = np.zeros_like(data)
             assert data_info['n_chans'] == spk_data.shape[0], "Inconsistent formating in the data files. Aborting."
 
             # spk filter (high pass)
             t0 = time.time()
             for ch in range(data_info['n_chans']):
-                spk_data[ch] = scipy.signal.sosfiltfilt(SOS, data[ch])
+                spk_data[ch] = scipy.signal.sosfiltfilt(sos, data[ch])
                 print('', end='.')
             t1 = time.time()
             print('\nTime to spk filter data {0:0.2f}s'.format(t1 - t0))
@@ -263,7 +263,6 @@ def get_sorter_cluster_snr(sorter, hp_signals, sig_mad=None, mask=None):
 
 def get_cluster_stats(sort_results, spk_signals, data_info, sorter_id='KS2', save_path=None, snr_thr=5,
                       fr_low_thr=0.25, fr_high_thr=90, isi_thr=0.001):
-
     cluster_stats = pd.DataFrame()
     cluster_num = 0
 
@@ -303,7 +302,6 @@ def get_cluster_stats(sort_results, spk_signals, data_info, sorter_id='KS2', sav
         cluster_stats.to_csv(cluster_stats_file_path)
 
     return cluster_stats
-
 
 
 def save_sorted(sort, high_passed_data, output_folder):
