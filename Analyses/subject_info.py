@@ -8,6 +8,7 @@ import pickle
 import json
 import sys
 import traceback
+import Analyses.spike_functions as sf
 
 n_tetrodes = 16
 
@@ -19,7 +20,8 @@ class SubjectInfo(object):
     def __init__(self, subject, sorter='KS2', data_root='BigPC', load=0, overwrite=0, time_step=0.02, samp_rate=32000):
         self.subject = subject
         self.sorter = sorter
-        self.params = {'time_step': time_step, 'samp_rate': samp_rate, 'n_tetrodes': n_tetrodes}
+        self.params = {'time_step': time_step, 'samp_rate': samp_rate, 'n_tetrodes': n_tetrodes,
+                       'fr_temporal_smoothing': 0.125, 'spk_outlier_thr': None}
 
         if data_root == 'BigPC':
             if subject in ['Li', 'Ne']:
@@ -99,7 +101,10 @@ class SubjectInfo(object):
         with self.data_paths_file.open(mode='wb') as f:
             pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-    def get_session_paths(self, session, time_step=0.02, samp_rate=32000):
+    def get_session_paths(self, session):
+        time_step = self.params['time_step']
+        samp_rate = self.params['samp_rate']
+
         tmp = session.split('_')
         subject = tmp[0]
         assert subject == self.subject, 'Session does not match with expected animal.'
@@ -166,8 +171,34 @@ class SubjectInfo(object):
 
         return paths
 
-    def get_session_sorted_tt_dir(self, session, tt):
-        return self.session_paths[session]['Sorted'] / f'tt_{tt}' / self.sorter
+    def get_session_time_vectors(self, session, overwrite=False):
+        _file_path = self.session_paths[session]['PreProcessed'] / 'time_vectors.npz'
+        if _file_path.exists() and not overwrite:
+            temp = np.load(_file_path)
+            return temp['time_rsamp'], temp['time_orig']
+
+        else:
+            samp_rate = self.params['samp_rate']
+            time_step = self.params['time_step']
+
+            tt_info = self.get_session_tt_info(session, 1)
+
+            n_samps = tt_info['n_samps']
+
+            # get time vector with original sampling rate
+            tB = tt_info['tB']
+            tE = n_samps / samp_rate + tB
+            time_orig = np.arange(tB, tE, 1 / samp_rate).astype(np.float32)
+
+            # compute resampled time
+            rsamp_rate = int(1 / time_step)
+            n_rsamps = int(n_samps * rsamp_rate / samp_rate)
+            trE = n_rsamps / rsamp_rate + tB
+            time_rsamp = np.arange(tB, trE, 1 / rsamp_rate).astype(np.float32)
+
+            # save & return
+            np.savez(_file_path, time_rsamp=time_rsamp, time_orig=time_orig)
+            return time_orig, time_rsamp
 
     def get_session_clusters(self, session):
         table = {'session': session, 'path': str(self.session_paths[session]['Sorted']),
@@ -244,6 +275,9 @@ class SubjectInfo(object):
 
         return sort_tables
 
+    def get_session_sorted_tt_dir(self, session, tt):
+        return self.session_paths[session]['Sorted'] / f'tt_{tt}' / self.sorter
+
     def get_session_tt_info(self, session, tt):
         with (self.session_paths[session]['PreProcessed'] / f'tt_{tt}_info.pickle').open(mode='rb') as f:
             return pickle.load(f)
@@ -251,31 +285,16 @@ class SubjectInfo(object):
     def get_session_tt_data(self, session, tt):
         return np.load(self.session_paths[session]['PreProcessed'] / f'tt_{tt}.npy')
 
-    def get_time_vectors(self, session, overwrite=False):
-        _file_path = self.session_paths[session]['PreProcessed'] / 'time_vectors.npz'
-        if _file_path.exists() and not overwrite:
-            temp = np.load(_file_path)
-            return temp['time_rsamp'], temp['time_orig']
+    # methods from spike functions
+    def get_session_spikes(self, session, return_numpy=True, save_spikes_dict=False, overwrite=False):
+        return sf.get_session_spikes(self, session, return_numpy=return_numpy, save_spikes_dict=save_spikes_dict,
+                                     rej_thr=self.params['spk_outlier_thr'], overwrite=overwrite)
 
-        else:
-            samp_rate = self.params['samp_rate']
-            time_step = self.params['time_step']
+    def get_session_binned_spikes(self, session, spike_trains=None, overwrite=False):
+        return sf.get_session_binned_spikes(self, session, spike_trains=spike_trains, overwrite=overwrite)
 
-            tt_info = self.get_session_tt_info(session, 1)
+    def get_session_fr(self, session, bin_spikes=None, overwrite=False):
+        return sf.get_session_fr(self, session, bin_spikes=bin_spikes,
+                                 temporal_smoothing=self.params['fr_temporal_smoothing'], overwrite=overwrite)
 
-            n_samps = tt_info['n_samps']
 
-            # get time vector with original sampling rate
-            tB = tt_info['tB']
-            tE = n_samps / samp_rate + tB
-            time_orig = np.arange(tB, tE, 1 / samp_rate).astype(np.float32)
-
-            # compute resampled time
-            rsamp_rate = int(1 / time_step)
-            n_rsamps = int(n_samps * rsamp_rate / samp_rate)
-            trE = n_rsamps / rsamp_rate + tB
-            time_rsamp = np.arange(tB, trE, 1 / rsamp_rate).astype(np.float32)
-
-            # save & return
-            np.savez(_file_path, time_rsamp=time_rsamp, time_orig=time_orig)
-            return time_orig, time_rsamp

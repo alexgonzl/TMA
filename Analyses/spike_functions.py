@@ -55,13 +55,13 @@ def get_session_spikes(subject_info, session, return_numpy=True, save_spikes_dic
                 spk_times = np.load(sort_dir / 'spike_times.npy')
                 cluster_spks = np.load(sort_dir / 'spike_clusters.npy')
                 for ut in ['Cell', 'Mua']:
-                    spikes[ut], wfi[ut] = get_tt_spikes(tt, unit_ids[ut], tt_dat, spk_times,
-                                                        cluster_spks, params, spikes[ut], wfi[ut])
+                    spikes[ut], wfi[ut] = _get_tt_spikes(tt, unit_ids[ut], tt_dat, spk_times,
+                                                         cluster_spks, params, spikes[ut], wfi[ut])
 
         # convert spike dictionaries to numpy and a json dict with info
-        cell_spikes, cell_tt_cl = get_spikes_numpy(spikes['Cell'])
-        mua_spikes, mua_tt_cl = get_spikes_numpy(spikes['Mua'])
-        spikes_numpy, tt_cl, wfi2 = aggregate_spikes_numpy(cell_spikes, cell_tt_cl, mua_spikes, mua_tt_cl, wfi)
+        cell_spikes, cell_tt_cl = _get_spikes_numpy(spikes['Cell'])
+        mua_spikes, mua_tt_cl = _get_spikes_numpy(spikes['Mua'])
+        spikes_numpy, tt_cl, wfi2 = _aggregate_spikes_numpy(cell_spikes, cell_tt_cl, mua_spikes, mua_tt_cl, wfi)
 
         # save numpy spikes
         np.save(session_paths['cluster_spikes'], spikes_numpy)
@@ -100,103 +100,76 @@ def get_session_spikes(subject_info, session, return_numpy=True, save_spikes_dic
         return spikes, wfi
 
 
-def get_tt_spikes(tt, unit_ids, tt_dat, spk_times, cluster_spks, params, spikes, wfi):
+def get_session_binned_spikes(subject_info, session, spike_trains=None, overwrite=False):
     """
-    Returns spikes and waveform information for the clusters in the tetrode.
-    :param int tt:
-    :param list unit_ids:
-    :param np.array float16 tt_dat: n_chans x n_samps
-    :param np.array ints spk_times: ordered spikes for all clusters
-    :param np.array ints cluster_spks: cluster id of each spk in spk_times
-    :param dict params:
-    :param dict spikes: dictionary of spikes by tetrode and cluster
-    :param dict wfi: waveform info by tetrode
-    :return: dict spikes
-    :return: dict wfi
+    :param SubjectInfo subject_info: instance of SubjectInfo for a particular subject
+    :param str session: string of the session id
+    :param bool overwrite: overwrite flag. if false, loads data from the subject_info paths
+    :param np.ndarray spike_trains: if not provided, these are computed or loaded
+    :returns:
     """
-    spike_buffer = params['spk_recording_buffer']
-    samp_rate = params['samp_rate']
 
-    spk_buffer_int = int(spike_buffer * samp_rate)
-    cnt = spikes['n_units']
-    spikes[str(tt)] = {}
-    for cl_id in unit_ids:
-        n_samps = tt_dat.shape[1]
+    session_paths = subject_info.session_paths[session]
+    params = subject_info.params
 
-        allspikes = spk_times[cluster_spks == cl_id].flatten()
-        spikes2 = np.array(allspikes)
+    if (not session_paths['cluster_binned_spikes'].exists()) or overwrite:
 
-        # delete spikes in at beginning and end of recording.
-        unit_ids = (spikes2 + spk_buffer_int) < n_samps
-        spikes2 = spikes2[unit_ids]
-        unit_ids = (spikes2 - spk_buffer_int) > 0
-        spikes2 = spikes2[unit_ids]
-        spikes2 = spikes2.astype(np.int)
+        print('Binned Spikes Files not Found or overwrite=1, creating them.')
+        if spike_trains is None:
+            spike_trains, _, _ = get_session_spikes(subject_info, session)
 
-        wf = get_waveforms(spikes2, tt_dat)
+        # bin spikes
+        time_resamp, time_orig = subject_info.get_session_time_vectors(session=session)
+        bin_spikes = get_bin_spikes(spike_trains, time_resamp, time_orig, time_step=params['time_step'])
 
-        wfi[cnt] = get_waveform_info(spikes2, wf, int(n_samps - 2 * spk_buffer_int), samp_rate)
-        wfi[cnt]['tt'] = tt
-        wfi[cnt]['cl'] = cl_id
+        assert np.array([len(x) for x in spike_trains]).sum() == bin_spikes.sum(), 'Check sum of spikes failed. ' \
+                                                                                   'Likely spikes on the edges of the' \
+                                                                                   ' recording.'
+        # save
+        np.save(session_paths['cluster_binned_spikes'], bin_spikes)
 
-        spikes[str(tt)][str(cl_id)] = spikes2.tolist()
-        cnt += 1
+    else:  # load
+        bin_spikes = np.load(session_paths['cluster_binned_spikes'])
 
-    spikes['n_units'] = cnt
-    return spikes, wfi
+    return bin_spikes
 
 
-def aggregate_spikes_numpy(cell_spikes, cell_tt_cl, mua_spikes, mua_tt_cl, wfi):
+def get_session_fr(subject_info, session, bin_spikes=None, temporal_smoothing=0.125, overwrite=False):
     """
-    Wrapper function for get_spikes_numpy
-    Deals with Cell and Mua subcategories
-    :param cell_spikes: numpy output of get_spikes_numpy
-    :param cell_tt_cl: dict output of get_spikes_numpy
-    :param mua_spikes: numpy output of get_spikes_numpy
-    :param mua_tt_cl: dict output of get_spikes_numpy
-    :param wfi: dict of waveform information
-    :returns: spikes. object array containing both cell and mua spikes
-    :returns: tt_cl.  dict containing the indices and identification info for each cluster
-    :returns: wfi2. dict of waveform info with cluster# as keys
+    Get the firing rate for all the clusters in the session, from the binned spikes
+    :param SubjectInfo subject_info: instance of class SubjectInfo for a particular subject
+    :param str session:  session id
+    :param np.ndarray bin_spikes: shape [n_clusters x n_timebins]
+    :param float temporal_smoothing: [seconds] time smoothing factor; filtfilt makes this double.
+    :param bool overwrite: flag, if false loads data
+    :return: np.ndarray fr: firing rate shape [n_clusters x n_timebins]
     """
-    spikes = np.concatenate((cell_spikes, mua_spikes))
-    n_cell = len(cell_spikes)
-    n_mua = len(mua_spikes)
-    tt_cl = {}
-    wfi2 = {}
-    for unit in range(n_cell):
-        tt_cl[unit] = ('cell',) + cell_tt_cl[unit]
-        wfi2[unit] = wfi['Cell'][unit]
-        wfi2[unit]['unit_type'] = 'cell'
-    for unit in range(n_mua):
-        tt_cl[unit + n_cell] = ('mua',) + mua_tt_cl[unit]
-        wfi2[unit + n_cell] = wfi['Mua'][unit]
-        wfi2[unit + n_cell]['unit_type'] = 'mua'
+    session_paths = subject_info.session_paths[session]
+    time_step = subject_info.params['time_step']
 
-    return spikes, tt_cl, wfi2
+    if (not session_paths['cluster_fr'].exists()) | overwrite:
+        print('Firing Rate Files Not Found or overwrite=1, creating them.')
 
+        if bin_spikes is None:
+            bin_spikes = get_session_binned_spikes(subject_info, session)
 
-def get_spikes_numpy(spikes_dict):
-    """
-    :param spikes_dict: dictionary of spikes
-        contains n_units and tetrodes, each tetrode is a dict of clusters
-    :return:
-        spikes: a numpy object array of length n_units, each element is a spike train
-        tt_cl: a dict with cluster number in the spikes array as keys and tt,cl as values
-    """
-    n_units = spikes_dict['n_units']
-    spikes2 = np.empty(n_units, dtype=object)
-    tt_cl = {}
-    cnt = 0
-    for tt in spikes_dict.keys():
-        if tt == 'n_units':
-            continue
-        for cl, spks in spikes_dict[tt].items():
-            spikes2[cnt] = np.array(spks).astype(np.int32)
-            tt_cl[cnt] = tt, cl
-            cnt += 1
+        # define filter.
+        filter_len = np.round(temporal_smoothing / time_step).astype(int)
+        filt_coeff = signal.windows.hann(filter_len)  # banishing filter
+        filt_coeff /= filt_coeff.sum()  # normalize to conserve signal energy
 
-    return spikes2, tt_cl
+        n_units, n_timebins = bin_spikes.shape
+        fr = np.zeros((n_units, n_timebins))
+        for unit in np.arange(n_units):
+            fr[unit] = signal.filtfilt(filt_coeff, 1, bin_spikes[unit] / time_step)
+
+        # save data
+        np.save(session_paths['cluster_fr'], fr)
+
+    else:  # load firing rate
+        fr = np.load(session_paths['cluster_fr'])
+
+    return fr
 
 
 def get_waveform_info(spikes, waveforms, n_samps, samp_rate):
@@ -268,40 +241,6 @@ def get_wf_outliers(waveforms, thr=None):
     return None
 
 
-def get_session_binned_spikes(subject_info, session, spike_trains=None, overwrite=False):
-    """
-    :param SubjectInfo subject_info: instance of SubjectInfo for a particular subject
-    :param str session: string of the session id
-    :param bool overwrite: overwrite flag. if false, loads data from the subject_info paths
-    :param np.ndarray spike_trains: if not provided, these are computed or loaded
-    :returns:
-    """
-
-    session_paths = subject_info.session_paths[session]
-    params = subject_info.params
-
-    if (not session_paths['cluster_binned_spikes'].exists()) or overwrite:
-
-        print('Binned Spikes Files not Found or overwrite=1, creating them.')
-        if spike_trains is None:
-            spike_trains, _, _ = get_session_spikes(subject_info, session)
-
-        # bin spikes
-        time_resamp, time_orig = subject_info.get_time_vectors(session=session)
-        bin_spikes = get_bin_spikes(spike_trains, time_resamp, time_orig, time_step=params['time_step'])
-
-        assert np.array([len(x) for x in spike_trains]).sum() == bin_spikes.sum(), 'Check sum of spikes failed. ' \
-                                                                                   'Likely spikes on the edges of the' \
-                                                                                   ' recording.'
-        # save
-        np.save(session_paths['cluster_binned_spikes'], bin_spikes)
-
-    else:  # load
-        bin_spikes = np.load(session_paths['cluster_binned_spikes'])
-
-    return bin_spikes
-
-
 def get_bin_spikes(cluster_spikes, time_resamp, time_orig, time_step=0.02):
     """
     :param np.ndarray object cluster_spikes: array of spike trains
@@ -331,46 +270,117 @@ def get_bin_spikes(cluster_spikes, time_resamp, time_orig, time_step=0.02):
     return bin_spk
 
 
-def get_session_fr(subject_info, session, bin_spikes=None, temporal_smoothing=0.125, overwrite=False):
-    """
-    Get the firing rate for all the clusters in the session, from the binned spikes
-    :param SubjectInfo subject_info: instance of class SubjectInfo for a particular subject
-    :param str session:  session id
-    :param np.ndarray bin_spikes: shape [n_clusters x n_timebins]
-    :param float temporal_smoothing: [seconds] time smoothing factor; filtfilt makes this double.
-    :param bool overwrite: flag, if false loads data
-    :return: np.ndarray fr: firing rate shape [n_clusters x n_timebins]
-    """
-    session_paths = subject_info.session_paths[session]
-    time_step = subject_info.params['time_step']
-
-    if (not session_paths['cluster_fr'].exists()) | overwrite:
-        print('Firing Rate Files Not Found or overwrite=1, creating them.')
-
-        if bin_spikes is None:
-            bin_spikes = get_session_binned_spikes(subject_info, session)
-
-        # define filter.
-        filter_len = np.round(temporal_smoothing / time_step).astype(int)
-        filt_coeff = signal.windows.hann(filter_len)  # banishing filter
-        filt_coeff /= filt_coeff.sum()  # normalize to conserve signal energy
-
-        n_units, n_timebins = bin_spikes.shape
-        fr = np.zeros((n_units, n_timebins))
-        for unit in np.arange(n_units):
-            fr[unit] = signal.filtfilt(filt_coeff, 1, bin_spikes[unit] / time_step)
-
-        # save data
-        np.save(session_paths['cluster_fr'], fr)
-
-    else:  # load firing rate
-        fr = np.load(session_paths['cluster_fr'])
-
-    return fr
-
-
 def smooth_bin_spikes(bin_spikes, time_step, temporal_smoothing=0.125):
+    """
+    smooth binned spikes and obtains firing rate
+    :param np.array ints bin_spikes:
+    :param float time_step:
+    :param float temporal_smoothing:
+    :return: smoothed firing rate, same dimensions as bin_spikes
+    """
     filter_len = np.round(temporal_smoothing / time_step).astype(int)
     filt_coeff = signal.windows.hann(filter_len)
     filt_coeff /= filt_coeff.sum()
-    return signal.filtfilt(filt_coeff, 1, bin_spikes / time_step)
+    return signal.filtfilt(filt_coeff, 1, bin_spikes / time_step).astype(np.float32)
+
+
+# private
+def _get_tt_spikes(tt, unit_ids, tt_dat, spk_times, cluster_spks, params, spikes, wfi):
+    """
+    Returns spikes and waveform information for the clusters in the tetrode.
+    :param int tt:
+    :param list unit_ids:
+    :param np.array float16 tt_dat: n_chans x n_samps
+    :param np.array ints spk_times: ordered spikes for all clusters
+    :param np.array ints cluster_spks: cluster id of each spk in spk_times
+    :param dict params:
+    :param dict spikes: dictionary of spikes by tetrode and cluster
+    :param dict wfi: waveform info by tetrode
+    :return: dict spikes
+    :return: dict wfi
+    """
+    spike_buffer = params['spk_recording_buffer']
+    samp_rate = params['samp_rate']
+
+    spk_buffer_int = int(spike_buffer * samp_rate)
+    cnt = spikes['n_units']
+    spikes[str(tt)] = {}
+    for cl_id in unit_ids:
+        n_samps = tt_dat.shape[1]
+
+        allspikes = spk_times[cluster_spks == cl_id].flatten()
+        spikes2 = np.array(allspikes)
+
+        # delete spikes in at beginning and end of recording.
+        unit_ids = (spikes2 + spk_buffer_int) < n_samps
+        spikes2 = spikes2[unit_ids]
+        unit_ids = (spikes2 - spk_buffer_int) > 0
+        spikes2 = spikes2[unit_ids]
+        spikes2 = spikes2.astype(np.int)
+
+        wf = get_waveforms(spikes2, tt_dat)
+
+        wfi[cnt] = get_waveform_info(spikes2, wf, int(n_samps - 2 * spk_buffer_int), samp_rate)
+        wfi[cnt]['tt'] = tt
+        wfi[cnt]['cl'] = cl_id
+
+        spikes[str(tt)][str(cl_id)] = spikes2.tolist()
+        cnt += 1
+
+    spikes['n_units'] = cnt
+    return spikes, wfi
+
+
+def _aggregate_spikes_numpy(cell_spikes, cell_tt_cl, mua_spikes, mua_tt_cl, wfi):
+    """
+    Wrapper function for get_spikes_numpy
+    Deals with Cell and Mua subcategories
+    :param cell_spikes: numpy output of get_spikes_numpy
+    :param cell_tt_cl: dict output of get_spikes_numpy
+    :param mua_spikes: numpy output of get_spikes_numpy
+    :param mua_tt_cl: dict output of get_spikes_numpy
+    :param wfi: dict of waveform information
+    :returns: spikes. object array containing both cell and mua spikes
+    :returns: tt_cl.  dict containing the indices and identification info for each cluster
+    :returns: wfi2. dict of waveform info with cluster# as keys
+    """
+    spikes = np.concatenate((cell_spikes, mua_spikes))
+    n_cell = len(cell_spikes)
+    n_mua = len(mua_spikes)
+    tt_cl = {}
+    wfi2 = {}
+    for unit in range(n_cell):
+        tt_cl[unit] = ('cell',) + cell_tt_cl[unit]
+        wfi2[unit] = wfi['Cell'][unit]
+        wfi2[unit]['unit_type'] = 'cell'
+    for unit in range(n_mua):
+        tt_cl[unit + n_cell] = ('mua',) + mua_tt_cl[unit]
+        wfi2[unit + n_cell] = wfi['Mua'][unit]
+        wfi2[unit + n_cell]['unit_type'] = 'mua'
+
+    return spikes, tt_cl, wfi2
+
+
+def _get_spikes_numpy(spikes_dict):
+    """
+    :param spikes_dict: dictionary of spikes
+        contains n_units and tetrodes, each tetrode is a dict of clusters
+    :return:
+        spikes: a numpy object array of length n_units, each element is a spike train
+        tt_cl: a dict with cluster number in the spikes array as keys and tt,cl as values
+    """
+    n_units = spikes_dict['n_units']
+    spikes2 = np.empty(n_units, dtype=object)
+    tt_cl = {}
+    cnt = 0
+    for tt in spikes_dict.keys():
+        if tt == 'n_units':
+            continue
+        for cl, spks in spikes_dict[tt].items():
+            spikes2[cnt] = np.array(spks).astype(np.int32)
+            tt_cl[cnt] = tt, cl
+            cnt += 1
+
+    return spikes2, tt_cl
+
+
