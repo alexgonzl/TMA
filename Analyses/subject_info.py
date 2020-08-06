@@ -6,22 +6,23 @@ import numpy as np
 import pandas as pd
 import pickle
 import json
+import h5py
 import sys
 import traceback
 import Analyses.spike_functions as sf
-
-n_tetrodes = 16
 
 
 ##### TO DO!!! GET cluster stats for merged clusters #############
 
 
-class SubjectInfo(object):
-    def __init__(self, subject, sorter='KS2', data_root='BigPC', load=0, overwrite=0, time_step=0.02, samp_rate=32000):
+class SubjectInfo:
+    def __init__(self, subject, sorter='KS2', data_root='BigPC', overwrite=False, time_step=0.02,
+                 samp_rate=32000, n_tetrodes=16, fr_temporal_smoothing=0.125, spk_outlier_thr=None):
+
         self.subject = subject
         self.sorter = sorter
         self.params = {'time_step': time_step, 'samp_rate': samp_rate, 'n_tetrodes': n_tetrodes,
-                       'fr_temporal_smoothing': 0.125, 'spk_outlier_thr': None}
+                       'fr_temporal_smoothing': fr_temporal_smoothing, 'spk_outlier_thr': spk_outlier_thr}
 
         if data_root == 'BigPC':
             if subject in ['Li', 'Ne']:
@@ -29,18 +30,23 @@ class SubjectInfo(object):
             elif subject in ['Cl']:
                 self.root_path = Path('/Data2_SSD2T/Data')
             self.raw_path = Path('/RawData/Data', subject)
-            self.sorted_path = self.root_path / 'Sorted' / subject
-            self.results_path = self.root_path / 'Results' / subject
+
         elif data_root == 'oak':
             self.root_path = Path('/mnt/o/giocomo/alexg/')
             self.raw_path = self.root_path / 'RawData/InVivo' / subject
-            self.sorted_path = self.root_path / 'Clustered' / subject
-            self.results_path = self.root_path / 'Analyses' / subject
-        self.preprocessed_path = self.root_path / 'PreProcessed' / subject
+            # self.sorted_path = self.root_path / 'Clustered' / subject
+            # self.results_path = self.root_path / 'Analyses' / subject
+        else:
+            self.root_path = Path(data_root)
+            self.raw_path = self.root_path / 'RawData' / subject
 
-        self.data_paths_file = self.results_path / ('data_paths_{}_{}.pickle'.format(sorter, subject))
+        self.preprocessed_path = self.root_path / 'PreProcessed' / subject
+        self.sorted_path = self.root_path / 'Sorted' / subject
+        self.results_path = self.root_path / 'Results' / subject
+
+        self.subject_info_file = self.results_path / ('subject_info_{}_{}.pkl'.format(sorter, subject))
         # check if instance of DataPaths for subject and sorter exists already
-        if load and not overwrite:
+        if self.subject_info_file.exists() and not overwrite:
             self.load_subject_info()
         else:
             # get channel table
@@ -52,8 +58,7 @@ class SubjectInfo(object):
 
                 self.session_paths = {}
                 for session in self.sessions:
-                    self.session_paths[session] = self.get_session_paths(session, time_step=time_step,
-                                                                         samp_rate=samp_rate)
+                    self.session_paths[session] = self._get_session_paths(session)
 
             # get cluster information
             try:
@@ -62,11 +67,11 @@ class SubjectInfo(object):
                     with self._clusters_file.open(mode='r') as f:
                         self.clusters = json.load(f)
                 else:  # create
-                    self.clusters = {}
+                    self.session_clusters = {}
                     for session in self.sessions:
-                        self.clusters[session] = self.get_session_clusters(session)
+                        self.session_clusters[session] = self._get_session_clusters(session)
                     with self._clusters_file.open(mode='w') as f:
-                        json.dump(self.clusters, f, indent=4)
+                        json.dump(self.session_clusters, f, indent=4)
             except:
                 print("Error with Clusters.")
                 print(sys.exc_info()[0], sys.exc_info()[1], sys.exc_info()[2].tb_lineno)
@@ -83,7 +88,7 @@ class SubjectInfo(object):
                     for ii in self._sort_table_ids:
                         self.sort_tables[ii] = pd.read_csv(self._sort_table_files[ii], index_col=0)
                 else:
-                    self.sort_tables = self.get_sort_tables()
+                    self.sort_tables = self._get_sort_tables()
                     for ii in self._sort_table_ids:
                         self.sort_tables[ii].to_csv(self._sort_table_files[ii])
             except:
@@ -94,14 +99,17 @@ class SubjectInfo(object):
             self.save_subject_info()
 
     def load_subject_info(self):
-        with self.data_paths_file.open(mode='rb') as f:
-            return pickle.load(f)
+        with self.subject_info_file.open(mode='rb') as f:
+            loaded_self = pickle.load(f)
+            self.__dict__.update(loaded_self.__dict__)
+            return self
 
     def save_subject_info(self):
-        with self.data_paths_file.open(mode='wb') as f:
+        with self.subject_info_file.open(mode='wb') as f:
             pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-    def get_session_paths(self, session):
+    # private methods
+    def _get_session_paths(self, session):
         time_step = self.params['time_step']
         samp_rate = self.params['samp_rate']
 
@@ -171,36 +179,7 @@ class SubjectInfo(object):
 
         return paths
 
-    def get_session_time_vectors(self, session, overwrite=False):
-        _file_path = self.session_paths[session]['PreProcessed'] / 'time_vectors.npz'
-        if _file_path.exists() and not overwrite:
-            temp = np.load(_file_path)
-            return temp['time_rsamp'], temp['time_orig']
-
-        else:
-            samp_rate = self.params['samp_rate']
-            time_step = self.params['time_step']
-
-            tt_info = self.get_session_tt_info(session, 1)
-
-            n_samps = tt_info['n_samps']
-
-            # get time vector with original sampling rate
-            tB = tt_info['tB']
-            tE = n_samps / samp_rate + tB
-            time_orig = np.arange(tB, tE, 1 / samp_rate).astype(np.float32)
-
-            # compute resampled time
-            rsamp_rate = int(1 / time_step)
-            n_rsamps = int(n_samps * rsamp_rate / samp_rate)
-            trE = n_rsamps / rsamp_rate + tB
-            time_rsamp = np.arange(tB, trE, 1 / rsamp_rate).astype(np.float32)
-
-            # save & return
-            np.savez(_file_path, time_rsamp=time_rsamp, time_orig=time_orig)
-            return time_orig, time_rsamp
-
-    def get_session_clusters(self, session):
+    def _get_session_clusters(self, session):
         table = {'session': session, 'path': str(self.session_paths[session]['Sorted']),
                  'n_cell': 0, 'n_mua': 0, 'n_noise': 0, 'n_unsorted': 0, 'sorted_TTs': [], 'curated_TTs': [],
                  'cell_IDs': {}, 'mua_IDs': {}, 'noise_IDs': {}, 'unsorted_IDs': {}, 'clusters_snr': {},
@@ -208,6 +187,7 @@ class SubjectInfo(object):
 
         sort_paths = table['path']
 
+        n_tetrodes = self.params['n_tetrodes']
         _cluster_stats = ['fr', 'snr', 'isi_viol_rate', 'valid']
         tetrodes = np.arange(1, n_tetrodes + 1)
         for tt in tetrodes:
@@ -242,7 +222,9 @@ class SubjectInfo(object):
 
         return table
 
-    def get_sort_tables(self):
+    def _get_sort_tables(self):
+        n_tetrodes = self.params['n_tetrodes']
+
         sort_tables = {ii: pd.DataFrame(index=self.sessions,
                                         columns=range(1, n_tetrodes + 1)) for ii in ['tt', 'curated', 'valid']}
 
@@ -255,7 +237,7 @@ class SubjectInfo(object):
         #     sort_tables[tbl] = sort_tables[tbl].fillna(-1)
 
         for session in self.sessions:
-            _clusters_info = self.clusters[session]
+            _clusters_info = self.session_clusters[session]
             for tbl in self._sort_table_ids:
                 if tbl == 'tt':
                     sort_tables[tbl].at[session, _clusters_info['sorted_TTs']] = 1
@@ -275,26 +257,70 @@ class SubjectInfo(object):
 
         return sort_tables
 
-    def get_session_sorted_tt_dir(self, session, tt):
-        return self.session_paths[session]['Sorted'] / f'tt_{tt}' / self.sorter
 
-    def get_session_tt_info(self, session, tt):
-        with (self.session_paths[session]['PreProcessed'] / f'tt_{tt}_info.pickle').open(mode='rb') as f:
+class SubjectSessionInfo(SubjectInfo):
+    def __init__(self, subject, session, sorter='KS2', data_root='BigPC', time_step=0.02,
+                 samp_rate=32000, n_tetrodes=16, fr_temporal_smoothing=0.125, spk_outlier_thr=None):
+
+        super().__init__(subject, sorter=sorter, data_root=data_root, time_step=time_step,
+                         samp_rate=samp_rate, n_tetrodes=n_tetrodes, fr_temporal_smoothing=fr_temporal_smoothing,
+                         spk_outlier_thr=spk_outlier_thr)
+
+        self.session = session
+        self.paths = self.session_paths[session]
+        self.clusters = self.session_clusters[session]
+
+    #  methods
+    def get_time_vectors(self):
+        samp_rate = self.params['samp_rate']
+        time_step = self.params['time_step']
+
+        tt_info = self.get_tt_info(1)
+
+        n_samps = tt_info['n_samps']
+
+        # get time vector with original sampling rate
+        tB = tt_info['tB']
+        tE = n_samps / samp_rate + tB
+        time_orig = np.arange(tB, tE, 1.0 / samp_rate).astype(np.float32)
+
+        # compute resampled time
+        rsamp_rate = int(1 / time_step)
+        n_rsamps = int(n_samps * rsamp_rate / samp_rate)
+        trE = n_rsamps / rsamp_rate + tB
+        time_rsamp = np.arange(tB, trE, 1.0 / rsamp_rate).astype(np.float32)
+
+        return time_orig, time_rsamp
+
+    def get_track_dat(self):
+        _track_data_file = self.paths['PreProcessed'] / 'ev.h5'
+
+        f = h5py.File(_track_data_file, 'r')
+        t_vt = np.array(f['t'])
+        x = np.array(f['x'])
+        y = np.array(f['y'])
+        ha = np.array(f['ha'])
+
+        return t_vt, x, y, ha
+
+    def get_sorted_tt_dir(self, tt):
+        return self.paths['Sorted'] / f'tt_{tt}' / self.sorter
+
+    def get_tt_info(self, tt):
+        with (self.paths['PreProcessed'] / f'tt_{tt}_info.pickle').open(mode='rb') as f:
             return pickle.load(f)
 
-    def get_session_tt_data(self, session, tt):
-        return np.load(self.session_paths[session]['PreProcessed'] / f'tt_{tt}.npy')
+    def get_tt_data(self, tt):
+        return np.load(self.paths['PreProcessed'] / f'tt_{tt}.npy')
 
     # methods from spike functions
-    def get_session_spikes(self, session, return_numpy=True, save_spikes_dict=False, overwrite=False):
-        return sf.get_session_spikes(self, session, return_numpy=return_numpy, save_spikes_dict=save_spikes_dict,
+    def get_spikes(self, return_numpy=True, save_spikes_dict=False, overwrite=False):
+        return sf.get_session_spikes(self, return_numpy=return_numpy, save_spikes_dict=save_spikes_dict,
                                      rej_thr=self.params['spk_outlier_thr'], overwrite=overwrite)
 
-    def get_session_binned_spikes(self, session, spike_trains=None, overwrite=False):
-        return sf.get_session_binned_spikes(self, session, spike_trains=spike_trains, overwrite=overwrite)
+    def get_binned_spikes(self, spike_trains=None, overwrite=False):
+        return sf.get_session_binned_spikes(self, spike_trains=spike_trains, overwrite=overwrite)
 
-    def get_session_fr(self, session, bin_spikes=None, overwrite=False):
-        return sf.get_session_fr(self, session, bin_spikes=bin_spikes,
+    def get_fr(self, bin_spikes=None, overwrite=False):
+        return sf.get_session_fr(self, bin_spikes=bin_spikes,
                                  temporal_smoothing=self.params['fr_temporal_smoothing'], overwrite=overwrite)
-
-

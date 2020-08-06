@@ -4,18 +4,17 @@ from scipy import stats, spatial, signal
 from pathlib import Path
 import json
 import pickle as pkl
-from .subject_info import SubjectInfo
+from .subject_info import SubjectSessionInfo
 
 
 # last edit: 8.4.20 -ag
 
 
-def get_session_spikes(subject_info, session, return_numpy=True, save_spikes_dict=False, rej_thr=None, overwrite=False):
+def get_session_spikes(subject_session_info, return_numpy=True, save_spikes_dict=False, rej_thr=None, overwrite=False):
     """
     Wrapper function to obtain all the spikes from all the curated clusters for the specified session.
     Function will also save the outputs in the predefined paths found in subject_info.
-    :param SubjectInfo subject_info: instance of class SubjectInfo for a particular subject
-    :param str session:  session id
+    :param SubjectSessionInfo subject_session_info: instance of class SubjectInfo for a particular subject
     :param bool return_numpy: if true, returns clusters as a numpy array of spike trains, and dict of ids.
     :param bool save_spikes_dict: saves dictionary for the spikes for cells and mua separetely
     :param float rej_thr: currently not in use.
@@ -23,8 +22,8 @@ def get_session_spikes(subject_info, session, return_numpy=True, save_spikes_dic
     :return: np.ndarray spikes: object array containing spike trains per cluster
     :return: dict tt_cl: [for return_numpy] dictinonary with cluster keys and identification for each cluster
     """
-    session_paths = subject_info.session_paths[session]
-    params = subject_info.params
+    session_paths = subject_session_info.paths
+    params = subject_session_info.params
     params['spk_wf_dist_rej_thr'] = rej_thr  # not used
 
     # spike_buffer in seconds
@@ -35,7 +34,7 @@ def get_session_spikes(subject_info, session, return_numpy=True, save_spikes_dic
     if (not session_paths['Cell_Spikes'].exists()) | overwrite:
         print('Spikes Files not Found or overwrite=1, creating them.')
 
-        clusters = subject_info.clusters[session]
+        clusters = subject_session_info.clusters
         spikes = {'Cell': {'n_units': 0}, 'Mua': {'n_units': 0}}
         wfi = {'Cell': {}, 'Mua': {}}
         for tt in clusters['curated_TTs']:
@@ -51,7 +50,7 @@ def get_session_spikes(subject_info, session, return_numpy=True, save_spikes_dic
             # if there are clusters, load data and get the spikes
             if n_tt_units > 0:
                 tt_dat = np.load(session_paths['PreProcessed'] / 'tt_{}.npy'.format(tt))
-                sort_dir = subject_info.get_session_sorted_tt_dir(session, tt)
+                sort_dir = subject_session_info.get_sorted_tt_dir(tt)
                 spk_times = np.load(sort_dir / 'spike_times.npy')
                 cluster_spks = np.load(sort_dir / 'spike_clusters.npy')
                 for ut in ['Cell', 'Mua']:
@@ -100,26 +99,25 @@ def get_session_spikes(subject_info, session, return_numpy=True, save_spikes_dic
         return spikes, wfi
 
 
-def get_session_binned_spikes(subject_info, session, spike_trains=None, overwrite=False):
+def get_session_binned_spikes(subject_session_info, spike_trains=None, overwrite=False):
     """
-    :param SubjectInfo subject_info: instance of SubjectInfo for a particular subject
-    :param str session: string of the session id
+    :param SubjectInfo subject_session_info: instance of SubjectInfo for a particular subject
     :param bool overwrite: overwrite flag. if false, loads data from the subject_info paths
     :param np.ndarray spike_trains: if not provided, these are computed or loaded
     :returns:
     """
 
-    session_paths = subject_info.session_paths[session]
-    params = subject_info.params
+    session_paths = subject_session_info.paths
+    params = subject_session_info.params
 
     if (not session_paths['cluster_binned_spikes'].exists()) or overwrite:
 
         print('Binned Spikes Files not Found or overwrite=1, creating them.')
         if spike_trains is None:
-            spike_trains, _, _ = get_session_spikes(subject_info, session)
+            spike_trains, _, _ = get_session_spikes(subject_session_info)
 
         # bin spikes
-        time_resamp, time_orig = subject_info.get_session_time_vectors(session=session)
+        time_resamp, time_orig = subject_session_info.get_session_time_vectors()
         bin_spikes = get_bin_spikes(spike_trains, time_resamp, time_orig, time_step=params['time_step'])
 
         assert np.array([len(x) for x in spike_trains]).sum() == bin_spikes.sum(), 'Check sum of spikes failed. ' \
@@ -134,24 +132,23 @@ def get_session_binned_spikes(subject_info, session, spike_trains=None, overwrit
     return bin_spikes
 
 
-def get_session_fr(subject_info, session, bin_spikes=None, temporal_smoothing=0.125, overwrite=False):
+def get_session_fr(subject_session_info, bin_spikes=None, temporal_smoothing=0.125, overwrite=False):
     """
     Get the firing rate for all the clusters in the session, from the binned spikes
-    :param SubjectInfo subject_info: instance of class SubjectInfo for a particular subject
-    :param str session:  session id
+    :param SubjectInfo subject_session_info: instance of class SubjectInfo for a particular subject
     :param np.ndarray bin_spikes: shape [n_clusters x n_timebins]
     :param float temporal_smoothing: [seconds] time smoothing factor; filtfilt makes this double.
     :param bool overwrite: flag, if false loads data
     :return: np.ndarray fr: firing rate shape [n_clusters x n_timebins]
     """
-    session_paths = subject_info.session_paths[session]
-    time_step = subject_info.params['time_step']
+    session_paths = subject_session_info.paths
+    time_step = subject_session_info.params['time_step']
 
     if (not session_paths['cluster_fr'].exists()) | overwrite:
         print('Firing Rate Files Not Found or overwrite=1, creating them.')
 
         if bin_spikes is None:
-            bin_spikes = get_session_binned_spikes(subject_info, session)
+            bin_spikes = get_session_binned_spikes(subject_session_info)
 
         # define filter.
         filter_len = np.round(temporal_smoothing / time_step).astype(int)

@@ -46,7 +46,8 @@ smooth_filt_window = 12 # in samples 12/60 = 200ms
 med_ang_filt_window = 6
 filtCoeff = signal.firwin(smooth_filt_window, cutoff = 0.2, window = "hanning")
 
-def getOFBehavior(sePaths):
+
+def get_session_OF_pos(sePaths):
     fn = sePaths['Raw'] / 'VT1.nvt'
     se = sePaths['session']
 
