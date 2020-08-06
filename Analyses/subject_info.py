@@ -1,6 +1,3 @@
-# creates a table with progress of analyses for each session
-# update analyses table
-
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -9,10 +6,31 @@ import json
 import h5py
 import sys
 import traceback
-import Analyses.spike_functions as sf
+import Analyses.spike_functions as spike_funcs
 
 
 ##### TO DO!!! GET cluster stats for merged clusters #############
+##### TO DO!!! Move load/save routines on spike functions to the SubjectSessionInfo class#############
+
+
+"""
+Classes in this file will have several retrieval processes to acquire the required information for each
+subject and session. 
+
+:class SubjectInfo
+->  class that takes a subject as an input. contains general information about what processes have been performed,
+    clusters, and importantly all the session paths. The contents of this class are saved as a pickle in the results 
+    folder.
+    
+:class SubjectSessionInfo
+->  children class of SubjectInfo, takes session as an input. This class contains session specific retrieval methods.
+    Low level things, like reading position (eg. 'get_track_dat') are self contained in the class. Higher level 
+    functions like 'get_spikes', are outsourced to the appropriate submodules in the Analyses folder. 
+    If it is the first time calling a retrieval method, the call will save the contents according the paths variable. 
+    Otherwise the contents will be loaded from existing data, as opposed to recalculation. Exception is the get_time 
+    method, as this is easily regenerated on each call.
+
+"""
 
 
 class SubjectInfo:
@@ -22,7 +40,8 @@ class SubjectInfo:
         self.subject = subject
         self.sorter = sorter
         self.params = {'time_step': time_step, 'samp_rate': samp_rate, 'n_tetrodes': n_tetrodes,
-                       'fr_temporal_smoothing': fr_temporal_smoothing, 'spk_outlier_thr': spk_outlier_thr}
+                       'fr_temporal_smoothing': fr_temporal_smoothing, 'spk_outlier_thr': spk_outlier_thr,
+                       'spk_recording_buffer': 3}
 
         if data_root == 'BigPC':
             if subject in ['Li', 'Ne']:
@@ -140,7 +159,7 @@ class SubjectInfo:
         paths['cluster_spikes'] = paths['Results'] / 'spikes.npy'
         paths['cluster_spikes_ids'] = paths['Results'] / 'spikes_ids.json'
         paths['cluster_wf_info'] = paths['Results'] / 'wf_info.pkl'
-        paths['cluster_binned_spikes'] = paths['Results'] / f'binned_spikes_{int(time_step*1000)}ms.npy'
+        paths['cluster_binned_spikes'] = paths['Results'] / f'binned_spikes_{int(time_step * 1000)}ms.npy'
         paths['cluster_fr'] = paths['Results'] / 'fr.npy'
 
         paths['ZoneAnalyses'] = paths['Results'] / 'ZoneAnalyses.pkl'
@@ -261,7 +280,6 @@ class SubjectInfo:
 class SubjectSessionInfo(SubjectInfo):
     def __init__(self, subject, session, sorter='KS2', data_root='BigPC', time_step=0.02,
                  samp_rate=32000, n_tetrodes=16, fr_temporal_smoothing=0.125, spk_outlier_thr=None):
-
         super().__init__(subject, sorter=sorter, data_root=data_root, time_step=time_step,
                          samp_rate=samp_rate, n_tetrodes=n_tetrodes, fr_temporal_smoothing=fr_temporal_smoothing,
                          spk_outlier_thr=spk_outlier_thr)
@@ -271,37 +289,53 @@ class SubjectSessionInfo(SubjectInfo):
         self.clusters = self.session_clusters[session]
 
     #  methods
-    def get_time_vectors(self):
+    def get_time(self, which='resamp'):
+        """
+        :param str which:   if 'resamp' [default], returns resampled time at the time_step found in params
+                            if 'orig', returns a time vector sampled at the original sampling rate
+        :return np.array time: array of time, float32.
+        """
         samp_rate = self.params['samp_rate']
         time_step = self.params['time_step']
 
         tt_info = self.get_tt_info(1)
-
         n_samps = tt_info['n_samps']
+        tB = tt_info['tB']
 
         # get time vector with original sampling rate
-        tB = tt_info['tB']
-        tE = n_samps / samp_rate + tB
-        time_orig = np.arange(tB, tE, 1.0 / samp_rate).astype(np.float32)
+        if which == 'orig':
+            tE = n_samps / samp_rate + tB
+            time = np.arange(tB, tE, 1.0 / samp_rate).astype(np.float32)
+        elif which == 'resamp':
+            # compute resampled time
+            rsamp_rate = int(1 / time_step)
+            n_rsamps = int(n_samps * rsamp_rate / samp_rate)
+            trE = n_rsamps / rsamp_rate + tB
+            time = np.arange(tB, trE, 1.0 / rsamp_rate).astype(np.float32)
+        else:
+            print('Invalid which argument.')
+            time = None
 
-        # compute resampled time
-        rsamp_rate = int(1 / time_step)
-        n_rsamps = int(n_samps * rsamp_rate / samp_rate)
-        trE = n_rsamps / rsamp_rate + tB
-        time_rsamp = np.arange(tB, trE, 1.0 / rsamp_rate).astype(np.float32)
-
-        return time_orig, time_rsamp
+        return time
 
     def get_track_dat(self):
-        _track_data_file = self.paths['PreProcessed'] / 'ev.h5'
+        """
+        Loads video tracking data:
+        :return: np.arrays of tracking data.
+            t -> time sampled at the camera's sampling rate, usually 60Hz
+            x -> x position of the animal
+            y -> y position of the animal
+            ha -> estimate of the head angle of the animal
+        """
+        _track_data_file = self.paths['PreProcessed'] / 'vt.h5'
 
         f = h5py.File(_track_data_file, 'r')
-        t_vt = np.array(f['t'])
+        t = np.array(f['t'])
         x = np.array(f['x'])
         y = np.array(f['y'])
         ha = np.array(f['ha'])
 
-        return t_vt, x, y, ha
+        return t, x, y, ha
 
     def get_sorted_tt_dir(self, tt):
         return self.paths['Sorted'] / f'tt_{tt}' / self.sorter
@@ -315,12 +349,95 @@ class SubjectSessionInfo(SubjectInfo):
 
     # methods from spike functions
     def get_spikes(self, return_numpy=True, save_spikes_dict=False, overwrite=False):
-        return sf.get_session_spikes(self, return_numpy=return_numpy, save_spikes_dict=save_spikes_dict,
-                                     rej_thr=self.params['spk_outlier_thr'], overwrite=overwrite)
+        """
+        :param bool return_numpy: if true, returns clusters as a numpy array of spike trains, and dict of ids.
+        :param bool save_spikes_dict: saves dictionary for the spikes for cells and mua separetely
+        :param bool overwrite: if true overwrites. ow. returns disk data
+        :return: np.ndarray spikes: object array containing spike trains per cluster
+        :return: dict tt_cl: [for return_numpy] dictinonary with cluster keys and identification for each cluster
+        """
+        session_paths = self.paths
+
+        if (not session_paths['Cell_Spikes'].exists()) | overwrite:
+            print('Spikes Files not Found or overwrite=1, creating them.')
+
+            spikes, wfi = spike_funcs.get_session_spikes(self)
+
+            # convert spike dictionaries to numpy and a json dict with info
+            cell_spikes, cell_tt_cl = spike_funcs.get_spikes_numpy(spikes['Cell'])
+            mua_spikes, mua_tt_cl = spike_funcs.get_spikes_numpy(spikes['Mua'])
+            spikes_numpy, tt_cl, wfi2 = spike_funcs.aggregate_spikes_numpy(cell_spikes, cell_tt_cl, mua_spikes,
+                                                                           mua_tt_cl, wfi)
+
+            # save numpy spikes
+            np.save(session_paths['cluster_spikes'], spikes_numpy)
+            with session_paths['cluster_spikes_ids'].open(mode='w') as f:
+                json.dump(tt_cl, f, indent=4)
+
+            # save waveform info
+            with session_paths['cluster_wf_info'].open(mode='wb') as f:
+                pickle.dump(wfi2, f, pickle.HIGHEST_PROTOCOL)
+
+            # save Cell/Mua spike dictionaries and waveform info
+            if save_spikes_dict:
+                for ut in ['Cell', 'Mua']:
+                    with session_paths[ut + '_Spikes'].open(mode='w') as f:
+                        json.dump(spikes[ut], f, indent=4)
+                    with session_paths[ut + '_WaveForms'].open(mode='w') as f:
+                        pickle.dump(wfi[ut], f, pickle.HIGHEST_PROTOCOL)
+
+        else:  # Load data.
+            if return_numpy:
+                spikes_numpy = np.load(session_paths['cluster_spikes'], allow_pickle=True)
+                with session_paths['cluster_spikes_ids'].open() as f:
+                    tt_cl = json.load(f)
+                with session_paths['cluster_wf_info'].open(mode='rb') as f:
+                    wfi2 = pickle.load(f)
+            else:
+                with session_paths['Cell_Spikes'].open() as f:
+                    cell_spikes = json.load(f)
+                with session_paths['Mua_Spikes'].open() as f:
+                    mua_spikes = json.load(f)
+                spikes = {'Cell': cell_spikes, 'Mua': mua_spikes}
+
+        if return_numpy:
+            return spikes_numpy, tt_cl, wfi2
+        else:
+            return spikes, wfi
 
     def get_binned_spikes(self, spike_trains=None, overwrite=False):
-        return sf.get_session_binned_spikes(self, spike_trains=spike_trains, overwrite=overwrite)
+        """
+        :param np.ndarray spike_trains: if not provided, these are computed or loaded
+        :param bool overwrite: overwrite flag. if false, loads data from the subject_info paths
+        :returns: np.ndarray bin_spikes: shape n_clusters x n_bin_samps. simply the spike counts for each cluster/bin
+        """
+
+        session_paths = self.paths
+        if (not session_paths['cluster_binned_spikes'].exists()) or overwrite:
+            print('Binned Spikes Files not Found or overwrite=1, creating them.')
+            bin_spikes = spike_funcs.get_session_binned_spikes(self, spike_trains=spike_trains)
+            # save
+            np.save(session_paths['cluster_binned_spikes'], bin_spikes)
+        else:  # load
+            bin_spikes = np.load(session_paths['cluster_binned_spikes'])
+
+        return bin_spikes
 
     def get_fr(self, bin_spikes=None, overwrite=False):
-        return sf.get_session_fr(self, bin_spikes=bin_spikes,
-                                 temporal_smoothing=self.params['fr_temporal_smoothing'], overwrite=overwrite)
+        """
+        :param np.ndarray bin_spikes: shape [n_clusters x n_timebins]
+        :param bool overwrite: flag, if false loads data
+        :return: np.ndarray fr: firing rate shape [n_clusters x n_timebins]
+        """
+
+        session_paths = self.paths
+        if (not session_paths['cluster_fr'].exists()) | overwrite:
+            print('Firing Rate Files Not Found or overwrite=1, creating them.')
+            fr = spike_funcs.get_session_fr(self, bin_spikes=bin_spikes)
+            # save data
+            np.save(session_paths['cluster_fr'], fr)
+
+        else:  # load firing rate
+            fr = np.load(session_paths['cluster_fr'])
+
+        return fr
