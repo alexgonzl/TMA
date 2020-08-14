@@ -630,8 +630,8 @@ def get_task_params(session_info):
                 # conversion params
                 'x_pix_mm': 1300.0 / 344.0,  # pixels to mm for the x axis [pix/mm]
                 'y_pix_mm': 1450.0 / 444.0,  # pixels to mm for the y axis [pix/mm]
-                'x_mm_bias': 0,  # factor for centering the x mm position
-                'y_mm_bias': 650,  # factor for centering the x mm position
+                'x_mm_bias': 20,  # factor for centering the x mm position
+                'y_mm_bias': 650,  # factor for centering the y mm position
                 'x_mm_lims': [-630, 630],  # limits on the x axis of the maze [mm]
                 'y_mm_lims': [-60, 1350],  # limits on the y axis of the maze [mm]
                 'x_cm_lims': [-63, 63],  # limits on the x axis of the maze [cm]
@@ -654,9 +654,13 @@ def get_task_params(session_info):
                 'temporal_angle_window_size': 7,  # smoothing temporal window for angles [bins]
                 'temporal_window_type': 'hann',  # window type for temporal window smoothing
 
-                # non-parametric tests parameters:
-                'alpha': 0.02,  # double sided alpha level for significance testing
-                'n_perm': 100,  # number of permutations
+                # statistical tests parameters:
+                'sig_alpha': 0.02,  # double sided alpha level for significance testing
+                'n_perm': 200,  # number of permutations
+
+                # other analysis parameters
+                'boder_dist_cm': 12,  # distance from border to consider it a border cell [cm]
+                'border_dist_bin': 4,  # distance from border to consider it a border cell [bins]
 
             }
 

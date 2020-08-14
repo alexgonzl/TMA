@@ -19,8 +19,6 @@ def get_session_track_data(session_info):
             -> np.array hd: heading direction
             -> np.ndarray pos_map_counts: 2d binned represention of the animals position, values are counts
             -> np.ndarray pos_map_sec: 2d binned represention of the animals position, smoothed, values are seconds
-            -> ha_stats: head angle circular statistics
-            -> hd_stats: heading dir circular statistics
     """
 
     p = SimpleNamespace(**session_info.task_params)
@@ -53,20 +51,12 @@ def get_session_track_data(session_info):
     pos_map_secs = pos_map_counts * time_step
     pos_map_secs = spatial_funcs.get_smoothed_map(pos_map_secs, p.spatial_window_size, p.spatial_sigma)
 
-    # obtain angular statistics
-    th = ha_rs[speed_rs > p.min_speed_thr]
-    ha_stats = spatial_funcs.get_angle_stats(th, step=p.rad_bin)
-
-    th = hd_rs[speed_rs > p.min_speed_thr]
-    hd_stats = spatial_funcs.get_angle_stats(th, step=p.rad_bin)
-
     # create output dictionary
     of_track_dat = {
                     't': t_rs, 'x': x_rs, 'y': y_rs, 'sp': speed_rs, 'ha': ha_rs, 'hd': hd_rs,
                     'pos_map_counts': pos_map_counts, 'pos_map_secs': pos_map_secs,
                     'vert_edges': vertical_edges, 'horiz_edges': horizontal_edges,
                     'n_vert_bins': len(vertical_edges)-1, 'n_horiz_bins': len(horizontal_edges)-1,
-                    'ha_stats': ha_stats, 'hd_stats': hd_stats
                     }
 
     return of_track_dat
@@ -280,7 +270,7 @@ def get_session_scores(session_info):
     # speed scores
     n_units = session_info.n_units
     scores, model_coef, model_coef_s, sp_bin_centers = \
-        spatial_funcs.get_speed_score_bins(of_dat.sp, fr,
+        spatial_funcs.get_speed_score_discrete(of_dat.sp, fr,
                                            track_params.speed_bin,
                                            track_params.min_speed_thr,
                                            track_params.max_speed_thr,
@@ -290,11 +280,38 @@ def get_session_scores(session_info):
     output_dir['speed']['scores'] = scores
     output_dir['speed']['model_coef'] = model_coef
     output_dir['speed']['model_coef_s'] = model_coef_s
-    output_dir['speed']['sp_bin_centers'] = sp_bin_centers
+    output_dir['speed']['bin_centers'] = sp_bin_centers
+
+    # head direction scores
+    scores, model_coef, model_coef_s, ang_bin_centers = \
+        spatial_funcs.get_angle_scores(of_dat.hd, fr,
+                                       track_params.rad_bin,
+                                       speed=of_dat.sp,
+                                       min_speed=track_params.min_speed_thr,
+                                       max_speed=track_params.max_speed_thr,
+                                       alpha=track_params.sig_alpha)
+
+    output_dir['speed']['scores'] = scores
+    output_dir['speed']['model_coef'] = model_coef
+    output_dir['speed']['model_coef_s'] = model_coef_s
+    output_dir['speed']['bin_centers'] = ang_bin_centers
+
+    # head angle scores
+    scores, model_coef, model_coef_s, ang_bin_centers = \
+        spatial_funcs.get_angle_scores(of_dat.hd, fr,
+                                       track_params.rad_bin,
+                                       speed=of_dat.sp,
+                                       min_speed=track_params.min_speed_thr,
+                                       max_speed=track_params.max_speed_thr,
+                                       alpha=track_params.sig_alpha)
+
+    output_dir['speed']['scores'] = scores
+    output_dir['speed']['model_coef'] = model_coef
+    output_dir['speed']['model_coef_s'] = model_coef_s
+    output_dir['speed']['bin_centers'] = ang_bin_centers
 
 
 
-    #
 
     return NotImplementedError
 

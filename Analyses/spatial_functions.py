@@ -248,7 +248,7 @@ def get_speed_score_traditional(speed, fr, min_speed, max_speed, alpha=0.05, n_p
     return scores, model_coef, model_coef_s
 
 
-def get_speed_score_bins(speed, fr, speed_bin_spacing, min_speed, max_speed, alpha, n_perm):
+def get_speed_score_discrete(speed, fr, speed_bin_spacing, min_speed, max_speed, alpha, n_perm):
     """
     :param speed: array floats vector of speed n_samps
     :param fr: array floats firing rate n_units x n_samps, also works for one unit
@@ -257,7 +257,7 @@ def get_speed_score_bins(speed, fr, speed_bin_spacing, min_speed, max_speed, alp
     :param min_speed: float min speed to threshold data
     :param alpha: float, significant level to evaluate the permutation test
     :param n_perm: int, number of permutations to perform.
-    :returns: scores: pd.Dataframe with columns ['score', 'sig', 'r2', 'rmse', 'nrmse'], rows are n_units
+    :returns: scores: pd.Dataframe with columns ['score', 'sig', 'aR2', 'rmse', 'nrmse'], rows are n_units
               model_coef: array n_units x n_bins mean firing rate at each bin
               model_coef_sem: array n_units x n_bins sem for each bin.
               speed_bins: array of speed bins
@@ -278,7 +278,7 @@ def get_speed_score_bins(speed, fr, speed_bin_spacing, min_speed, max_speed, alp
 
     # binning of speed
     design_matrix, sp_bin_idx, sp_bin_centers, sp_bin_edges = \
-        get_discrete_data_mat(speed_valid, min_speed, max_speed, speed_bin_spacing)
+        rs.get_discrete_data_mat(speed_valid, min_speed, max_speed, speed_bin_spacing)
     n_sp_bins = len(sp_bin_centers)
 
     # Model additional details / observations.
@@ -337,63 +337,109 @@ def get_speed_score_bins(speed, fr, speed_bin_spacing, min_speed, max_speed, alp
     return scores, model_coef, model_coef_s, sp_bin_centers
 
 
-def get_discrete_data_mat(data, min_val, max_val, step):
-    """
-    :param data: array float of data to be discretrize into a matrix
-    :param min_val: float minimum value of the data to consider
-    :param max_val: float max value of data to consider
-    :param step: float bin step size
-    :return: design_matrix: ndarray n_samps x n_bins of binary data
-                            entry ij indicates that data sample i is in the jth bin
-            data_bin_ids: array n_samps of ints,
-                          ith value is the bin_center that gets assign to data[i]
-            bin_centers: array float of bin centers
-            bin_edges: array float of bin edges
-    """
-
-    n_samps = len(data)
-    bin_edges = np.arange(min_val, max_val + step, step)
-    bin_centers = bin_edges[:-1] + step / 2
-    n_bins = len(bin_centers)
-    data_bin_ids = np.digitize(data, bins=bin_edges) - 1  # shift ids so that first bin center corresponds to id 0
-
-    design_matrix = np.zeros((n_samps, n_bins))
-    for i in range(n_bins):
-        design_matrix[:, i] = data_bin_ids == i
-
-    return design_matrix, data_bin_ids,  bin_centers, bin_edges
-
-
-# angular stats functions
-def get_angle_hist(th, step):
-    """
-    get angle histogram for a given step. expects radians.
-    :param th: angle
-    :param step: radian bin step
-    :return: counts per bin, bin_centers, bins
-    """
-    counts, bins = np.histogram(th, np.arange(0, 2 * np.pi + 0.01, step))
-    bin_centers = bins[:-1] + step / 2
-    return counts, bin_centers, bins
-
-
-def get_angle_stats(theta, step):
+def get_angle_stats(theta, step, weights=None):
     """
     Computes several circular statistics based on the histogram of the data.
-    expects radians.
+    expects radians. Then uses the Rayleigh test for
     :param theta: original theta vector [radians]
+    :param weights: weights for the each angle observation (e.g. spikes/ fr)
     :param step: angular bin size [radians]
-    :return: dictionary with various stats
+    :return: dictionary with descriptive stats:
+            {
+                vec_len -> resulting vector length
+                mean_ang -> resulting mean angle
+                rayleigh -> Rayleigh's R [statistic]
+                p_val -> two sided statistical test
+                var_ang -> variance of the estimates
+                std_ang -> standard deviation
+            }
+            w_counts: weighted counts
+            bin_centers: bin centers in radians
+            bin_edges: bin edges in radians
     """
-    counts, bin_centers, bins = get_angle_hist(theta, step)
-    z = np.mean(counts * np.exp(1j * bin_centers))
-    ang = np.angle(z)
-    r = np.abs(z)
-    p, t = rs.rayleigh(theta)
 
-    stats = {'r': r, 'ang': ang, 'R': t, 'p_val': p}
+    counts, bin_edges = np.histogram(theta, np.arange(0, 2 * np.pi + step, step))
+    bin_centers = bin_edges[:-1] + step / 2
 
-    return stats
+    if weights is None:
+        w_counts = counts
+    else:
+        w_counts, _ = np.histogram(theta, bin_edges, weights=weights)
+        w_counts /= counts
+
+    # add the weighted vectors to obtain the complex mean vector, its components, and descriptive stats
+    vec_len, mean_ang, var_ang, std_ang, = rs.resultant_vector_length(bin_centers, w=w_counts, d=step)
+
+    # rayleigh statistical test
+    p_val, rayleigh = rs.rayleigh(bin_centers, w=w_counts, d=step)
+
+    out_dir = {'vec_len': vec_len, 'mean_ang': mean_ang, 'rayleigh': rayleigh, 'p_val': p_val, 'var': var_ang, 'std': std_ang}
+    return out_dir, w_counts, bin_centers, bin_edges
 
 
+def get_angle_scores(theta, fr, rad_bin_spacing, speed=None, min_speed=None, max_speed=None, alpha=0.05):
+    """
+    :param theta: array n_samps of angles in radians
+    :param fr: array n_units x n_samps of firing rates
+    :param rad_bin_spacing: bin spacing in radians
+    :param speed: array of n_samps of speed to threshold the computations
+    :param min_speed: minimum speed threshold
+    :param max_speed: max speed threshold
+    :param alpha: parametric alpha for significance of Rayleigh test.
+    :return:  scores: pd.Dataframe n_units x columns ['vec_len', 'mean_ang', 'sig', 'r2', 'rmse', 'nrmse']
+              model_coef: array n_units x n_bins mean firing rate at each bin
+              model_coef_sem: array n_units x n_bins sem for each bin.
+              angle_bins: array of centered bins in radians
+    """
 
+    n_samps = len(speed)
+    if fr.ndim == 1:
+        n_units = 1
+        fr = fr.reshape(1, -1)
+    else:
+        n_units, _ = fr.shape
+    assert n_samps == fr.shape[1], 'Mismatch lengths between speed and fr.'
+
+    # get valid samples and overwrite for fitting
+    if (speed is not None) and (min_speed is not None) and (max_speed is not None):
+        speed_valid_idx = np.logical_and(speed >= min_speed, speed <= max_speed)
+        theta = theta[speed_valid_idx]
+        fr = fr[:, speed_valid_idx]
+
+    # binning of the angle / get discrete design matrix
+    design_matrix, th_bin_idx, ang_bin_centers, ang_bin_edges = \
+        rs.get_discrete_data_mat(theta, 0, 2*np.pi, rad_bin_spacing)
+    n_ang_bins = len(ang_bin_centers)
+
+    # get model coefficients (mean fr per bin) and se of the mean
+    model_coef = np.zeros((n_units, n_ang_bins))
+    model_coef_s = np.zeros((n_units, n_ang_bins))
+    for i in range(n_ang_bins):
+        model_coef[:, i] = np.mean(fr[:, th_bin_idx == i], axis=1)
+        model_coef_s[:, i] = stats.sem(fr[:, th_bin_idx == i], axis=1)
+
+    # get prediction
+    # -> basically assigns to each sample its corresponding mean value
+    fr_hat = model_coef @ design_matrix.T
+
+    # pre-allocate score outputs
+    scores = pd.DataFrame(index=range(n_units),
+                          columns=['vec_len', 'mean_ang', 'p_val', 'sig', 'aR2', 'rmse', 'nrmse'])
+
+    # loop to get circular stats scores
+    for unit in range(n_units):
+        # get vector length and mean angle
+        vec_len, mean_ang, _, _, = rs.resultant_vector_length(ang_bin_centers, w=model_coef[unit], d=rad_bin_spacing)
+        # rayleigh statistical test
+        p_val, _ = rs.rayleigh(ang_bin_centers, w=model_coef[unit], d=rad_bin_spacing)
+
+        # store results
+        scores.at[unit, 'vec_len'] = vec_len
+        scores.at[unit, 'mean_ang'] = np.mod(mean_ang, 2*np.pi)
+        scores.at[unit, 'sig'] = p_val < alpha
+
+    scores['aR2'] = rs.get_ar2(fr, fr_hat, n_ang_bins)
+    scores['rmse'] = rs.get_rmse(fr, fr_hat)
+    scores['nrmse'] = scores['rmse']/fr.mean(axis=1)
+
+    return scores, model_coef, model_coef_s, ang_bin_centers

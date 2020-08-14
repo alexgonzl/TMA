@@ -269,6 +269,33 @@ def permutation_test(x, y, func, n_perm=500, alpha=0.02, seed=0):
     return outside_dist, perm_out
 
 
+def get_discrete_data_mat(data, min_val, max_val, step):
+    """
+    :param data: array float of data to be discretrize into a matrix
+    :param min_val: float minimum value of the data to consider
+    :param max_val: float max value of data to consider
+    :param step: float bin step size
+    :return: design_matrix: ndarray n_samps x n_bins of binary data
+                            entry ij indicates that data sample i is in the jth bin
+            data_bin_ids: array n_samps of ints,
+                          ith value is the bin_center that gets assign to data[i]
+            bin_centers: array float of bin centers
+            bin_edges: array float of bin edges
+    """
+
+    n_samps = len(data)
+    bin_edges = np.arange(min_val, max_val + step, step)
+    bin_centers = bin_edges[:-1] + step / 2
+    n_bins = len(bin_centers)
+    data_bin_ids = np.digitize(data, bins=bin_edges) - 1  # shift ids so that first bin center corresponds to id 0
+
+    design_matrix = np.zeros((n_samps, n_bins))
+    for i in range(n_bins):
+        design_matrix[:, i] = data_bin_ids == i
+
+    return design_matrix, data_bin_ids, bin_centers, bin_edges
+
+
 def spearman(x, y):
     """spearman correlation"""
     return stats.spearmanr(x, y)[0]
