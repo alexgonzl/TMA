@@ -7,29 +7,30 @@ import h5py
 import sys
 import traceback
 import Analyses.spike_functions as spike_funcs
+import Analyses.open_field_functions as of_funcs
 
+import scipy.signal as signal
 
-##### TO DO!!! GET cluster stats for merged clusters #############
-##### TO DO!!! Move load/save routines on spike functions to the SubjectSessionInfo class#############
-
+# TO DO!!! GET cluster stats for merged clusters #############
 
 """
 Classes in this file will have several retrieval processes to acquire the required information for each
 subject and session. 
 
 :class SubjectInfo
-->  class that takes a subject as an input. contains general information about what processes have been performed,
-    clusters, and importantly all the session paths. The contents of this class are saved as a pickle in the results 
-    folder.
+    ->  class that takes a subject as an input. contains general information about what processes have been performed,
+        clusters, and importantly all the session paths. The contents of this class are saved as a pickle in the results 
+        folder.
     
 :class SubjectSessionInfo
-->  children class of SubjectInfo, takes session as an input. This class contains session specific retrieval methods.
-    Low level things, like reading position (eg. 'get_track_dat') are self contained in the class. Higher level 
-    functions like 'get_spikes', are outsourced to the appropriate submodules in the Analyses folder. 
-    If it is the first time calling a retrieval method, the call will save the contents according the paths variable. 
-    Otherwise the contents will be loaded from existing data, as opposed to recalculation. Exception is the get_time 
-    method, as this is easily regenerated on each call.
+    ->  children class of SubjectInfo, takes session as an input. This class contains session specific retrieval methods
+        Low level things, like reading position (eg. 'get_track_dat') are self contained in the class. Higher level 
+        functions like 'get_spikes', are outsourced to the appropriate submodules in the Analyses folder. 
+        If it is the first time calling a retrieval method, the call will save the contents according the paths variable 
+        Otherwise the contents will be loaded from existing data, as opposed to recalculation. Exception is the get_time 
+        method, as this is easily regenerated on each call.
 
+- last edit: 8.6.20 -ag
 """
 
 
@@ -145,7 +146,7 @@ class SubjectInfo:
 
         paths['Results'].mkdir(parents=True, exist_ok=True)
 
-        paths['BehavTrackDat'] = paths['Results'] / ('BehTrackVariables_{}ms.h5'.format(int(time_step * 1000)))
+        paths['behav_track_data'] = paths['Results'] / ('behav_track_data{}ms.pkl'.format(int(time_step * 1000)))
 
         # these paths are mostly legacy
         paths['Spike_IDs'] = paths['Results'] / 'Spike_IDs.json'
@@ -161,6 +162,12 @@ class SubjectInfo:
         paths['cluster_wf_info'] = paths['Results'] / 'wf_info.pkl'
         paths['cluster_binned_spikes'] = paths['Results'] / f'binned_spikes_{int(time_step * 1000)}ms.npy'
         paths['cluster_fr'] = paths['Results'] / 'fr.npy'
+
+        paths['cluster_spike_maps'] = paths['Results'] / 'spike_maps.npy'
+        paths['cluster_fr_maps'] = paths['Results'] / 'fr_maps.npy'
+        paths['cluster_OF_metrics'] = paths['Results'] / 'OF_metrics.pkl'
+        paths['cluster_OF_lnp_metrics'] = paths['Results'] / 'OF_lnp_metrics.pkl'
+
 
         paths['ZoneAnalyses'] = paths['Results'] / 'ZoneAnalyses.pkl'
 
@@ -287,8 +294,77 @@ class SubjectSessionInfo(SubjectInfo):
         self.session = session
         self.paths = self.session_paths[session]
         self.clusters = self.session_clusters[session]
+        self.subject, self.task, self.date = session.split('_')
+        self.task_params = get_task_params(self)
+        self.n_units = self.clusters['n_cell'] + self.clusters['n_mua']
+        print('number of units in session {}'.format(self.clusters['n_cell'] + self.clusters['n_mua']))
+        if self.paths['cluster_spikes_ids'].exists():
+            with self.paths['cluster_spikes_ids'].open('r') as f:
+                self.cluster_ids = json.load(f)
+                self.n_units = len(self.cluster_ids)
+            self.cell_ids = np.array([v[0] == 'cell' for k, v in self.cluster_ids.items()])
+            self.mua_ids = ~self.cell_ids
 
-    #  methods
+        self._analyses = self._check_analyses()
+
+    def __str__(self):
+        print()
+        print(f'Session Information for subject {self.subject}, session {self.session}')
+        print(f'Number of curated units: {self.n_units}')
+        print('Methods listed below can be executed with get_{method}(), eg. get_spikes():')
+        for a, m in self._analyses.items():
+            print(f'  -> {a}. Executed = {m[1]}')
+        print()
+        print('To run all analyses use run_analyses().')
+        return ''
+
+    def print_task_params(self):
+        print()
+        print('Task/track and analysis parameters. ')
+        print()
+        for param, val in self.task_params.items():
+            if 'filter' not in param:
+                print(f'  -> {param}: {val}')
+
+    def _check_analyses(self):
+        if self.task == 'OF':
+            # analyses is a dictionary with keys as the desired output, and values that
+            # include the method and if it has been run (file exists)
+            analyses = {
+                'track_data': (self.get_track_data, self.paths['behav_track_data'].exists()),
+                'time': (self.get_time, True),
+                'spikes': (self.get_spikes, self.paths['cluster_spikes'].exists()),
+                'binned_spikes': (self.get_binned_spikes, self.paths['cluster_binned_spikes'].exists()),
+                'fr': (self.get_fr, self.paths['cluster_fr'].exists()),
+                'spike_maps': (self.get_spike_maps, self.paths['cluster_spike_maps'].exists()),
+                'fr_maps': (self.get_fr_maps, self.paths['cluster_fr_maps'].exists()),
+                'scores': (self.get_scores, self.paths['cluster_OF_metrics'].exists()),
+                'lnp_scores': (self.get_lnp_scores, self.paths['cluster_OF_lnp_metrics'].exists())
+            }
+        else:
+            raise NotImplementedError
+        return analyses
+
+    def run_analyses(self, overwrite=False):
+        """
+        Method to execute all analyses in the analyses list.
+        :param bool overwrite: overwrite flag.
+        :return: None
+        """
+        for a, m in self._analyses.items():
+            if not m[2] or overwrite:
+                try:
+                    # calls methods in _analyses
+                    _ = m[0](overwrite=True)
+                    print(f'Analysis {a} completed.')
+                except NotImplementedError:
+                    print(f'Analysis {a} not implemented.')
+                except FileNotFoundError:
+                    print(f'Analysis {a} did not find the dependent files.')
+        # update analyses
+        self._analyses = self._check_analyses()
+
+    #  default methods
     def get_time(self, which='resamp'):
         """
         :param str which:   if 'resamp' [default], returns resampled time at the time_step found in params
@@ -312,13 +388,14 @@ class SubjectSessionInfo(SubjectInfo):
             n_rsamps = int(n_samps * rsamp_rate / samp_rate)
             trE = n_rsamps / rsamp_rate + tB
             time = np.arange(tB, trE, 1.0 / rsamp_rate).astype(np.float32)
+            time = np.round(time * 1000.0) / 1000.0  # round time to ms resolution
         else:
             print('Invalid which argument.')
             time = None
 
         return time
 
-    def get_track_dat(self):
+    def get_raw_track_data(self):
         """
         Loads video tracking data:
         :return: np.arrays of tracking data.
@@ -329,11 +406,11 @@ class SubjectSessionInfo(SubjectInfo):
         """
         _track_data_file = self.paths['PreProcessed'] / 'vt.h5'
 
-        f = h5py.File(_track_data_file, 'r')
-        t = np.array(f['t'])
-        x = np.array(f['x'])
-        y = np.array(f['y'])
-        ha = np.array(f['ha'])
+        with h5py.File(_track_data_file, 'r') as f:
+            t = np.array(f['t'])
+            x = np.array(f['x'])
+            y = np.array(f['y'])
+            ha = np.array(f['ha'])
 
         return t, x, y, ha
 
@@ -341,11 +418,34 @@ class SubjectSessionInfo(SubjectInfo):
         return self.paths['Sorted'] / f'tt_{tt}' / self.sorter
 
     def get_tt_info(self, tt):
-        with (self.paths['PreProcessed'] / f'tt_{tt}_info.pickle').open(mode='rb') as f:
-            return pickle.load(f)
+        try:
+            with (self.paths['PreProcessed'] / f'tt_{tt}_info.pickle').open(mode='rb') as f:
+                return pickle.load(f)
+        except FileNotFoundError:
+            print(f'Tetrode {tt} information not found.')
+            return None
 
     def get_tt_data(self, tt):
-        return np.load(self.paths['PreProcessed'] / f'tt_{tt}.npy')
+        try:
+            return np.load(self.paths['PreProcessed'] / f'tt_{tt}.npy')
+        except FileNotFoundError:
+            print(f'Tetrode {tt} data not found.')
+            return None
+
+    # behavioral methods
+    def get_track_data(self, overwrite=False):
+        if self.task == 'OF':
+            if not self.paths['behav_track_data'].exists() or overwrite:
+                print('Open Field Track Data not Found or Overwrite= True, creating them.')
+                of_track_dat = of_funcs.get_session_track_data(self)
+                with self.paths['behav_track_data'].open(mode='wb') as f:
+                    pickle.dump(of_track_dat, f, protocol=pickle.HIGHEST_PROTOCOL)
+            else:
+                with self.paths['behav_track_data'].open(mode='rb') as f:
+                    of_track_dat = pickle.load(f)
+            return of_track_dat
+        else:
+            return None
 
     # methods from spike functions
     def get_spikes(self, return_numpy=True, save_spikes_dict=False, overwrite=False):
@@ -356,54 +456,69 @@ class SubjectSessionInfo(SubjectInfo):
         :return: np.ndarray spikes: object array containing spike trains per cluster
         :return: dict tt_cl: [for return_numpy] dictinonary with cluster keys and identification for each cluster
         """
-        session_paths = self.paths
+        if self.n_units > 0:
+            session_paths = self.paths
 
-        if (not session_paths['Cell_Spikes'].exists()) | overwrite:
-            print('Spikes Files not Found or overwrite=1, creating them.')
+            spikes = None
+            spikes_numpy = None
+            tt_cl = None
+            wfi = None
+            wfi2 = None
 
-            spikes, wfi = spike_funcs.get_session_spikes(self)
+            if (not session_paths['Cell_Spikes'].exists()) or overwrite:
+                print('Spikes Files not Found or overwrite=1, creating them.')
 
-            # convert spike dictionaries to numpy and a json dict with info
-            cell_spikes, cell_tt_cl = spike_funcs.get_spikes_numpy(spikes['Cell'])
-            mua_spikes, mua_tt_cl = spike_funcs.get_spikes_numpy(spikes['Mua'])
-            spikes_numpy, tt_cl, wfi2 = spike_funcs.aggregate_spikes_numpy(cell_spikes, cell_tt_cl, mua_spikes,
-                                                                           mua_tt_cl, wfi)
+                spikes, wfi = spike_funcs.get_session_spikes(self)
 
-            # save numpy spikes
-            np.save(session_paths['cluster_spikes'], spikes_numpy)
-            with session_paths['cluster_spikes_ids'].open(mode='w') as f:
-                json.dump(tt_cl, f, indent=4)
+                # convert spike dictionaries to numpy and a json dict with info
+                cell_spikes, cell_tt_cl = spike_funcs.get_spikes_numpy(spikes['Cell'])
+                mua_spikes, mua_tt_cl = spike_funcs.get_spikes_numpy(spikes['Mua'])
+                spikes_numpy, tt_cl, wfi2 = spike_funcs.aggregate_spikes_numpy(cell_spikes, cell_tt_cl, mua_spikes,
+                                                                               mua_tt_cl, wfi)
 
-            # save waveform info
-            with session_paths['cluster_wf_info'].open(mode='wb') as f:
-                pickle.dump(wfi2, f, pickle.HIGHEST_PROTOCOL)
+                self.cluster_ids = tt_cl
+                self.n_units = len(self.cluster_ids)
+                self.cell_ids = np.array([v[0] == 'cell' for k, v in self.cluster_ids.items()])
+                self.mua_ids = ~self.cell_ids
 
-            # save Cell/Mua spike dictionaries and waveform info
-            if save_spikes_dict:
-                for ut in ['Cell', 'Mua']:
-                    with session_paths[ut + '_Spikes'].open(mode='w') as f:
-                        json.dump(spikes[ut], f, indent=4)
-                    with session_paths[ut + '_WaveForms'].open(mode='w') as f:
-                        pickle.dump(wfi[ut], f, pickle.HIGHEST_PROTOCOL)
+                # save numpy spikes
+                np.save(session_paths['cluster_spikes'], spikes_numpy)
+                with session_paths['cluster_spikes_ids'].open(mode='w') as f:
+                    json.dump(tt_cl, f, indent=4)
 
-        else:  # Load data.
+                # save waveform info
+                with session_paths['cluster_wf_info'].open(mode='wb') as f:
+                    pickle.dump(wfi2, f, pickle.HIGHEST_PROTOCOL)
+
+                # save Cell/Mua spike dictionaries and waveform info
+                if save_spikes_dict:
+                    for ut in ['Cell', 'Mua']:
+                        with session_paths[ut + '_Spikes'].open(mode='w') as f:
+                            json.dump(spikes[ut], f, indent=4)
+                        with session_paths[ut + '_WaveForms'].open(mode='w') as f:
+                            pickle.dump(wfi[ut], f, pickle.HIGHEST_PROTOCOL)
+
+            else:  # Load data.
+                if return_numpy:
+                    spikes_numpy = np.load(session_paths['cluster_spikes'], allow_pickle=True)
+                    with session_paths['cluster_spikes_ids'].open() as f:
+                        tt_cl = json.load(f)
+                    with session_paths['cluster_wf_info'].open(mode='rb') as f:
+                        wfi2 = pickle.load(f)
+                else:
+                    with session_paths['Cell_Spikes'].open() as f:
+                        cell_spikes = json.load(f)
+                    with session_paths['Mua_Spikes'].open() as f:
+                        mua_spikes = json.load(f)
+                    spikes = {'Cell': cell_spikes, 'Mua': mua_spikes}
+
             if return_numpy:
-                spikes_numpy = np.load(session_paths['cluster_spikes'], allow_pickle=True)
-                with session_paths['cluster_spikes_ids'].open() as f:
-                    tt_cl = json.load(f)
-                with session_paths['cluster_wf_info'].open(mode='rb') as f:
-                    wfi2 = pickle.load(f)
+                return spikes_numpy, tt_cl, wfi2
             else:
-                with session_paths['Cell_Spikes'].open() as f:
-                    cell_spikes = json.load(f)
-                with session_paths['Mua_Spikes'].open() as f:
-                    mua_spikes = json.load(f)
-                spikes = {'Cell': cell_spikes, 'Mua': mua_spikes}
-
-        if return_numpy:
-            return spikes_numpy, tt_cl, wfi2
+                return spikes, wfi
         else:
-            return spikes, wfi
+            print('No units in the session.')
+            return None
 
     def get_binned_spikes(self, spike_trains=None, overwrite=False):
         """
@@ -441,3 +556,165 @@ class SubjectSessionInfo(SubjectInfo):
             fr = np.load(session_paths['cluster_fr'])
 
         return fr
+
+    def get_spike_maps(self, overwrite=False):
+        if self.task == 'OF':
+            if not self.paths['cluster_spike_maps'].exists() or overwrite:
+                print('Open Field Spike Maps not Found or Overwrite= True, creating them.')
+                of_track_dat = of_funcs.get_session_spike_maps(self)
+                with self.paths['cluster_spike_maps'].open(mode='wb') as f:
+                    pickle.dump(of_track_dat, f, protocol=pickle.HIGHEST_PROTOCOL)
+            else:
+                with self.paths['cluster_spike_maps'].open(mode='rb') as f:
+                    of_track_dat = pickle.load(f)
+            return of_track_dat
+        else:
+            return None
+
+    def get_fr_maps(self, overwrite=False, traditional=False):
+        """
+        obtains 2 dimensional representation of the firing rate across the spatial positions.
+        :param bool traditional: if true: computes firing rate map through spike counts at each spatial position
+                                 if False [default]: uses continous firing rate to estimate maps, then gets normalized
+                                 by occupation.
+        :param bool overwrite:
+        :return:
+        """
+        if self.task == 'OF':
+            if not self.paths['cluster_fr_maps'].exists() or overwrite:
+                print('Open Field Firing Rate Maps not Found or Overwrite= True, creating them.')
+                if traditional:
+                    fr_maps = of_funcs.get_session_fr_maps(self)
+                else:
+                    fr_maps = of_funcs.get_session_fr_maps_cont(self)
+
+                np.save(self.paths['cluster_fr_maps'], fr_maps)
+            else:
+                fr_maps = np.load(self.paths['cluster_fr_maps'])
+            return fr_maps
+        else:
+            return None
+
+    def get_scores(self, overwrite=False):
+        raise NotImplementedError
+
+    def get_lnp_scores(self, overwrite=False):
+        raise NotImplementedError
+
+
+def get_task_params(session_info):
+    """
+    This utility function returns a dictionary of parameters specific to the task. Given that some animals have
+    different maze shapes due to camera movement, this will be different for different animals or even sessions.
+    :param SubjectSessionInfo session_info:
+    :return: dictionary of parameters
+    """
+    task = session_info.task
+    subject = session_info.subject
+    time_step = session_info.params['time_step']
+
+    task_params = {}
+    if task == 'OF':
+        if subject in ['Li', 'Ne', 'Cl']:
+            task_params = {
+                'time_step': time_step,     # time step
+
+                # pixel params
+                'x_pix_lims': [100, 650],  # camera field of view x limits [pixels]
+                'y_pix_lims': [100, 500],  # camera field of view y limits [pixels]
+                'x_pix_bias': -380,  # factor for centering the x pixel position
+                'y_pix_bias': -280,  # factor for centering the y pixel position
+                'vt_rate': 1.0 / 60.0,  # video acquisition frame rate
+                'xy_pix_rot_rad': np.pi / 2 + 0.08,  # rotation of original xy pix camera to experimenter xy
+
+                # conversion params
+                'x_pix_mm': 1300.0 / 344.0,  # pixels to mm for the x axis [pix/mm]
+                'y_pix_mm': 1450.0 / 444.0,  # pixels to mm for the y axis [pix/mm]
+                'x_mm_bias': 0,  # factor for centering the x mm position
+                'y_mm_bias': 650,  # factor for centering the x mm position
+                'x_mm_lims': [-630, 630],  # limits on the x axis of the maze [mm]
+                'y_mm_lims': [-60, 1350],  # limits on the y axis of the maze [mm]
+                'x_cm_lims': [-63, 63],  # limits on the x axis of the maze [cm]
+                'y_cm_lims': [-6, 135],  # limits on the y axis of the maze [cm]
+
+                # binning parameters
+                'mm_bin': 30,  # millimeters per bin [mm]
+                'cm_bin': 3,  # cm per bin [cm]
+                'max_speed_thr': 80,  # max speed threshold for allowing valid movement [cm/s]
+                'min_speed_thr': 2,  # min speed threshold for allowing valid movement [cm/s]
+                'rad_bin': np.deg2rad(10),  # angle radians per bin [rad]
+                'occ_num_thr': 3,           # number of occupation times threshold [bins
+                'occ_time_thr': time_step * 3,  # time occupation threshold [sec]
+                'speed_bin': 2,                # speed bin size [cm/s]
+
+                # filtering parameters
+                'spatial_sigma': 2,  # spatial smoothing sigma factor [au]
+                'spatial_window_size': 5,  # number of spatial position bins to smooth [bins]
+                'temporal_window_size': 7,  # smoothing temporal window for filtering [bins]
+                'temporal_angle_window_size': 7,  # smoothing temporal window for angles [bins]
+                'temporal_window_type': 'hann',  # window type for temporal window smoothing
+
+                # non-parametric tests parameters:
+                'alpha': 0.02,  # double sided alpha level for significance testing
+                'n_perm': 100,  # number of permutations
+
+            }
+
+            task_params['filter_coef'] = signal.get_window(task_params['temporal_window_type'],
+                                                           task_params['temporal_window_size'],
+                                                           fftbins=False)
+            task_params['filter_coef'] /= task_params['filter_coef'].sum()
+
+            task_params['filter_coef_angle'] = signal.get_window(task_params['temporal_window_type'],
+                                                                 task_params['temporal_angle_window_size'],
+                                                                 fftbins=False)
+            task_params['filter_coef_angle'] /= task_params['filter_coef_angle'].sum()
+
+        else:
+            pass
+    elif task[:2] == 'T3':
+        pass
+
+    return task_params
+
+
+# def save_dict_to_hdf5(dic, filename):
+#     """
+#     ....
+#     """
+#     with h5py.File(filename, 'w') as h5file:
+#         recursively_save_dict_contents_to_group(h5file, '/', dic)
+#
+#
+# def recursively_save_dict_contents_to_group(h5file, path, dic):
+#     """
+#     ....
+#     """
+#     for key, item in dic.items():
+#         if isinstance(item, (np.ndarray, np.int64, np.float64, str, bytes)):
+#             h5file[path + key] = item
+#         elif isinstance(item, dict):
+#             recursively_save_dict_contents_to_group(h5file, path + key + '/', item)
+#         else:
+#             raise ValueError('Cannot save %s type' % type(item))
+#
+#
+# def load_dict_from_hdf5(filename):
+#     """
+#     ....
+#     """
+#     with h5py.File(filename, 'r') as h5file:
+#         return recursively_load_dict_contents_from_group(h5file, '/')
+#
+#
+# def recursively_load_dict_contents_from_group(h5file, path):
+#     """
+#     ....
+#     """
+#     ans = {}
+#     for key, item in h5file[path].items():
+#         if isinstance(item, h5py._hl.dataset.Dataset):
+#             ans[key] = item.value
+#         elif isinstance(item, h5py._hl.group.Group):
+#             ans[key] = recursively_load_dict_contents_from_group(h5file, path + key + '/')
+#     return ans

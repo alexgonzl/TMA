@@ -1,13 +1,14 @@
 import numpy as np
 from scipy import stats, spatial, signal
 
-from pathlib import Path
-import json
-import pickle as pkl
-from .subject_info import SubjectSessionInfo
-
-
-# last edit: 8.7.20 -ag
+"""
+Functions for handling clusters and spike trains.
+    ->  get_session_* functions require an instance of SubjectSessionInfo to work
+    ->  other functions are auxiliary to the get_session_*, but can be used independently 
+        the appropriate input.
+        
+- last edit: 8.6.20 -ag
+"""
 
 
 def get_session_spikes(session_info):
