@@ -9,6 +9,7 @@ import traceback
 import Analyses.spike_functions as spike_funcs
 import Analyses.open_field_functions as of_funcs
 
+
 import scipy.signal as signal
 
 # TO DO!!! GET cluster stats for merged clusters #############
@@ -659,9 +660,11 @@ def get_task_params(session_info):
                 'n_perm': 200,  # number of permutations
 
                 # other analysis parameters
-                'boder_dist_cm': 12,  # distance from border to consider it a border cell [cm]
-                'border_dist_bin': 4,  # distance from border to consider it a border cell [bins]
-
+                'border_width_cm': 12,  # distance from border to consider it a border cell [cm]
+                'border_width_bin': 4,  # distance from border to consider it a border cell [bins]
+                'border_min_field_size_cm2': 180,  # minimumm area for fields in cm2
+                'border_min_field_size_bins': 20,  # minimumm area for fields in # of bins
+                'border_fr_thr': 0.25,  # firing rate threshold
             }
 
             task_params['filter_coef'] = signal.get_window(task_params['temporal_window_type'],

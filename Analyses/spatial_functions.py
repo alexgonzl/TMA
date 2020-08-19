@@ -443,3 +443,177 @@ def get_angle_scores(theta, fr, rad_bin_spacing, speed=None, min_speed=None, max
     scores['nrmse'] = scores['rmse']/fr.mean(axis=1)
 
     return scores, model_coef, model_coef_s, ang_bin_centers
+
+
+def get_distance_mat(h, w):
+    """
+    creates a pyramid like matrix of distances to border walls.
+    :param h: height
+    :param w: width
+    :return: normalized matrix of distances, center =1, borders=0
+    """
+    a = np.arange(h)
+    b = np.arange(w)
+
+    r_h = np.minimum(a, a[::-1])
+    r_w = np.minimum(b, b[::-1])
+    pyr = np.minimum.outer(r_h, r_w)
+    return pyr / np.max(pyr)
+
+
+def get_wall_masks(map_height, map_width, wall_width):
+    """
+    returns a mask for each wall
+    :param map_height:
+    :param map_width:
+    :param wall_width: size of the border wall
+    :return: mask, ndarray size 4 x map_height x map_width, 4 maps each containing a mask for each wall
+    """
+
+    mask = np.ones((4, map_height, map_width), dtype=int) * -1
+
+    mask[0][:, map_width:(map_width - wall_width):-1] = 0  # right / East
+    mask[1][0:wall_width, :] = 1  # top / North
+    mask[2][:, 0:wall_width] = 2  # left / West
+    mask[3][map_height:(map_height - wall_width):-1, :] = 3  # bottom / South
+
+    return mask
+
+
+def get_map_fields(fr_maps, fr_thr=0.3, min_field_size=20, filt_structure=None):
+    """
+    gets labeled firing rate maps. works on either single maps or an array of maps.
+    returns an array of the same dimensions as fr_maps with
+    :param fr_maps: np.ndarray, (dimensions can be 2 or 3), if 3 dimensions, first dimensions must
+                    correspond to the # of units, other 2 dims are height and width of the map
+    :param fr_thr: float, proportion of the max firing rate to threshold the data
+    :param min_field_size: int, # of bins that correspond to the total area of the field. fields found
+                    under this threshold are discarded
+    :param filt_structure: 3x3 array of connectivity. see ndimage for details
+    :return field_labels (same dimensions as input), -1 values are background, each field has an int label
+
+    -> code based of the description on Solstad et al, Science 2008
+    """
+    if filt_structure is None:
+        filt_structure = np.ones((3, 3))
+
+    # add a singleton dimension in case of only one map to find fields.
+    if fr_maps.ndim == 2:
+        fr_maps = fr_maps[np.newaxis, :, :]
+    elif fr_maps.ndim == 1:
+        print('fr_maps is a one dimensional variable.')
+        return None
+
+    n_units, map_height, map_width = fr_maps.shape
+
+    # create border mask to avoid elimating samples during the image processing step
+    border_mask = np.ones((map_height, map_width), dtype=bool)
+    border_mask[[0, -1], :] = False
+    border_mask[:, [0, -1]] = False
+
+    # determine thresholds
+    max_fr = fr_maps.max(axis=1).max(axis=1)
+
+    # get fields
+    field_maps = np.zeros_like(fr_maps)
+    n_fields = np.zeros(n_units, dtype=int)
+    for unit in range(n_units):
+        # threshold the maps
+        thr_map = fr_maps[unit] >= max_fr[unit] * fr_thr
+
+        # eliminates small/noisy fields, fills in gaps
+        thr_map = ndimage.binary_closing(thr_map, structure=filt_structure, mask=border_mask)
+        thr_map = ndimage.binary_dilation(thr_map, structure=filt_structure)
+
+        # get fields ids
+        field_map, n_fields_unit = ndimage.label(thr_map, structure=filt_structure)
+
+        # get the area of the fields in bins
+        field_sizes = np.zeros(n_fields_unit)
+        for f in range(n_fields_unit):
+            field_sizes[f] = np.sum(field_map == f)
+
+        # check for small fields and re-do field identification if necessary
+        if np.any(field_sizes < min_field_size):
+            small_fields = np.where(field_sizes < min_field_size)[0]
+            for f in small_fields:
+                thr_map[field_map == f] = 0
+            field_map, n_fields_unit = ndimage.label(thr_map, structure=filt_structure)
+
+        # store
+        field_maps[unit] = field_map
+        n_fields[unit] = n_fields_unit
+
+    field_maps -= 1  # make background -1, labels start at zero
+
+    # if only one unit, squeeze to match input dimensions
+    if n_units == 1:
+        field_maps = field_maps.squeeze()
+
+    return field_maps, n_fields
+
+
+def get_border_scores(fr_maps, fr_thr, min_field_size_bin, wall_width_bin):
+    """
+    Border score method from Solstad et al Science 2008. Returns the border score along with the max coverage by a field
+    and the weighted firing rate. This works for a single fr_map or multiple.
+    :param fr_maps: np.ndarray, (dimensions can be 2 or 3), if 3 dimensions, first dimensions must
+                    correspond to the # of units, other 2 dims are height and width of the map
+    :param fr_thr: float, proportion of the max firing rate to threshold the data
+    :param min_field_size_bin: int, # of bins that correspond to the total area of the field. fields found
+                    under this threshold are discarded
+    :param wall_width_bin: wall width by which the coverage is determined.
+    :return: border score, max coverage, distanced weighted fr for each unit in fr_maps.
+
+    -> code based of the description on Solstad et al, Science 2008
+    """
+    n_walls = 4
+    # add a singleton dimension in case of only one map to find fields.
+    if fr_maps.ndim == 2:
+        fr_maps = fr_maps[np.newaxis, ]
+    n_units, map_height, map_width = fr_maps.shape
+
+    # get fields
+    field_maps, n_fields = get_map_fields(fr_maps, fr_thr=fr_thr, min_field_size=min_field_size_bin)
+
+    if field_maps.ndim == 2:
+        field_maps = field_maps[np.newaxis, ]
+
+    # get border distance matrix
+    distance_mat = get_distance_mat(map_height, map_width)  # linear distance to closest wall [bins]
+
+    # get wall labels
+    wall_labels_mask = get_wall_masks(map_height, map_width, wall_width_bin)
+
+    # pre-allocate scores
+    border_score = np.zeros(n_units) * np.nan
+    max_coverage = np.zeros(n_units) * np.nan
+    weighted_fr = np.zeros(n_units) * np.nan
+
+    # loop and get scores
+    for unit in range(n_units):
+        fr_map = fr_maps[unit]
+        field_map = field_maps[unit]
+        n_fields_unit = n_fields[unit]
+        if n_fields_unit > 0:
+            # get coverage
+            wall_coverage = np.zeros((n_fields_unit, n_walls))
+            for field in range(n_fields_unit):
+                for wall in range(n_walls):
+                    wall_coverage[field, wall] = np.sum(
+                        (field_map == field) * (wall_labels_mask[wall] == wall)) / np.sum(
+                        wall_labels_mask[wall] == wall)
+            c_m = np.max(wall_coverage)
+
+            # get normalized distanced weighted firing rate
+            field_fr_map = fr_map * (field_map >= 0)
+            d_m = np.sum(field_fr_map * distance_mat) / np.sum(field_fr_map)
+
+            # get border score
+            b = (c_m - d_m) / (c_m + d_m)
+
+            border_score[unit] = b
+            max_coverage[unit] = c_m
+            weighted_fr[unit] = d_m
+
+    return border_score, max_coverage, weighted_fr

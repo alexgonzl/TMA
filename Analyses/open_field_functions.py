@@ -48,14 +48,18 @@ def get_session_track_data(session_info):
     # occupation_counts in the spatial matrix
     pos_map_counts, vertical_edges, horizontal_edges = \
         spatial_funcs.get_position_map_counts(x_rs, y_rs, p.x_cm_lims, p.y_cm_lims, spacing=p.cm_bin)
+    pos_counts_sm = spatial_funcs.get_smoothed_map(pos_map_counts, n_bins=p.spatial_window_size,
+                                                   sigma=p.spatial_sigma)
+    pos_valid_mask = pos_counts_sm >= p.occ_num_thr
+
     pos_map_secs = pos_map_counts * time_step
     pos_map_secs = spatial_funcs.get_smoothed_map(pos_map_secs, p.spatial_window_size, p.spatial_sigma)
 
     # create output dictionary
     of_track_dat = {
                     't': t_rs, 'x': x_rs, 'y': y_rs, 'sp': speed_rs, 'ha': ha_rs, 'hd': hd_rs,
-                    'pos_map_counts': pos_map_counts, 'pos_map_secs': pos_map_secs,
-                    'vert_edges': vertical_edges, 'horiz_edges': horizontal_edges,
+                    'pos_map_counts': pos_map_counts, 'pos_map_secs': pos_map_secs, 'pos_valid_mask': pos_valid_mask,
+                    'pos_map_counts_sm': pos_counts_sm, 'vert_edges': vertical_edges, 'horiz_edges': horizontal_edges,
                     'n_vert_bins': len(vertical_edges)-1, 'n_horiz_bins': len(horizontal_edges)-1,
                     }
 
@@ -181,11 +185,11 @@ def get_session_fr_maps(session_info):
     spike_maps = session_info.get_spike_maps()
     of_dat = SimpleNamespace(**session_info.get_track_data())
     track_params = SimpleNamespace(**session_info.task_params)
+    valid_mask = of_dat.pos_valid_mask
 
-    # get occupation mask
-    mask = of_dat.pos_map_secs >= track_params.occ_time_thr
+    # mask data
     pos_map_secs2 = np.full_like(of_dat.pos_map_secs, np.nan)
-    pos_map_secs2[mask] = of_dat.pos_map_secs[mask]
+    pos_map_secs2[valid_mask] = of_dat.pos_map_secs[valid_mask]
 
     # pre-allocate
     n_units = session_info.n_units
@@ -195,9 +199,9 @@ def get_session_fr_maps(session_info):
 
     for unit in range(n_units):
         temp_spk_map = np.zeros_like(spike_maps[unit])
-        temp_spk_map[mask] = spike_maps[unit][mask]
+        temp_spk_map[valid_mask] = spike_maps[unit][valid_mask]
         temp_fr_map = temp_spk_map/pos_map_secs2
-        temp_fr_map[~mask] = 0.0
+        temp_fr_map[~valid_mask] = 0.0
 
         fr_maps[unit] = spatial_funcs.get_smoothed_map(temp_fr_map, n_bins=track_params.spatial_window_size,
                                                        sigma=track_params.spatial_sigma)
@@ -219,15 +223,13 @@ def get_session_fr_maps_cont(session_info):
     of_dat = SimpleNamespace(**session_info.get_track_data())
     x = of_dat.x
     y = of_dat.y
+    valid_mask = of_dat.pos_valid_mask
+    pos_counts_sm = of_dat.pos_map_counts_sm
 
     track_params = SimpleNamespace(**session_info.task_params)
     x_cm_lims = track_params.x_cm_lims
     y_cm_lims = track_params.y_cm_lims
     cm_bin = track_params.cm_bin
-
-    pos_counts_sm = spatial_funcs.get_smoothed_map(of_dat.pos_map_counts, n_bins=track_params.spatial_window_size,
-                                                   sigma=track_params.spatial_sigma)
-    mask = pos_counts_sm >= track_params.occ_num_thr
 
     # pre-allocate
     n_units = session_info.n_units
@@ -238,7 +240,7 @@ def get_session_fr_maps_cont(session_info):
     for unit in range(n_units):
 
         temp_fr_map, _, _ = spatial_funcs.get_weighted_position_map(x, y, fr[unit], x_cm_lims, y_cm_lims, cm_bin)
-        temp_fr_map[mask] /= pos_counts_sm[mask]
+        temp_fr_map[valid_mask] /= pos_counts_sm[valid_mask]
 
         fr_maps[unit] = spatial_funcs.get_smoothed_map(temp_fr_map, n_bins=track_params.spatial_window_size,
                                                        sigma=track_params.spatial_sigma-1)
