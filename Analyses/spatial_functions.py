@@ -22,41 +22,34 @@ def get_smoothed_map(bin_map, n_bins=8, sigma=2):
     return ndimage.filters.gaussian_filter(sm_map, sigma, mode='constant', truncate=trunc)
 
 
-def get_position_map_counts(x, y, x_lims, y_lims, spacing):
+def get_position_map_counts(x, y, x_edges, y_edges):
     """
     :param np.array x: x position of the animal
     :param np.array y: y position of the animal
-    :param x_lims: 2 element list or array of x limits
-    :param y_lims: 2 element list or array of y limits
-    :param spacing: how much to bin the space
+    :param x_edges: bin edges in the x position
+    :param y_edges: bin edges in the y position
     :return: 2d array of position counts, x_edges, and y_edges
     """
-    x_edges = np.arange(x_lims[0], x_lims[1] + spacing, spacing)
-    y_edges = np.arange(y_lims[0], y_lims[1] + spacing, spacing)
 
     # hist2d converts to a matrix, which reverses x,y
     # inverse order here to preserve visualization.
     pos_counts_2d, _, _ = np.histogram2d(y, x, bins=[y_edges, x_edges])
-    return pos_counts_2d, y_edges, x_edges
+    return pos_counts_2d
 
 
-def get_weighted_position_map(x, y, w, x_lims, y_lims, spacing):
+def get_weighted_position_map(x, y, w, x_edges, y_edges):
     """
     :param np.array x: x position of the animal
     :param np.array y: y position of the animal
     :param np.array w: weight of each position sample (eg. spike counts or firing rate)
-    :param x_lims: 2 element list or array of x limits
-    :param y_lims: 2 element list or array of y limits
-    :param spacing: how much to bin the space
+    :param x_edges: bin edges in the x position
+    :param y_edges: bin edges in the y position
     :return: 2d array of position counts, x_edges, and y_edges
     """
-    x_edges = np.arange(x_lims[0], x_lims[1] + spacing, spacing)
-    y_edges = np.arange(y_lims[0], y_lims[1] + spacing, spacing)
-
     # hist2d converts to a matrix, which reverses x,y
     # inverse order here to preserve visualization.
     pos_counts_2d, _, _ = np.histogram2d(y, x, bins=[y_edges, x_edges], weights=w)
-    return pos_counts_2d, y_edges, x_edges
+    return pos_counts_2d
 
 
 def get_velocity(x, y, time_step):
@@ -251,13 +244,11 @@ def get_speed_score_traditional(speed, fr, min_speed, max_speed, sig_alpha=0.05,
     return scores, model_coef, model_coef_s
 
 
-def get_speed_score_discrete(speed, fr, speed_bin_spacing, min_speed, max_speed, sig_alpha=0.02, n_perm=100):
+def get_speed_score_discrete(speed, fr, speed_bin_edges, sig_alpha=0.02, n_perm=100):
     """
     :param speed: array floats vector of speed n_samps
     :param fr: array floats firing rate n_units x n_samps, also works for one unit
-    :param speed_bin_spacing: float bin spacing cm/s
-    :param max_speed: float max speed to threshold data
-    :param min_speed: float min speed to threshold data
+    :param speed_bin_edges: edges to bin the speed
     :param sig_alpha: float, significant level to evaluate the permutation test
     :param n_perm: int, number of permutations to perform.
     :returns: scores: pd.Dataframe with columns ['score', 'sig', 'aR2', 'rmse', 'nrmse'], rows are n_units
@@ -274,15 +265,17 @@ def get_speed_score_discrete(speed, fr, speed_bin_spacing, min_speed, max_speed,
         n_units, _ = fr.shape
     assert n_samps == fr.shape[1], 'Mismatch lengths between speed and fr.'
 
+    min_speed = speed_bin_edges[0]
+    max_speed = speed_bin_edges[-1]
+
     # get valid samples and assign new variables for fitting
     speed_valid_idx = np.logical_and(speed >= min_speed, speed <= max_speed)
     speed_valid = speed[speed_valid_idx]
     fr_valid = fr[:, speed_valid_idx]
 
     # binning of speed
-    design_matrix, sp_bin_idx, sp_bin_centers, sp_bin_edges = \
-        rs.get_discrete_data_mat(speed_valid, min_speed, max_speed, speed_bin_spacing)
-    n_sp_bins = len(sp_bin_centers)
+    design_matrix, sp_bin_idx = rs.get_discrete_data_mat(speed_valid, speed_bin_edges)
+    n_sp_bins = len(speed_bin_edges)-1
 
     # Model additional details / observations.
     # There are several ways of doing this that are equivalent:
@@ -325,8 +318,8 @@ def get_speed_score_discrete(speed, fr, speed_bin_spacing, min_speed, max_speed,
 
     # get scores
     for unit in range(n_units):
-        score[unit] = rs.spearman(model_coef[unit], sp_bin_centers)
-        score_sig[unit], _ = rs.permutation_test(function=rs.spearman, x=sp_bin_centers, y=model_coef[unit],
+        score[unit] = rs.spearman(model_coef[unit], speed_bin_edges[:-1])
+        score_sig[unit], _ = rs.permutation_test(function=rs.spearman, x=speed_bin_edges[:-1], y=model_coef[unit],
                                                  n_perm=n_perm, alpha=sig_alpha)
 
     # arrange into a data frame
@@ -337,7 +330,7 @@ def get_speed_score_discrete(speed, fr, speed_bin_spacing, min_speed, max_speed,
     scores['rmse'] = rmse
     scores['nrmse'] = nrmse
 
-    return scores, model_coef, model_coef_s, sp_bin_centers
+    return scores, model_coef, model_coef_s
 
 
 # angle scores
@@ -382,11 +375,11 @@ def get_angle_stats(theta, step, weights=None):
     return out_dir, w_counts, bin_centers, bin_edges
 
 
-def get_angle_score(theta, fr, rad_bin_spacing, speed=None, min_speed=None, max_speed=None, sig_alpha=0.05):
+def get_angle_score(theta, fr, ang_bin_edges, speed=None, min_speed=None, max_speed=None, sig_alpha=0.05):
     """
     :param theta: array n_samps of angles in radians
     :param fr: array n_units x n_samps of firing rates
-    :param rad_bin_spacing: bin spacing in radians
+    :param ang_bin_edges: bin edges in radians
     :param speed: array of n_samps of speed to threshold the computations
     :param min_speed: minimum speed threshold
     :param max_speed: max speed threshold
@@ -412,8 +405,9 @@ def get_angle_score(theta, fr, rad_bin_spacing, speed=None, min_speed=None, max_
         fr = fr[:, speed_valid_idx]
 
     # binning of the angle / get discrete design matrix
-    design_matrix, th_bin_idx, ang_bin_centers, ang_bin_edges = \
-        rs.get_discrete_data_mat(theta, 0, 2 * np.pi, rad_bin_spacing)
+    ang_bin_spacing = ang_bin_edges[1]-ang_bin_edges[0]
+    ang_bin_centers = ang_bin_edges[:-1]+ang_bin_spacing/2
+    design_matrix, th_bin_idx = rs.get_discrete_data_mat(theta, ang_bin_edges)
     n_ang_bins = len(ang_bin_centers)
 
     # get model coefficients (mean fr per bin) and se of the mean
@@ -434,9 +428,9 @@ def get_angle_score(theta, fr, rad_bin_spacing, speed=None, min_speed=None, max_
     # loop to get circular stats scores
     for unit in range(n_units):
         # get vector length and mean angle
-        vec_len, mean_ang, _, _, = rs.resultant_vector_length(ang_bin_centers, w=model_coef[unit], d=rad_bin_spacing)
+        vec_len, mean_ang, _, _, = rs.resultant_vector_length(ang_bin_centers, w=model_coef[unit], d=ang_bin_spacing)
         # rayleigh statistical test
-        p_val, _ = rs.rayleigh(ang_bin_centers, w=model_coef[unit], d=rad_bin_spacing)
+        p_val, _ = rs.rayleigh(ang_bin_centers, w=model_coef[unit], d=ang_bin_spacing)
 
         # store results
         scores.at[unit, 'vec_len'] = vec_len
@@ -447,12 +441,12 @@ def get_angle_score(theta, fr, rad_bin_spacing, speed=None, min_speed=None, max_
     scores['rmse'] = rs.get_rmse(fr, fr_hat)
     scores['nrmse'] = scores['rmse'] / fr.mean(axis=1)
 
-    return scores, model_coef, model_coef_s, ang_bin_centers
+    return scores, model_coef, model_coef_s
 
 
 # border scores
 
-def get_border_score(x, y, fr, fr_maps, x_cm_lims, y_cm_lims, cm_bin,
+def get_border_score(x, y, fr, fr_maps, x_bin_edges, y_bin_edges,
                      border_fr_thr=0.3, min_field_size_bins=20, border_width_bins=3,
                      sig_alpha=0.02, n_perm=100, non_linear=True):
     """
@@ -461,9 +455,8 @@ def get_border_score(x, y, fr, fr_maps, x_cm_lims, y_cm_lims, cm_bin,
     :param y: array n_samps of y positions of the animal
     :param fr: ndarray n_units x n_samps of firing rate,
     :param fr_maps: ndarray n_units x height x width of smoothed firing rate position maps
-    :param x_cm_lims: x limits in cm
-    :param y_cm_lims: y limits in cm
-    :param cm_bin: cm to bin conversion
+    :param x_bin_edges: x bin edges
+    :param y_bin_edges: y bin edges
     :param sig_alpha: significance alpha for permutation test
     :param n_perm: number of permutations
     :param border_fr_thr: firing rate threshold for border score
@@ -504,7 +497,7 @@ def get_border_score(x, y, fr, fr_maps, x_cm_lims, y_cm_lims, cm_bin,
     fr_hat = np.zeros_like(fr)
 
     # get proximity vectors
-    X = get_border_proximity_samps(x, y, x_cm_lims, y_cm_lims, cm_bin, non_linear=non_linear)
+    X = get_border_proximity_samps(x, y, x_bin_edges, y_bin_edges, non_linear=non_linear)
     X = sm.add_constant(X)
 
     # obtain model for each unit and extract coefficients.
@@ -704,13 +697,12 @@ def get_map_fields(fr_maps, fr_thr=0.3, min_field_size=20, filt_structure=None):
     return field_maps, n_fields
 
 
-def get_border_proximity_samps(x, y, x_cm_lims, y_cm_lims, cm_bin, non_linear=True, **non_linear_params):
+def get_border_proximity_samps(x, y, x_bin_edges, y_bin_edges, non_linear=True, **non_linear_params):
     """
     Returns proximity vectos given x y positions. 3 vectors, east, north, and center
     :param y: array of y positions in cm
-    :param x_cm_lims: x limits in cm
-    :param y_cm_lims: y limits in cm
-    :param cm_bin: spatial step size; conversion from cm to bin
+    :param x_bin_edges: x bin edges
+    :param y_bin_edges: y bin edges
     :param non_linear: if True, computes the proximity matrices with non_linear functions, otherwise uses linear
     :param non_linear_params: dictionary of parameters for smooth proximity matrix calculation.
         include border_width_bin, sigmoid_slope_thr, center_gaussian_spread,
@@ -718,10 +710,10 @@ def get_border_proximity_samps(x, y, x_cm_lims, y_cm_lims, cm_bin, non_linear=Tr
 
     :return: 3 arrays of proximity (1-distance) for each xy position to the east wall, north wall and center.
     """
-    x_bin_idx, y_bin_idx, x_bin_centers, y_bin_centers = get_xy_samps_pos_bins(x, y, x_cm_lims, y_cm_lims, cm_bin)
+    x_bin_idx, y_bin_idx = get_xy_samps_pos_bins(x, y, x_bin_edges, y_bin_edges)
 
-    width = len(x_bin_centers)
-    height = len(y_bin_centers)
+    width = len(x_bin_edges)-1
+    height = len(y_bin_edges)-1
 
     if non_linear:
         prox_mats = get_non_linear_border_proximity_mats(width=width, height=height, **non_linear_params)
@@ -731,32 +723,24 @@ def get_border_proximity_samps(x, y, x_cm_lims, y_cm_lims, cm_bin, non_linear=Tr
     return prox_mats[:, y_bin_idx, x_bin_idx].T
 
 
-def get_xy_samps_pos_bins(x, y, x_cm_lims, y_cm_lims, cm_bin):
+def get_xy_samps_pos_bins(x, y, x_bin_edges, y_bin_edges,):
     """
     Converts x y position samples to the corresponding bin ids based on the limits and step.
     This essentially discretizes the x,y positions into bin ids.
     :param x: array of x positions in cm
     :param y: array of y positions in cm
-    :param x_cm_lims: x limits in cm
-    :param y_cm_lims: y limits in cm
-    :param cm_bin: spatial step size
+    :param x_bin_edges: x bin edges
+    :param y_bin_edges: y bin edges
     :returns:
         x_bin_ids: array of integers idx of the x bins
         y_bin_ids: array of integers idx of the y bins
         x_bin_centers: array of x bin centers
         y_bin_centers: array of y bin centers
     """
-    _, x_bin_idx, x_bin_centers, _ = rs.get_discrete_data_mat(x,
-                                                              min_val=x_cm_lims[0],
-                                                              max_val=x_cm_lims[1],
-                                                              step=cm_bin)
+    _, x_bin_idx = rs.get_discrete_data_mat(x, x_bin_edges)
+    _, y_bin_idx = rs.get_discrete_data_mat(y, y_bin_edges)
 
-    _, y_bin_idx, y_bin_centers, _ = rs.get_discrete_data_mat(y,
-                                                              min_val=y_cm_lims[0],
-                                                              max_val=y_cm_lims[1],
-                                                              step=cm_bin)
-
-    return x_bin_idx, y_bin_idx, x_bin_centers, y_bin_centers
+    return x_bin_idx, y_bin_idx
 
 
 def get_linear_border_proximity_mats(width, height):

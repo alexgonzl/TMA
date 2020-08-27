@@ -324,7 +324,7 @@ class SubjectSessionInfo(SubjectInfo):
         print('Task/track and analysis parameters. ')
         print()
         for param, val in self.task_params.items():
-            if param[0] != '_':  #not a vector
+            if param[-1] != '_':  # not a vector
                 print(f'  -> {param}: {val}')
 
     def _check_analyses(self):
@@ -353,7 +353,9 @@ class SubjectSessionInfo(SubjectInfo):
         :return: None
         """
         for a, m in self._analyses.items():
-            if not m[2] or overwrite:
+            if a == 'time':
+                continue
+            if not m[1] or overwrite:
                 try:
                     # calls methods in _analyses
                     _ = m[0](overwrite=True)
@@ -670,39 +672,39 @@ def get_task_params(session_info):
 
             # derived parameters
             # -- filter coefficients --
-            task_params['_filter_coef'] = signal.get_window(task_params['temporal_window_type'],
+            task_params['filter_coef_'] = signal.get_window(task_params['temporal_window_type'],
                                                             task_params['temporal_window_size'],
                                                             fftbins=False)
-            task_params['_filter_coef'] /= task_params['_filter_coef'].sum()
+            task_params['filter_coef_'] /= task_params['filter_coef_'].sum()
 
-            task_params['_filter_coef_angle'] = signal.get_window(task_params['temporal_window_type'],
+            task_params['filter_coef_angle_'] = signal.get_window(task_params['temporal_window_type'],
                                                                   task_params['temporal_angle_window_size'],
                                                                   fftbins=False)
-            task_params['_filter_coef_angle'] /= task_params['_filter_coef_angle'].sum()
+            task_params['filter_coef_angle_'] /= task_params['filter_coef_angle_'].sum()
 
             # -- bins --
-            task_params['_ang_bin_edges'] = np.arange(0, 2*np.pi+task_params['rad_bin'], task_params['rad_bin'])
-            task_params['_ang_bin_centers'] = task_params['_ang_bins_edges'][:-1] + task_params['rad_bin']/2
-            task_params['n_ang_bins'] = len(task_params['_ang_bin_centers'])
+            task_params['ang_bin_edges_'] = np.arange(0, 2*np.pi+task_params['rad_bin'], task_params['rad_bin'])
+            task_params['ang_bin_centers_'] = task_params['ang_bin_edges_'][:-1] + task_params['rad_bin']/2
+            task_params['n_ang_bins'] = len(task_params['ang_bin_centers_'])
 
-            task_params['_sp_bin_edges'] = np.arange(task_params['min_speed_thr'],
+            task_params['sp_bin_edges_'] = np.arange(task_params['min_speed_thr'],
                                                      task_params['max_speed_thr'] + task_params['speed_bin'],
                                                      task_params['speed_bin'])
-            task_params['_sp_bin_centers'] = task_params['_sp_bin_edges'][:-1]+task_params['speed_bin']/2
-            task_params['n_sp_bins'] = len(task_params['_sp_bin_centers'])
+            task_params['sp_bin_centers_'] = task_params['sp_bin_edges_'][:-1]+task_params['speed_bin']/2
+            task_params['n_sp_bins'] = len(task_params['sp_bin_centers_'])
 
-            task_params['_x_bin_edges'] = np.arange(task_params['x_cm_lims'][0],
+            task_params['x_bin_edges_'] = np.arange(task_params['x_cm_lims'][0],
                                                     task_params['x_cm_lims'][1]+task_params['cm_bin'],
                                                     task_params['cm_bin'])
-            task_params['_x_bin_centers'] = task_params['_x_bin_edges'][:-1] + task_params['cm_bin']/2
-            task_params['n_x_bins'] = len(task_params['_x_bin_centers'])
+            task_params['x_bin_centers_'] = task_params['x_bin_edges_'][:-1] + task_params['cm_bin']/2
+            task_params['n_x_bins'] = len(task_params['x_bin_centers_'])
             task_params['n_width_bins'] = task_params['n_x_bins']
 
-            task_params['_y_bin_edges'] = np.arange(task_params['y_cm_lims'][0],
+            task_params['y_bin_edges_'] = np.arange(task_params['y_cm_lims'][0],
                                                     task_params['y_cm_lims'][1] + task_params['cm_bin'],
                                                     task_params['cm_bin'])
-            task_params['_y_bin_centers'] = task_params['_y_bin_edges'][:-1] + task_params['cm_bin']/2
-            task_params['n_y_bins'] = len(task_params['_y_bin_centers'])
+            task_params['y_bin_centers_'] = task_params['y_bin_edges_'][:-1] + task_params['cm_bin']/2
+            task_params['n_y_bins'] = len(task_params['y_bin_centers_'])
             task_params['n_height_bins'] = task_params['n_y_bins']
 
         else:

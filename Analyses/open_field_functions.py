@@ -46,10 +46,10 @@ def get_session_track_data(session_info):
     speed_rs = filter_funcs.resample_signal(t_vt, t_rs, speed)
 
     # occupation_counts in the spatial matrix
-    pos_map_counts, vertical_edges, horizontal_edges = \
-        spatial_funcs.get_position_map_counts(x_rs, y_rs, p.x_cm_lims, p.y_cm_lims, spacing=p.cm_bin)
+    pos_map_counts = spatial_funcs.get_position_map_counts(x_rs, y_rs, p.x_bin_edges_, p.y_bin_edges_)
     pos_counts_sm = spatial_funcs.get_smoothed_map(pos_map_counts, n_bins=p.spatial_window_size,
                                                    sigma=p.spatial_sigma)
+
     pos_valid_mask = pos_counts_sm >= p.occ_num_thr
 
     pos_map_secs = pos_map_counts * time_step
@@ -59,9 +59,7 @@ def get_session_track_data(session_info):
     of_track_dat = {
         't': t_rs, 'x': x_rs, 'y': y_rs, 'sp': speed_rs, 'ha': ha_rs, 'hd': hd_rs,
         'pos_map_counts': pos_map_counts, 'pos_map_secs': pos_map_secs, 'pos_valid_mask': pos_valid_mask,
-        'pos_map_counts_sm': pos_counts_sm, 'vert_edges': vertical_edges, 'horiz_edges': horizontal_edges,
-        'n_vert_bins': len(vertical_edges) - 1, 'n_horiz_bins': len(horizontal_edges) - 1,
-    }
+        'pos_map_counts_sm': pos_counts_sm}
 
     return of_track_dat
 
@@ -139,9 +137,9 @@ def _process_track_data(x, y, ha, track_params):
         ha3[ii] = filter_funcs.get_last_not_nan_value(ha3, ii)
 
     # 10. final filter / smoothing
-    x3 = filtfilt(p.filter_coef, 1, x3)
-    y3 = filtfilt(p.filter_coef, 1, y3)
-    ha3 = filter_funcs.angle_filtfilt(ha3, p.filter_coef_angle)
+    x3 = filtfilt(p.filter_coef_, 1, x3)
+    y3 = filtfilt(p.filter_coef_, 1, y3)
+    ha3 = filter_funcs.angle_filtfilt(ha3, p.filter_coef_angle_)
 
     return x3, y3, ha3
 
@@ -157,19 +155,18 @@ def get_session_spike_maps(session_info):
     spikes = session_info.get_binned_spikes()
     of_dat = SimpleNamespace(**session_info.get_track_data())
     track_params = SimpleNamespace(**session_info.task_params)
-    x_cm_lims = track_params.x_cm_lims
-    y_cm_lims = track_params.y_cm_lims
-    cm_bin = track_params.cm_bin
+    x_bin_edges = track_params.x_bin_edges_
+    y_bin_edges = track_params.y_bin_edges_
 
     # pre-allocate
     n_units = session_info.n_units
-    n_vert_bins = of_dat.n_vert_bins
-    n_horiz_bins = of_dat.n_horiz_bins
-    spike_maps = np.zeros((n_units, n_vert_bins, n_horiz_bins))
+    n_height_bins = track_params.n_height_bins
+    n_width_bins = track_params.n_width_bins
+    spike_maps = np.zeros((n_units, n_height_bins, n_width_bins))
 
     for unit in range(n_units):
         x_spk, y_spk = spatial_funcs.get_bin_spikes_xy(spikes[unit], of_dat.x, of_dat.y)
-        spike_maps[unit], _, _ = spatial_funcs.get_position_map_counts(x_spk, y_spk, x_cm_lims, y_cm_lims, cm_bin)
+        spike_maps[unit] = spatial_funcs.get_position_map_counts(x_spk, y_spk, x_bin_edges, y_bin_edges)
 
     return spike_maps
 
@@ -227,22 +224,21 @@ def get_session_fr_maps_cont(session_info):
     pos_counts_sm = of_dat.pos_map_counts_sm
 
     track_params = SimpleNamespace(**session_info.task_params)
-    x_cm_lims = track_params.x_cm_lims
-    y_cm_lims = track_params.y_cm_lims
-    cm_bin = track_params.cm_bin
+    x_bin_edges = track_params.x_bin_edges_
+    y_bin_edges = track_params.y_bin_edges_
 
     # pre-allocate
     n_units = session_info.n_units
-    n_vert_bins = of_dat.n_vert_bins
-    n_horiz_bins = of_dat.n_horiz_bins
-    fr_maps = np.zeros((n_units, n_vert_bins, n_horiz_bins))
+    n_height_bins = track_params.n_height_bins
+    n_width_bins = track_params.n_width_bins
+    fr_maps = np.zeros((n_units, n_height_bins, n_width_bins))
 
     for unit in range(n_units):
-        temp_fr_map, _, _ = spatial_funcs.get_weighted_position_map(x, y, fr[unit], x_cm_lims, y_cm_lims, cm_bin)
+        temp_fr_map = spatial_funcs.get_weighted_position_map(x, y, fr[unit], x_bin_edges, y_bin_edges)
         temp_fr_map[valid_mask] /= pos_counts_sm[valid_mask]
 
         fr_maps[unit] = spatial_funcs.get_smoothed_map(temp_fr_map, n_bins=track_params.spatial_window_size,
-                                                       sigma=track_params.spatial_sigma - 1)
+                                                       sigma=track_params.spatial_sigma)
 
     return fr_maps
 
@@ -272,46 +268,41 @@ def get_session_scores(session_info):
 
     # speed scores
     n_units = session_info.n_units
-    scores, model_coef, model_coef_s, sp_bin_centers = \
+    scores, model_coef, model_coef_s = \
         spatial_funcs.get_speed_score_discrete(of_dat.sp, fr,
-                                               track_params.speed_bin,
-                                               track_params.min_speed_thr,
-                                               track_params.max_speed_thr,
+                                               track_params.sp_bin_edges_,
                                                sig_alpha=track_params.sig_alpha,
                                                n_perm=track_params.n_perm)
 
     output_dir['sp']['scores'] = scores
     output_dir['sp']['model_coef'] = model_coef
     output_dir['sp']['model_coef_s'] = model_coef_s
-    output_dir['sp']['bin_centers'] = sp_bin_centers
 
     # head direction scores
-    scores, model_coef, model_coef_s, ang_bin_centers = \
-        spatial_funcs.get_angle_scores(of_dat.hd, fr,
-                                       track_params.rad_bin,
-                                       speed=of_dat.sp,
-                                       min_speed=track_params.min_speed_thr,
-                                       max_speed=track_params.max_speed_thr,
-                                       alpha=track_params.sig_alpha)
+    scores, model_coef, model_coef_s = \
+        spatial_funcs.get_angle_score(of_dat.hd, fr,
+                                      track_params.ang_bin_edges_,
+                                      speed=of_dat.sp,
+                                      min_speed=track_params.min_speed_thr,
+                                      max_speed=track_params.max_speed_thr,
+                                      sig_alpha=track_params.sig_alpha)
 
     output_dir['hd']['scores'] = scores
     output_dir['hd']['model_coef'] = model_coef
     output_dir['hd']['model_coef_s'] = model_coef_s
-    output_dir['hd']['bin_centers'] = ang_bin_centers
 
     # head angle scores
     scores, model_coef, model_coef_s, ang_bin_centers = \
-        spatial_funcs.get_angle_scores(of_dat.hd, fr,
-                                       track_params.rad_bin,
-                                       speed=of_dat.sp,
-                                       min_speed=track_params.min_speed_thr,
-                                       max_speed=track_params.max_speed_thr,
-                                       alpha=track_params.sig_alpha)
+        spatial_funcs.get_angle_score(of_dat.ha, fr,
+                                      track_params.ang_bin_edges_,
+                                      speed=of_dat.sp,
+                                      min_speed=track_params.min_speed_thr,
+                                      max_speed=track_params.max_speed_thr,
+                                      sig_alpha=track_params.sig_alpha)
 
     output_dir['ha']['scores'] = scores
     output_dir['ha']['model_coef'] = model_coef
     output_dir['ha']['model_coef_s'] = model_coef_s
-    output_dir['ha']['bin_centers'] = ang_bin_centers
 
     # border scores
     scores, model_coef, model_coef_s, = \
@@ -325,10 +316,9 @@ def get_session_scores(session_info):
                                        border_width_bins=track_params.border_width_bins,
                                        non_linear=True)
 
-    output_dir['ha']['scores'] = scores
-    output_dir['ha']['model_coef'] = model_coef
-    output_dir['ha']['model_coef_s'] = model_coef_s
-    output_dir['ha']['bin_centers'] = ang_bin_centers
+    output_dir['border']['scores'] = scores
+    output_dir['border']['model_coef'] = model_coef
+    output_dir['border']['model_coef_s'] = model_coef_s
 
     return NotImplementedError
 
