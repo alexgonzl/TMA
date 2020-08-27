@@ -199,7 +199,47 @@ def get_ar2(y, y_hat, p):
         y = y.reshape(1, -1)
         y_hat = y_hat.reshape(1, -1)
     n = y.shape[1]
-    return 1 - (1 - get_r2(y, y_hat)) * (n - 1) / (n - p - 1)
+    r2 = get_r2(y, y_hat)
+    return 1 - (n - 1) / (n - p - 1) * (1 - r2)
+
+
+def get_poisson_d2(y, y_hat):
+    """
+    Pseudo coefficient of determination for a poisson glm. This implementation is the deviance square.
+    :param y: array n_samps of dependent variable;
+        can also work with matrices organized as n_samps x n_predictions
+    :param y_hat: array with result of a prediction, same shape as y
+    :return: D2. float. or array if y,y_hat are matrices. in that case r2 is an array of length n_predictions
+    """
+    if y.ndim == 1:
+        y = y.reshape(1, -1)
+        y_hat = y_hat.reshape(1, -1)
+
+    y_bar = y.mean(axis=1)
+    d = 2 * np.sum((np.log(y ** y) - np.log(y_hat ** y) - y + y_hat), axis=1)
+    d_null = 2 * np.sum((np.log(y ** y) - np.log(y_bar ** y) - y + y_bar), axis=1)
+    d2 = 1 - d / d_null
+    return d2
+
+
+def get_poisson_ad2(y, y_hat, p):
+    """
+    Pseudo adjusted coefficient of determination for a poisson glm. This implementation is the deviance square.
+    :param y: array n_samps of dependent variable;
+        can also work with matrices organized as n_samps x n_predictions
+    :param y_hat: array with result of a prediction, same shape as y
+    :param p: number of parameters used in the estimation, excluding bias
+    :return: aD2. float. or array if y,y_hat are matrices. in that case r2 is an array of length n_predictions
+    """
+    if y.ndim == 1:
+        y = y.reshape(1, -1)
+        y_hat = y_hat.reshape(1, -1)
+    n = y.shape[1]
+
+    d2 = get_poisson_d2(y, y_hat)
+    ad2 = 1 - (n - 1) / (n - p - 1) * (1 - d2)
+
+    return ad2
 
 
 def get_mse(y, y_hat):
@@ -241,12 +281,12 @@ def get_nrmse(y, y_hat):
     return get_rmse(y, y_hat) / np.mean(y, axis=1)
 
 
-def permutation_test(x, y, func, n_perm=500, alpha=0.02, seed=0):
+def permutation_test(function, x, y=None, n_perm=500, alpha=0.02, seed=0, **func_params):
     """
     Permutation test.
+    :param function: of the form func(x) -> float, or func(x,y) -> float
     :param x: array. first variable
     :param y: array. second variable (must be same length as x)
-    :param func: of the form func(x,y) -> float
     :param n_perm: number of permutations
     :param alpha: double sided alpha level
     :param seed: random seed
@@ -257,11 +297,26 @@ def permutation_test(x, y, func, n_perm=500, alpha=0.02, seed=0):
     """
     np.random.seed(seed)
     perm_out = np.zeros(n_perm)
-    real_out = func(x, y)
 
+    # create dummy function to absorb the possibility of a bivariate function. note that only variable x is permuted.
+    if y is None:
+        def func2(x2, **kwargs):
+            return function(x2, **kwargs)
+    else:
+        def func2(x2, y2=y, **kwargs):
+            return function(x2, y2, **kwargs)
+
+    if x.ndim > 1:
+        def perm_func(x2):
+            return np.random.permutation(x2.flatten()).reshape(*x2.shape)
+    else:
+        def perm_func(x2):
+            return np.random.permutation(x2)
+
+    real_out = func2(x, **func_params)
     for p in range(n_perm):
-        x_p = np.random.permutation(x)
-        perm_out[p] = func(x_p, y)
+        x_p = perm_func(x)
+        perm_out[p] = func2(x_p, **func_params)
 
     loc = (perm_out >= real_out).mean()
 

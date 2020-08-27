@@ -324,7 +324,7 @@ class SubjectSessionInfo(SubjectInfo):
         print('Task/track and analysis parameters. ')
         print()
         for param, val in self.task_params.items():
-            if 'filter' not in param:
+            if param[0] != '_':  #not a vector
                 print(f'  -> {param}: {val}')
 
     def _check_analyses(self):
@@ -651,8 +651,8 @@ def get_task_params(session_info):
                 # filtering parameters
                 'spatial_sigma': 2,  # spatial smoothing sigma factor [au]
                 'spatial_window_size': 5,  # number of spatial position bins to smooth [bins]
-                'temporal_window_size': 7,  # smoothing temporal window for filtering [bins]
-                'temporal_angle_window_size': 7,  # smoothing temporal window for angles [bins]
+                'temporal_window_size': 11,  # smoothing temporal window for filtering [bins]
+                'temporal_angle_window_size': 11,  # smoothing temporal window for angles [bins]
                 'temporal_window_type': 'hann',  # window type for temporal window smoothing
 
                 # statistical tests parameters:
@@ -660,22 +660,50 @@ def get_task_params(session_info):
                 'n_perm': 200,  # number of permutations
 
                 # other analysis parameters
-                'border_width_cm': 12,  # distance from border to consider it a border cell [cm]
-                'border_width_bin': 4,  # distance from border to consider it a border cell [bins]
+                'border_width_cm': 9,  # distance from border to consider it a border cell [cm]
+                'border_width_bins': 3,  # distance from border to consider it a border cell [bins]
                 'border_min_field_size_cm2': 180,  # minimumm area for fields in cm2
                 'border_min_field_size_bins': 20,  # minimumm area for fields in # of bins
                 'border_fr_thr': 0.25,  # firing rate threshold
+                'border_model_non_lin': True,  # if use non-linear model for border score encodign model
             }
 
-            task_params['filter_coef'] = signal.get_window(task_params['temporal_window_type'],
-                                                           task_params['temporal_window_size'],
-                                                           fftbins=False)
-            task_params['filter_coef'] /= task_params['filter_coef'].sum()
+            # derived parameters
+            # -- filter coefficients --
+            task_params['_filter_coef'] = signal.get_window(task_params['temporal_window_type'],
+                                                            task_params['temporal_window_size'],
+                                                            fftbins=False)
+            task_params['_filter_coef'] /= task_params['_filter_coef'].sum()
 
-            task_params['filter_coef_angle'] = signal.get_window(task_params['temporal_window_type'],
-                                                                 task_params['temporal_angle_window_size'],
-                                                                 fftbins=False)
-            task_params['filter_coef_angle'] /= task_params['filter_coef_angle'].sum()
+            task_params['_filter_coef_angle'] = signal.get_window(task_params['temporal_window_type'],
+                                                                  task_params['temporal_angle_window_size'],
+                                                                  fftbins=False)
+            task_params['_filter_coef_angle'] /= task_params['_filter_coef_angle'].sum()
+
+            # -- bins --
+            task_params['_ang_bin_edges'] = np.arange(0, 2*np.pi+task_params['rad_bin'], task_params['rad_bin'])
+            task_params['_ang_bin_centers'] = task_params['_ang_bins_edges'][:-1] + task_params['rad_bin']/2
+            task_params['n_ang_bins'] = len(task_params['_ang_bin_centers'])
+
+            task_params['_sp_bin_edges'] = np.arange(task_params['min_speed_thr'],
+                                                     task_params['max_speed_thr'] + task_params['speed_bin'],
+                                                     task_params['speed_bin'])
+            task_params['_sp_bin_centers'] = task_params['_sp_bin_edges'][:-1]+task_params['speed_bin']/2
+            task_params['n_sp_bins'] = len(task_params['_sp_bin_centers'])
+
+            task_params['_x_bin_edges'] = np.arange(task_params['x_cm_lims'][0],
+                                                    task_params['x_cm_lims'][1]+task_params['cm_bin'],
+                                                    task_params['cm_bin'])
+            task_params['_x_bin_centers'] = task_params['_x_bin_edges'][:-1] + task_params['cm_bin']/2
+            task_params['n_x_bins'] = len(task_params['_x_bin_centers'])
+            task_params['n_width_bins'] = task_params['n_x_bins']
+
+            task_params['_y_bin_edges'] = np.arange(task_params['y_cm_lims'][0],
+                                                    task_params['y_cm_lims'][1] + task_params['cm_bin'],
+                                                    task_params['cm_bin'])
+            task_params['_y_bin_centers'] = task_params['_y_bin_edges'][:-1] + task_params['cm_bin']/2
+            task_params['n_y_bins'] = len(task_params['_y_bin_centers'])
+            task_params['n_height_bins'] = task_params['n_y_bins']
 
         else:
             pass

@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from scipy import ndimage, stats
 from sklearn import linear_model as lm
+import statsmodels.api as sm
 from Utils import robust_stats as rs
 
 
@@ -185,16 +186,17 @@ def get_fr_map(spike_map, pos_map_secs):
     return fr_map
 
 
-def get_speed_score_traditional(speed, fr, min_speed, max_speed, alpha=0.05, n_perm=100):
+# speed scores
+def get_speed_score_traditional(speed, fr, min_speed, max_speed, sig_alpha=0.05, n_perm=100):
     """
     Traditional method of computing speed score. simple correlation of speed & firing rate
     :param speed: array floats vector of speed n_samps
     :param fr: array floats firing rate of the neuron
     :param max_speed: float
     :param min_speed: float
-    :param alpha: float, significant level to evaluate the permutation test
+    :param sig_alpha: float, significant level to evaluate the permutation test
     :param n_perm: int, number of permutations to perform.
-    :returns: scores: pd.Dataframe with columns ['score', 'sig', 'r2', 'rmse', 'nrmse'], rows are n_units
+    :returns: scores: pd.Dataframe with columns ['score', 'sig', 'aR2', 'rmse', 'nrmse'], rows are n_units
               speed_bins: array of speed bins
               model_coef: array n_units x n_bins mean firing rate at each bin
               model_coef_sem: array n_units x n_bins sem for each bin.
@@ -219,7 +221,8 @@ def get_speed_score_traditional(speed, fr, min_speed, max_speed, alpha=0.05, n_p
     sig = np.zeros(n_units, dtype=bool)
     for unit in range(n_units):
         score[unit] = rs.spearman(speed_valid, fr_valid[unit])
-        sig[unit], _ = rs.permutation_test(speed_valid, fr_valid[unit], rs.spearman, n_perm=n_perm, alpha=alpha)
+        sig[unit], _ = rs.permutation_test(function=rs.spearman, x=speed_valid, y=fr_valid[unit],
+                                           n_perm=n_perm, alpha=sig_alpha)
 
     # additional linear model fit and metrics. Note that the code below is equivalent to utilizing statsmodels.api.OLS
     # but much faster, as I only compute relevant parameters.
@@ -248,14 +251,14 @@ def get_speed_score_traditional(speed, fr, min_speed, max_speed, alpha=0.05, n_p
     return scores, model_coef, model_coef_s
 
 
-def get_speed_score_discrete(speed, fr, speed_bin_spacing, min_speed, max_speed, alpha, n_perm):
+def get_speed_score_discrete(speed, fr, speed_bin_spacing, min_speed, max_speed, sig_alpha=0.02, n_perm=100):
     """
     :param speed: array floats vector of speed n_samps
     :param fr: array floats firing rate n_units x n_samps, also works for one unit
     :param speed_bin_spacing: float bin spacing cm/s
     :param max_speed: float max speed to threshold data
     :param min_speed: float min speed to threshold data
-    :param alpha: float, significant level to evaluate the permutation test
+    :param sig_alpha: float, significant level to evaluate the permutation test
     :param n_perm: int, number of permutations to perform.
     :returns: scores: pd.Dataframe with columns ['score', 'sig', 'aR2', 'rmse', 'nrmse'], rows are n_units
               model_coef: array n_units x n_bins mean firing rate at each bin
@@ -323,8 +326,8 @@ def get_speed_score_discrete(speed, fr, speed_bin_spacing, min_speed, max_speed,
     # get scores
     for unit in range(n_units):
         score[unit] = rs.spearman(model_coef[unit], sp_bin_centers)
-        score_sig[unit], _ = rs.permutation_test(model_coef[unit], sp_bin_centers, rs.spearman,
-                                                 n_perm=n_perm, alpha=alpha)
+        score_sig[unit], _ = rs.permutation_test(function=rs.spearman, x=sp_bin_centers, y=model_coef[unit],
+                                                 n_perm=n_perm, alpha=sig_alpha)
 
     # arrange into a data frame
     scores = pd.DataFrame(index=range(n_units), columns=['score', 'sig', 'aR2', 'rmse', 'nrmse'])
@@ -337,6 +340,7 @@ def get_speed_score_discrete(speed, fr, speed_bin_spacing, min_speed, max_speed,
     return scores, model_coef, model_coef_s, sp_bin_centers
 
 
+# angle scores
 def get_angle_stats(theta, step, weights=None):
     """
     Computes several circular statistics based on the histogram of the data.
@@ -373,11 +377,12 @@ def get_angle_stats(theta, step, weights=None):
     # rayleigh statistical test
     p_val, rayleigh = rs.rayleigh(bin_centers, w=w_counts, d=step)
 
-    out_dir = {'vec_len': vec_len, 'mean_ang': mean_ang, 'rayleigh': rayleigh, 'p_val': p_val, 'var': var_ang, 'std': std_ang}
+    out_dir = {'vec_len': vec_len, 'mean_ang': mean_ang, 'rayleigh': rayleigh, 'p_val': p_val, 'var': var_ang,
+               'std': std_ang}
     return out_dir, w_counts, bin_centers, bin_edges
 
 
-def get_angle_scores(theta, fr, rad_bin_spacing, speed=None, min_speed=None, max_speed=None, alpha=0.05):
+def get_angle_score(theta, fr, rad_bin_spacing, speed=None, min_speed=None, max_speed=None, sig_alpha=0.05):
     """
     :param theta: array n_samps of angles in radians
     :param fr: array n_units x n_samps of firing rates
@@ -385,7 +390,7 @@ def get_angle_scores(theta, fr, rad_bin_spacing, speed=None, min_speed=None, max
     :param speed: array of n_samps of speed to threshold the computations
     :param min_speed: minimum speed threshold
     :param max_speed: max speed threshold
-    :param alpha: parametric alpha for significance of Rayleigh test.
+    :param sig_alpha: parametric alpha for significance of Rayleigh test.
     :return:  scores: pd.Dataframe n_units x columns ['vec_len', 'mean_ang', 'sig', 'r2', 'rmse', 'nrmse']
               model_coef: array n_units x n_bins mean firing rate at each bin
               model_coef_sem: array n_units x n_bins sem for each bin.
@@ -408,7 +413,7 @@ def get_angle_scores(theta, fr, rad_bin_spacing, speed=None, min_speed=None, max
 
     # binning of the angle / get discrete design matrix
     design_matrix, th_bin_idx, ang_bin_centers, ang_bin_edges = \
-        rs.get_discrete_data_mat(theta, 0, 2*np.pi, rad_bin_spacing)
+        rs.get_discrete_data_mat(theta, 0, 2 * np.pi, rad_bin_spacing)
     n_ang_bins = len(ang_bin_centers)
 
     # get model coefficients (mean fr per bin) and se of the mean
@@ -435,17 +440,163 @@ def get_angle_scores(theta, fr, rad_bin_spacing, speed=None, min_speed=None, max
 
         # store results
         scores.at[unit, 'vec_len'] = vec_len
-        scores.at[unit, 'mean_ang'] = np.mod(mean_ang, 2*np.pi)
-        scores.at[unit, 'sig'] = p_val < alpha
+        scores.at[unit, 'mean_ang'] = np.mod(mean_ang, 2 * np.pi)
+        scores.at[unit, 'sig'] = p_val < sig_alpha
 
     scores['aR2'] = rs.get_ar2(fr, fr_hat, n_ang_bins)
     scores['rmse'] = rs.get_rmse(fr, fr_hat)
-    scores['nrmse'] = scores['rmse']/fr.mean(axis=1)
+    scores['nrmse'] = scores['rmse'] / fr.mean(axis=1)
 
     return scores, model_coef, model_coef_s, ang_bin_centers
 
 
-def get_distance_mat(h, w):
+# border scores
+
+def get_border_score(x, y, fr, fr_maps, x_cm_lims, y_cm_lims, cm_bin,
+                     border_fr_thr=0.3, min_field_size_bins=20, border_width_bins=3,
+                     sig_alpha=0.02, n_perm=100, non_linear=True):
+    """
+    Obtains the solstad border score and creates an encoding model based on proximity to the borders.
+    :param x: array n_samps of x positions of the animal
+    :param y: array n_samps of y positions of the animal
+    :param fr: ndarray n_units x n_samps of firing rate,
+    :param fr_maps: ndarray n_units x height x width of smoothed firing rate position maps
+    :param x_cm_lims: x limits in cm
+    :param y_cm_lims: y limits in cm
+    :param cm_bin: cm to bin conversion
+    :param sig_alpha: significance alpha for permutation test
+    :param n_perm: number of permutations
+    :param border_fr_thr: firing rate threshold for border score
+    :param min_field_size_bins: minimum field size threshold for border score
+    :param border_width_bins: size of the border in bins
+    :param non_linear: if true uses non-linear functions for the border proximity functions.
+    :return: scores: pd.Dataframe with columns ['score', 'sig', 'aR2', 'rmse', 'nrmse'], rows are n_units
+          model_coef: array n_units x 4 of encoding coefficients [bias, east, north, center]
+          model_coef_sem: array n_units x 4 sem for the coeffieicents
+    """
+    n_samps = len(x)
+    if fr.ndim == 1:
+        n_units = 1
+        fr = fr.reshape(1, -1)
+    else:
+        n_units, _ = fr.shape
+    assert n_samps == fr.shape[1], 'Mismatch lengths between speed and fr.'
+
+    border_score_solstad_params = {'border_fr_thr': border_fr_thr,
+                                   'min_field_size_bins': min_field_size_bins,
+                                   'border_width_bins': border_width_bins}
+
+    # get solstad border score
+    border_score = get_border_score_solstad(fr_maps, **border_score_solstad_params)
+
+    # get permutation score
+    score_sig = np.zeros(n_units)
+    for unit in range(n_units):
+        score_sig[unit], _ = rs.permutation_test(get_border_score_solstad, fr_maps[unit], n_perm=n_perm,
+                                                 alpha=sig_alpha,
+                                                 **border_score_solstad_params)
+
+    # border encoding model
+    # pre-allocate
+    n_predictors = 3
+    model_coef = np.zeros((n_units, n_predictors + 1))  # + bias term
+    model_coef_s = np.zeros((n_units, n_predictors + 1))
+    fr_hat = np.zeros_like(fr)
+
+    # get proximity vectors
+    X = get_border_proximity_samps(x, y, x_cm_lims, y_cm_lims, cm_bin, non_linear=non_linear)
+    X = sm.add_constant(X)
+
+    # obtain model for each unit and extract coefficients.
+    for unit in range(n_units):
+        model = sm.OLS(fr[unit], X).fit()
+        fr_hat[unit] = model.predict(X)
+        model_coef[unit] = model.summary2().tables[1]['Coef.'].values
+        model_coef_s[unit] = model.summary2().tables[1]['Std.Err.'].values
+
+    # get performance scores
+    scores = pd.DataFrame(index=range(n_units), columns=['score', 'sig', 'aR2', 'rmse', 'nrmse'])
+    scores['score'] = border_score
+    scores['sig'] = score_sig
+    scores['aR2'] = rs.get_ar2(fr, fr_hat, n_predictors)
+    scores['rmse'] = rs.get_rmse(fr, fr_hat)
+    scores['nrmse'] = rs.get_nrmse(fr, fr_hat)
+
+    return scores, model_coef, model_coef_s
+
+
+def get_border_score_solstad(fr_maps, border_fr_thr=0.3, min_field_size_bins=20, border_width_bins=3, return_all=False):
+    """
+    Border score method from Solstad et al Science 2008. Returns the border score along with the max coverage by a field
+    and the weighted firing rate. This works for a single fr_map or multiple.
+    :param fr_maps: np.ndarray, (dimensions can be 2 or 3), if 3 dimensions, first dimensions must
+                    correspond to the # of units, other 2 dims are height and width of the map
+    :param border_fr_thr: float, proportion of the max firing rate to threshold the data
+    :param min_field_size_bins: int, # of bins that correspond to the total area of the field. fields found
+                    under this threshold are discarded
+    :param border_width_bins: wall width by which the coverage is determined.
+    :param return_all: bool, if False only returns the border_score
+    :return: border score, max coverage, distanced weighted fr for each unit in fr_maps.
+
+    -> code based of the description on Solstad et al, Science 2008
+    """
+    n_walls = 4
+    # add a singleton dimension in case of only one map to find fields.
+    if fr_maps.ndim == 2:
+        fr_maps = fr_maps[np.newaxis,]
+    n_units, map_height, map_width = fr_maps.shape
+
+    # get fields
+    field_maps, n_fields = get_map_fields(fr_maps, fr_thr=border_fr_thr, min_field_size=min_field_size_bins)
+
+    if field_maps.ndim == 2:
+        field_maps = field_maps[np.newaxis,]
+
+    # get border distance matrix
+    distance_mat = get_center_border_distance_mat(map_height, map_width)  # linear distance to closest wall [bins]
+
+    # get wall labels
+    wall_labels_mask = get_wall_masks(map_height, map_width, border_width_bins)
+
+    # pre-allocate scores
+    border_score = np.zeros(n_units) * np.nan
+    max_coverage = np.zeros(n_units) * np.nan
+    weighted_fr = np.zeros(n_units) * np.nan
+
+    # loop and get scores
+    for unit in range(n_units):
+        fr_map = fr_maps[unit]
+        field_map = field_maps[unit]
+        n_fields_unit = n_fields[unit]
+        if n_fields_unit > 0:
+            # get coverage
+            wall_coverage = np.zeros((n_fields_unit, n_walls))
+            for field in range(n_fields_unit):
+                for wall in range(n_walls):
+                    wall_coverage[field, wall] = np.sum(
+                        (field_map == field) * (wall_labels_mask[wall] == wall)) / np.sum(
+                        wall_labels_mask[wall] == wall)
+            c_m = np.max(wall_coverage)
+
+            # get normalized distanced weighted firing rate
+            field_fr_map = fr_map * (field_map >= 0)
+            d_m = np.sum(field_fr_map * distance_mat) / np.sum(field_fr_map)
+
+            # get border score
+            b = (c_m - d_m) / (c_m + d_m)
+
+            border_score[unit] = b
+            max_coverage[unit] = c_m
+            weighted_fr[unit] = d_m
+
+    if return_all:
+        return border_score, max_coverage, weighted_fr
+    else:
+        return border_score
+
+
+# border score auxiliary functions
+def get_center_border_distance_mat(h, w):
     """
     creates a pyramid like matrix of distances to border walls.
     :param h: height
@@ -463,7 +614,7 @@ def get_distance_mat(h, w):
 
 def get_wall_masks(map_height, map_width, wall_width):
     """
-    returns a mask for each wall
+    returns a mask for each wall. *assumes [0,0] is on lower left corner.*
     :param map_height:
     :param map_width:
     :param wall_width: size of the border wall
@@ -473,9 +624,9 @@ def get_wall_masks(map_height, map_width, wall_width):
     mask = np.ones((4, map_height, map_width), dtype=int) * -1
 
     mask[0][:, map_width:(map_width - wall_width):-1] = 0  # right / East
-    mask[1][0:wall_width, :] = 1  # top / North
+    mask[1][map_height:(map_height - wall_width):-1, :] = 1  # top / north
     mask[2][:, 0:wall_width] = 2  # left / West
-    mask[3][map_height:(map_height - wall_width):-1, :] = 3  # bottom / South
+    mask[3][0:wall_width, :] = 3  # bottom / south
 
     return mask
 
@@ -553,67 +704,154 @@ def get_map_fields(fr_maps, fr_thr=0.3, min_field_size=20, filt_structure=None):
     return field_maps, n_fields
 
 
-def get_border_scores(fr_maps, fr_thr, min_field_size_bin, wall_width_bin):
+def get_border_proximity_samps(x, y, x_cm_lims, y_cm_lims, cm_bin, non_linear=True, **non_linear_params):
     """
-    Border score method from Solstad et al Science 2008. Returns the border score along with the max coverage by a field
-    and the weighted firing rate. This works for a single fr_map or multiple.
-    :param fr_maps: np.ndarray, (dimensions can be 2 or 3), if 3 dimensions, first dimensions must
-                    correspond to the # of units, other 2 dims are height and width of the map
-    :param fr_thr: float, proportion of the max firing rate to threshold the data
-    :param min_field_size_bin: int, # of bins that correspond to the total area of the field. fields found
-                    under this threshold are discarded
-    :param wall_width_bin: wall width by which the coverage is determined.
-    :return: border score, max coverage, distanced weighted fr for each unit in fr_maps.
+    Returns proximity vectos given x y positions. 3 vectors, east, north, and center
+    :param y: array of y positions in cm
+    :param x_cm_lims: x limits in cm
+    :param y_cm_lims: y limits in cm
+    :param cm_bin: spatial step size; conversion from cm to bin
+    :param non_linear: if True, computes the proximity matrices with non_linear functions, otherwise uses linear
+    :param non_linear_params: dictionary of parameters for smooth proximity matrix calculation.
+        include border_width_bin, sigmoid_slope_thr, center_gaussian_spread,
+        see get_non_linear_border_proximity_mats for details.
 
-    -> code based of the description on Solstad et al, Science 2008
+    :return: 3 arrays of proximity (1-distance) for each xy position to the east wall, north wall and center.
     """
-    n_walls = 4
-    # add a singleton dimension in case of only one map to find fields.
-    if fr_maps.ndim == 2:
-        fr_maps = fr_maps[np.newaxis, ]
-    n_units, map_height, map_width = fr_maps.shape
+    x_bin_idx, y_bin_idx, x_bin_centers, y_bin_centers = get_xy_samps_pos_bins(x, y, x_cm_lims, y_cm_lims, cm_bin)
 
-    # get fields
-    field_maps, n_fields = get_map_fields(fr_maps, fr_thr=fr_thr, min_field_size=min_field_size_bin)
+    width = len(x_bin_centers)
+    height = len(y_bin_centers)
 
-    if field_maps.ndim == 2:
-        field_maps = field_maps[np.newaxis, ]
+    if non_linear:
+        prox_mats = get_non_linear_border_proximity_mats(width=width, height=height, **non_linear_params)
+    else:
+        prox_mats = get_linear_border_proximity_mats(width=width, height=height)
 
-    # get border distance matrix
-    distance_mat = get_distance_mat(map_height, map_width)  # linear distance to closest wall [bins]
+    return prox_mats[:, y_bin_idx, x_bin_idx].T
 
-    # get wall labels
-    wall_labels_mask = get_wall_masks(map_height, map_width, wall_width_bin)
 
-    # pre-allocate scores
-    border_score = np.zeros(n_units) * np.nan
-    max_coverage = np.zeros(n_units) * np.nan
-    weighted_fr = np.zeros(n_units) * np.nan
+def get_xy_samps_pos_bins(x, y, x_cm_lims, y_cm_lims, cm_bin):
+    """
+    Converts x y position samples to the corresponding bin ids based on the limits and step.
+    This essentially discretizes the x,y positions into bin ids.
+    :param x: array of x positions in cm
+    :param y: array of y positions in cm
+    :param x_cm_lims: x limits in cm
+    :param y_cm_lims: y limits in cm
+    :param cm_bin: spatial step size
+    :returns:
+        x_bin_ids: array of integers idx of the x bins
+        y_bin_ids: array of integers idx of the y bins
+        x_bin_centers: array of x bin centers
+        y_bin_centers: array of y bin centers
+    """
+    _, x_bin_idx, x_bin_centers, _ = rs.get_discrete_data_mat(x,
+                                                              min_val=x_cm_lims[0],
+                                                              max_val=x_cm_lims[1],
+                                                              step=cm_bin)
 
-    # loop and get scores
-    for unit in range(n_units):
-        fr_map = fr_maps[unit]
-        field_map = field_maps[unit]
-        n_fields_unit = n_fields[unit]
-        if n_fields_unit > 0:
-            # get coverage
-            wall_coverage = np.zeros((n_fields_unit, n_walls))
-            for field in range(n_fields_unit):
-                for wall in range(n_walls):
-                    wall_coverage[field, wall] = np.sum(
-                        (field_map == field) * (wall_labels_mask[wall] == wall)) / np.sum(
-                        wall_labels_mask[wall] == wall)
-            c_m = np.max(wall_coverage)
+    _, y_bin_idx, y_bin_centers, _ = rs.get_discrete_data_mat(y,
+                                                              min_val=y_cm_lims[0],
+                                                              max_val=y_cm_lims[1],
+                                                              step=cm_bin)
 
-            # get normalized distanced weighted firing rate
-            field_fr_map = fr_map * (field_map >= 0)
-            d_m = np.sum(field_fr_map * distance_mat) / np.sum(field_fr_map)
+    return x_bin_idx, y_bin_idx, x_bin_centers, y_bin_centers
 
-            # get border score
-            b = (c_m - d_m) / (c_m + d_m)
 
-            border_score[unit] = b
-            max_coverage[unit] = c_m
-            weighted_fr[unit] = d_m
+def get_linear_border_proximity_mats(width, height):
+    """
+     Computes linear proximity to the east wall, north wall and the center. That is, 1-closest, 0 farthest.
+     Note that the reciprocal [1-x], of each is the distance to west wall, south wall, center-to-wall.
+     :param width: width of the environment [bins]
+     :param height: height of the environment [bins]
+     :returns: prox_mats: ndarray 3 x height x width, in order: east, north and center proximities.
+     """
+    east_prox = np.tile(np.arange(width), height).reshape(height, width)
+    east_prox = east_prox / np.max(east_prox)
 
-    return border_score, max_coverage, weighted_fr
+    north_prox = np.repeat(np.arange(height), width).reshape(height, width)
+    north_prox = north_prox / np.max(north_prox)
+
+    center_prox = get_center_border_distance_mat(height, width)
+
+    prox_mats = np.zeros((3, height, width))
+    prox_mats[0] = east_prox
+    prox_mats[1] = north_prox
+    prox_mats[2] = center_prox
+
+    return prox_mats
+
+
+def get_non_linear_border_proximity_mats(width, height, border_width_bins=3,
+                                         sigmoid_slope_thr=0.01, center_gaussian_spread=0.2):
+    """
+    Computes normalized and smoothed proximity to the east wall, north wall, and to the center.
+    For the walls it uses a sigmoid function, for which the wall_width determines when it saturates
+    For the center it uses a normalized gaussian.
+    Note that the reciprocal of each is the distance to west wall, south wall, center-to-wall.
+    :param width: width of the environment [bins]
+    :param height: height of the environment [bins]
+    :param border_width_bins: number of bins from the border for the sigmoid to saturate
+    :param sigmoid_slope_thr: value of the sigmoid at the first bin of the border_width (symmetric)
+    :param center_gaussian_spread: this gets multiplied by the dimensions of the environment to get the spread.
+    :returns: prox_mats: ndarray 3 x height x width, in order: east, north and center proximities.
+    """
+
+    sigmoid_slope_w = _get_optimum_sigmoid_slope(border_width_bins, width, sigmoid_slope_thr=sigmoid_slope_thr)
+    sigmoid_slope_h = _get_optimum_sigmoid_slope(border_width_bins, height, sigmoid_slope_thr=sigmoid_slope_thr)
+    center_w = width / 2
+    center_h = height / 2
+
+    east_prox = np.tile(sigmoid(np.arange(width), center_w, sigmoid_slope_w), height).reshape(height, width)
+    north_prox = np.repeat(sigmoid(np.arange(height), center_h, sigmoid_slope_h), width).reshape(height, width)
+
+    x, y = np.meshgrid(np.arange(width), np.arange(height))  # get 2D variables instead of 1D
+    center_prox = gaussian_2d(y=y, x=x, my=center_h, mx=center_w, sx=width * center_gaussian_spread,
+                              sy=height * center_gaussian_spread)
+    center_prox = center_prox / np.max(center_prox)
+
+    prox_mats = np.zeros((3, height, width))
+    prox_mats[0] = east_prox
+    prox_mats[1] = north_prox
+    prox_mats[2] = center_prox
+
+    return prox_mats
+
+
+def _get_optimum_sigmoid_slope(border_width, width, sigmoid_slope_thr=0.01):
+    """
+    Finds the optimal sigmoid slope for a sigmoid function given the parameters.
+    :param border_width: number of bins at which the sigmoid should saturate
+    :param width: number of bins of the environment
+    :param sigmoid_slope_thr: value of the sigmoid at the first bin of the border_width (symmetric)
+    :return: slope value for sigmoid
+    """
+    slopes = np.linspace(0, 2, 200)
+    z = sigmoid(border_width, width / 2, slopes)
+    return slopes[np.argmin((z - sigmoid_slope_thr) ** 2)]
+
+
+def sigmoid(x, center, slope):
+    """
+    Sigmoid function
+    :param x: array of values
+    :param center: center, value at which sigmoid is 0.5
+    :param slope: rate of change of the sigmoid
+    :return: array of same length as x
+    """
+    return 1. / (1 + np.exp(-slope * (x - center)))
+
+
+def gaussian_2d(x=0, y=0, mx=0, my=0, sx=1, sy=1):
+    """
+    two dimensional gaussian function
+    :param x: 2dim ndarray of x values for each y value [as returned by meshgrid]
+    :param y: 2dim ndarray of y values for each x value [as returned by meshgrid]
+    :param mx: x position of gaussian center
+    :param my: y position of gaussian center
+    :param sx: std [spread] in x direcation
+    :param sy: std [spread] in y direcation
+    :return: gaussian 2d array of same dimensions of x and y
+    """
+    return 1. / (2. * np.pi * sx * sy) * np.exp(-((x - mx) ** 2. / (2. * sx ** 2.) + (y - my) ** 2. / (2. * sy ** 2.)))
