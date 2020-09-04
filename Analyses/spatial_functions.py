@@ -180,7 +180,7 @@ def get_fr_map(spike_map, pos_map_secs):
 
 
 # speed scores
-def get_speed_score_traditional(speed, fr, min_speed, max_speed, sig_alpha=0.05, n_perm=100):
+def get_speed_score_traditional(speed, fr, min_speed=2, max_speed=80, sig_alpha=0.02, n_perm=100):
     """
     Traditional method of computing speed score. simple correlation of speed & firing rate
     :param speed: array floats vector of speed n_samps
@@ -189,10 +189,8 @@ def get_speed_score_traditional(speed, fr, min_speed, max_speed, sig_alpha=0.05,
     :param min_speed: float
     :param sig_alpha: float, significant level to evaluate the permutation test
     :param n_perm: int, number of permutations to perform.
-    :returns: scores: pd.Dataframe with columns ['score', 'sig', 'aR2', 'rmse', 'nrmse'], rows are n_units
-              speed_bins: array of speed bins
-              model_coef: array n_units x n_bins mean firing rate at each bin
-              model_coef_sem: array n_units x n_bins sem for each bin.
+    :returns: score: speed score per unit
+              sig: if the speed score reached significance after permutation test
     """
 
     n_samps = len(speed)
@@ -204,10 +202,9 @@ def get_speed_score_traditional(speed, fr, min_speed, max_speed, sig_alpha=0.05,
     assert n_samps == fr.shape[1], 'Mismatch lengths between speed and fr.'
 
     # get valid samples and assign new variables for fitting
-    speed_valid_idx = np.logical_and(speed >= min_speed, speed <= max_speed)
-    n_samps = np.sum(speed_valid_idx)
-    speed_valid = speed[speed_valid_idx]
-    fr_valid = fr[:, speed_valid_idx]
+    valid_samps = np.logical_and(speed >= min_speed, speed <= max_speed)
+    speed_valid = speed[valid_samps]
+    fr_valid = fr[:, valid_samps]
 
     # traditional correlation method
     score = np.zeros(n_units)
@@ -217,47 +214,54 @@ def get_speed_score_traditional(speed, fr, min_speed, max_speed, sig_alpha=0.05,
         sig[unit], _ = rs.permutation_test(function=rs.spearman, x=speed_valid, y=fr_valid[unit],
                                            n_perm=n_perm, alpha=sig_alpha)
 
-    # additional linear model fit and metrics. Note that the code below is equivalent to utilizing statsmodels.api.OLS
-    # but much faster, as I only compute relevant parameters.
-    sp2_valid = np.column_stack((np.ones(n_samps), speed_valid))
-    model = lm.LinearRegression(fit_intercept=False).fit(sp2_valid, fr_valid.T)
-    model_coef = model.coef_
-    fr_hat = model.predict(sp2_valid).T
-
-    ar2 = rs.get_ar2(fr_valid, fr_hat, 1)
-    rmse = rs.get_rmse(fr_valid, fr_hat)
-    nrmse = rs.get_nrmse(fr_valid, fr_hat)
-
-    # get standard errors:
-    model_coef_s = np.zeros((n_units, 2))
-    for unit in range(n_units):
-        model_coef_s[unit] = rs.get_simple_regression_se(speed_valid, fr_valid[unit], fr_hat[unit])
-
-    # arrange into a data frame
-    scores = pd.DataFrame(index=range(n_units), columns=['score', 'sig', 'aR2', 'rmse', 'nrmse'])
-    scores['score'] = score
-    scores['sig'] = sig
-    scores['aR2'] = ar2
-    scores['rmse'] = rmse
-    scores['nrmse'] = nrmse
-
-    return scores, model_coef, model_coef_s
+    return score, sig
 
 
-def get_speed_score_discrete(speed, fr, speed_bin_edges, sig_alpha=0.02, n_perm=100):
+def get_speed_encoding_model(speed, fr, speed_bin_edges, compute_sp_score=True, sig_alpha=0.02, n_perm=100):
     """
+    Discretizes the speed into the speed_bin_edges to predict firing rate. Essentially an OLS, implemented by taking the
+    mean per speed bin.
     :param speed: array floats vector of speed n_samps
     :param fr: array floats firing rate n_units x n_samps, also works for one unit
     :param speed_bin_edges: edges to bin the speed
-    :param sig_alpha: float, significant level to evaluate the permutation test
-    :param n_perm: int, number of permutations to perform.
+    :param compute_sp_score: bool, if true, correlates the model coefficients to the speed_bins and gets significance
+    :param sig_alpha: float, significant level to evaluate the permutation test of the model speed score
+    :param n_perm: int, number of permutations to perform for the model speed score
     :returns: scores: pd.Dataframe with columns ['score', 'sig', 'aR2', 'rmse', 'nrmse'], rows are n_units
               model_coef: array n_units x n_bins mean firing rate at each bin
-              model_coef_sem: array n_units x n_bins sem for each bin.
-              speed_bins: array of speed bins
+              model_coef_sem: array n_units x n_bins sem for each bin
+              valid_samps: samples that were used in the estimation (fell withing the speed_bin_edges)
+
+    Note on implementation:
+    There are several ways of doing this that are equivalent:
+
+    [1] ols: [using stats.linear_model]
+    model = lm.LinearRegression(fit_intercept=False).fit(design_matrix, fr_valid.T)
+    model_coef = model.coef_
+
+    [2] mean fr per speed bin: (could use trim mean, median, or other robust methods here);
+    - equivalency with ols is only true for mean
+    implemented below. this method allows to get standard errors per bin easily and fast
+
+    [3] weighted histogram:
+    fr weighted speed histogram then normalization by speed bin occupancy.
+    -needs to be performed by unit
+    sp_occ,_ = np.histogram(speed, sp_bins)
+    model_coef[unit],_ = np.histogram(speed_valid, sp_bins, weights=fr_valid[unit])
+    model_coef[unit] /= sp_occ
+
+    [4] ols: (as above) using statsmodels.api
+    this is probably the most powerful, but slowest.
+    - needs to be perfomed by unit
+    model = sm.OLS(fr_valid[unit],design_matrix)
+    results = model.fit()
+    model_coef[unit] = results.params
+
     """
 
     n_samps = len(speed)
+    n_sp_bins = len(speed_bin_edges) - 1
+
     if fr.ndim == 1:
         n_units = 1
         fr = fr.reshape(1, -1)
@@ -265,72 +269,62 @@ def get_speed_score_discrete(speed, fr, speed_bin_edges, sig_alpha=0.02, n_perm=
         n_units, _ = fr.shape
     assert n_samps == fr.shape[1], 'Mismatch lengths between speed and fr.'
 
+    # discretize speed / get features
+    sp_design_matrix, sp_bin_idx, valid_samps = get_speed_encoding_features(speed, speed_bin_edges)
+    fr_valid = fr[:, valid_samps]
+
+    # compute model coefficients
+    model_coef = np.zeros((n_units, n_sp_bins))
+    model_coef_s = np.zeros((n_units, n_sp_bins))
+    for i in range(n_sp_bins):
+        fr_sp_bin_i = fr_valid[:, sp_bin_idx == i]
+        model_coef[:, i] = np.mean(fr_sp_bin_i, axis=1)
+        model_coef_s[:, i] = stats.sem(fr_sp_bin_i, axis=1)
+
+    # use model coefficients and correlate to speed
+    score = np.zeros(n_units)
+    score_sig = np.zeros(n_units, dtype=bool)
+    if compute_sp_score:
+        for unit in range(n_units):
+            score[unit] = rs.spearman(model_coef[unit], speed_bin_edges[:-1])
+            score_sig[unit], _ = rs.permutation_test(function=rs.spearman, x=speed_bin_edges[:-1], y=model_coef[unit],
+                                                     n_perm=n_perm, alpha=sig_alpha)
+
+    # get prediction
+    # -> basically assigns to each sample its corresponding mean value
+    fr_hat = model_coef @ sp_design_matrix.T
+
+    # get scores arrange into a data frame
+    scores = pd.DataFrame(index=range(n_units), columns=['score', 'sig', 'aR2', 'rmse', 'nrmse'])
+    scores['score'] = score
+    scores['sig'] = score_sig
+    scores['aR2'] = rs.get_ar2(fr_valid, fr_hat, n_sp_bins)
+    scores['rmse'] = rs.get_rmse(fr_valid, fr_hat)
+    scores['nrmse'] = rs.get_nrmse(fr_valid, fr_hat)
+
+    return scores, model_coef, model_coef_s, valid_samps
+
+
+def get_speed_encoding_features(speed, speed_bin_edges):
+    """
+    Obtains the features for speed encoding model. A wrapper for the robust stats get_discrete_data_mat function,
+    that thersholds the speed to the limiits of the bins as a pre-step. these valid samples are also return
+    :param speed: array n_samps , floats vector of speed n_samps
+    :param speed_bin_edges: array n_bins, edges to bin the speed
+    :return: sp_design_matrix [n_valid_samps x n_bins], binary mat indicating what bin each sample is in
+            sp_bin_idx: array ints [n_valid_samps], as above, but indicating the bins by an integer in order
+            valid_samps: array bool [n_samps], sum(valid_samps)=n_valid_samps
+    """
     min_speed = speed_bin_edges[0]
     max_speed = speed_bin_edges[-1]
 
     # get valid samples and assign new variables for fitting
-    speed_valid_idx = np.logical_and(speed >= min_speed, speed <= max_speed)
-    speed_valid = speed[speed_valid_idx]
-    fr_valid = fr[:, speed_valid_idx]
+    valid_samps = np.logical_and(speed >= min_speed, speed <= max_speed)
+    speed_valid = speed[valid_samps]
 
-    # binning of speed
-    design_matrix, sp_bin_idx = rs.get_discrete_data_mat(speed_valid, speed_bin_edges)
-    n_sp_bins = len(speed_bin_edges)-1
+    sp_design_matrix, sp_bin_idx = rs.get_discrete_data_mat(speed_valid, speed_bin_edges)
 
-    # Model additional details / observations.
-    # There are several ways of doing this that are equivalent:
-    #
-    # weighted histogram:
-    # fr weighted speed histogram then normalization by speed bin occupancy.
-    # sp_occ,_ = np.histogram(speed_valid, sp_bins)
-    # model_coef[unit],_ = np.histogram(speed_valid, sp_bins, weights=fr_valid[unit])
-    # model_coef[unit] /= sp_occ
-    #
-    # linear regression: [using stats.linear_model]
-    # model = lm.LinearRegression(fit_intercept=False).fit(speed_valid, fr_valid[unit])
-    # model_coef[unit] = model.coef_
-    #
-    # ols: ordinary least squares (as above) using statsmodels.api
-    # this is probably the most powerful, but slowest.
-    # model = sm.OLS(fr_valid[unit],design_matrix)
-    # results = model.fit()
-    # model_coef[unit] = results.params
-    #
-    # mean fr per speed bin: (could use a trim mean or other robust methods here)
-    # implemented below. this method further allows to get standard errors
-
-    model_coef = np.zeros((n_units, n_sp_bins))
-    model_coef_s = np.zeros((n_units, n_sp_bins))
-    for i in range(n_sp_bins):
-        model_coef[:, i] = np.mean(fr_valid[:, sp_bin_idx == i], axis=1)
-        model_coef_s[:, i] = stats.sem(fr_valid[:, sp_bin_idx == i], axis=1)
-
-    # get prediction
-    # -> basically assigns to each sample its corresponding mean value
-    fr_hat = model_coef @ design_matrix.T
-
-    # pre-allocate scores
-    score = np.zeros(n_units)
-    score_sig = np.zeros(n_units, dtype=bool)
-    ar2 = rs.get_ar2(fr_valid, fr_hat, n_sp_bins)
-    rmse = rs.get_rmse(fr_valid, fr_hat)
-    nrmse = rs.get_nrmse(fr_valid, fr_hat)
-
-    # get scores
-    for unit in range(n_units):
-        score[unit] = rs.spearman(model_coef[unit], speed_bin_edges[:-1])
-        score_sig[unit], _ = rs.permutation_test(function=rs.spearman, x=speed_bin_edges[:-1], y=model_coef[unit],
-                                                 n_perm=n_perm, alpha=sig_alpha)
-
-    # arrange into a data frame
-    scores = pd.DataFrame(index=range(n_units), columns=['score', 'sig', 'aR2', 'rmse', 'nrmse'])
-    scores['score'] = score
-    scores['sig'] = score_sig
-    scores['aR2'] = ar2
-    scores['rmse'] = rmse
-    scores['nrmse'] = nrmse
-
-    return scores, model_coef, model_coef_s
+    return sp_design_matrix, sp_bin_idx, valid_samps
 
 
 # angle scores
@@ -375,7 +369,49 @@ def get_angle_stats(theta, step, weights=None):
     return out_dir, w_counts, bin_centers, bin_edges
 
 
-def get_angle_score(theta, fr, ang_bin_edges, speed=None, min_speed=None, max_speed=None, sig_alpha=0.05):
+def get_angle_score_traditional(theta, fr, speed=None, min_speed=None, max_speed=None, sig_alpha=0.02):
+    """"
+    computes angle by firing rate without binning
+    :param theta: array n_samps of angles in radians
+    :param fr: array n_units x n_samps of firing rates
+    :param speed: array of n_samps of speed to threshold the computations
+    :param min_speed: minimum speed threshold
+    :param max_speed: max speed threshold
+    :param sig_alpha: parametric alpha for significance of Rayleigh test.
+    :return:  scores: pd.Dataframe n_units x columns
+                ['vec_len', 'mean_ang', 'p_val', 'sig', 'rayleigh', 'var_ang', 'std_ang']
+    """
+
+    n_samps = len(theta)
+    if fr.ndim == 1:
+        n_units = 1
+        fr = fr.reshape(1, -1)
+    else:
+        n_units, _ = fr.shape
+    assert n_samps == fr.shape[1], 'Mismatch lengths between speed and fr.'
+
+    if (speed is not None) and (min_speed is not None) and (max_speed is not None):
+        valid_samps = np.logical_and(speed >= min_speed, speed <= max_speed)
+        theta = theta[valid_samps]
+        fr = fr[:, valid_samps]
+
+    scores = pd.DataFrame(index=range(n_units),
+                          columns=['vec_len', 'mean_ang', 'p_val', 'sig', 'rayleigh', 'var_ang', 'std_ang'])
+
+    for unit in range(n_units):
+        vec_len, mean_ang, var_ang, std_ang, = rs.resultant_vector_length(alpha=theta, w=fr[unit])
+        p_val, rayleigh = rs.rayleigh(alpha=theta, w=fr[unit])
+        out_dir = {'vec_len': vec_len, 'mean_ang': np.mod(mean_ang, 2 * np.pi), 'rayleigh': rayleigh, 'p_val': p_val,
+                   'sig': p_val < sig_alpha, 'var_ang': var_ang,
+                   'std_ang': std_ang}
+
+        for key, val in out_dir.items():
+            scores.loc[unit, key] = val
+
+    return scores
+
+
+def get_angle_encoding_model(theta, fr, ang_bin_edges, speed=None, min_speed=None, max_speed=None, sig_alpha=0.02):
     """
     :param theta: array n_samps of angles in radians
     :param fr: array n_units x n_samps of firing rates
@@ -398,28 +434,27 @@ def get_angle_score(theta, fr, ang_bin_edges, speed=None, min_speed=None, max_sp
         n_units, _ = fr.shape
     assert n_samps == fr.shape[1], 'Mismatch lengths between speed and fr.'
 
-    # get valid samples and overwrite for fitting
-    if (speed is not None) and (min_speed is not None) and (max_speed is not None):
-        speed_valid_idx = np.logical_and(speed >= min_speed, speed <= max_speed)
-        theta = theta[speed_valid_idx]
-        fr = fr[:, speed_valid_idx]
-
-    # binning of the angle / get discrete design matrix
-    ang_bin_spacing = ang_bin_edges[1]-ang_bin_edges[0]
-    ang_bin_centers = ang_bin_edges[:-1]+ang_bin_spacing/2
-    design_matrix, th_bin_idx = rs.get_discrete_data_mat(theta, ang_bin_edges)
+    # binning of the angle
+    ang_bin_spacing = ang_bin_edges[1] - ang_bin_edges[0]
+    ang_bin_centers = ang_bin_edges[:-1] + ang_bin_spacing / 2
     n_ang_bins = len(ang_bin_centers)
+
+    # get discrete design matrix and valid samples
+    ang_design_matrix, ang_bin_idx, valid_samps = \
+        get_angle_encoding_features(theta, ang_bin_edges, speed=speed, min_speed=min_speed, max_speed=max_speed)
+    fr = fr[:, valid_samps]
 
     # get model coefficients (mean fr per bin) and se of the mean
     model_coef = np.zeros((n_units, n_ang_bins))
     model_coef_s = np.zeros((n_units, n_ang_bins))
     for i in range(n_ang_bins):
-        model_coef[:, i] = np.mean(fr[:, th_bin_idx == i], axis=1)
-        model_coef_s[:, i] = stats.sem(fr[:, th_bin_idx == i], axis=1)
+        fr_ang_bin_i = fr[:, ang_bin_idx == i]
+        model_coef[:, i] = np.mean(fr_ang_bin_i, axis=1)
+        model_coef_s[:, i] = stats.sem(fr_ang_bin_i, axis=1)
 
     # get prediction
     # -> basically assigns to each sample its corresponding mean value
-    fr_hat = model_coef @ design_matrix.T
+    fr_hat = model_coef @ ang_design_matrix.T
 
     # pre-allocate score outputs
     scores = pd.DataFrame(index=range(n_units),
@@ -444,11 +479,24 @@ def get_angle_score(theta, fr, ang_bin_edges, speed=None, min_speed=None, max_sp
     return scores, model_coef, model_coef_s
 
 
-# border scores
+def get_angle_encoding_features(theta, ang_bin_edges, speed=None, min_speed=None, max_speed=None):
+    # get valid samples and overwrite for fitting
+    if (speed is not None) and (min_speed is not None) and (max_speed is not None):
+        valid_samps = np.logical_and(speed >= min_speed, speed <= max_speed)
+        theta = theta[valid_samps]
+    else:
+        valid_samps = np.ones(len(theta), dtype=bool)
 
-def get_border_score(x, y, fr, fr_maps, x_bin_edges, y_bin_edges,
-                     border_fr_thr=0.3, min_field_size_bins=20, border_width_bins=3,
-                     sig_alpha=0.02, n_perm=100, non_linear=True):
+    # binning of the angle / get discrete design matrix
+    ang_design_matrix, ang_bin_idx = rs.get_discrete_data_mat(theta, ang_bin_edges)
+
+    return ang_design_matrix, ang_bin_idx, valid_samps
+
+
+# border scores
+def get_border_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges,
+                              compute_solstad=True, border_fr_thr=0.3, min_field_size_bins=20, border_width_bins=3,
+                              sig_alpha=0.02, n_perm=100, non_linear=True):
     """
     Obtains the solstad border score and creates an encoding model based on proximity to the borders.
     :param x: array n_samps of x positions of the animal
@@ -462,6 +510,7 @@ def get_border_score(x, y, fr, fr_maps, x_bin_edges, y_bin_edges,
     :param border_fr_thr: firing rate threshold for border score
     :param min_field_size_bins: minimum field size threshold for border score
     :param border_width_bins: size of the border in bins
+    :param compute_solstad: bool. compute Solstad border score.
     :param non_linear: if true uses non-linear functions for the border proximity functions.
     :return: scores: pd.Dataframe with columns ['score', 'sig', 'aR2', 'rmse', 'nrmse'], rows are n_units
           model_coef: array n_units x 4 of encoding coefficients [bias, east, north, center]
@@ -475,19 +524,17 @@ def get_border_score(x, y, fr, fr_maps, x_bin_edges, y_bin_edges,
         n_units, _ = fr.shape
     assert n_samps == fr.shape[1], 'Mismatch lengths between speed and fr.'
 
-    border_score_solstad_params = {'border_fr_thr': border_fr_thr,
-                                   'min_field_size_bins': min_field_size_bins,
-                                   'border_width_bins': border_width_bins}
-
     # get solstad border score
-    border_score = get_border_score_solstad(fr_maps, **border_score_solstad_params)
-
-    # get permutation score
-    score_sig = np.zeros(n_units)
-    for unit in range(n_units):
-        score_sig[unit], _ = rs.permutation_test(get_border_score_solstad, fr_maps[unit], n_perm=n_perm,
-                                                 alpha=sig_alpha,
-                                                 **border_score_solstad_params)
+    if compute_solstad:
+        border_score_solstad_params = {'border_fr_thr': border_fr_thr,
+                                       'min_field_size_bins': min_field_size_bins,
+                                       'border_width_bins': border_width_bins,
+                                       'sig_alpha': sig_alpha,
+                                       'n_perm': n_perm}
+        border_score, score_sig = get_border_score_solstad(fr_maps, **border_score_solstad_params)
+    else:
+        border_score = np.zeros(n_units)*np.nan
+        score_sig = np.zeros(n_units)*np.nan
 
     # border encoding model
     # pre-allocate
@@ -497,7 +544,7 @@ def get_border_score(x, y, fr, fr_maps, x_bin_edges, y_bin_edges,
     fr_hat = np.zeros_like(fr)
 
     # get proximity vectors
-    X = get_border_proximity_samps(x, y, x_bin_edges, y_bin_edges, non_linear=non_linear)
+    X = get_border_encoding_features(x, y, x_bin_edges, y_bin_edges, non_linear=non_linear)
     X = sm.add_constant(X)
 
     # obtain model for each unit and extract coefficients.
@@ -508,9 +555,9 @@ def get_border_score(x, y, fr, fr_maps, x_bin_edges, y_bin_edges,
         model_coef_s[unit] = model.summary2().tables[1]['Std.Err.'].values
 
     # get performance scores
-    scores = pd.DataFrame(index=range(n_units), columns=['score', 'sig', 'aR2', 'rmse', 'nrmse'])
-    scores['score'] = border_score
-    scores['sig'] = score_sig
+    scores = pd.DataFrame(index=range(n_units), columns=['solstad_score', 'solstad_sig', 'aR2', 'rmse', 'nrmse'])
+    scores['solstad_score'] = border_score
+    scores['solstad_sig'] = score_sig
     scores['aR2'] = rs.get_ar2(fr, fr_hat, n_predictors)
     scores['rmse'] = rs.get_rmse(fr, fr_hat)
     scores['nrmse'] = rs.get_nrmse(fr, fr_hat)
@@ -518,7 +565,34 @@ def get_border_score(x, y, fr, fr_maps, x_bin_edges, y_bin_edges,
     return scores, model_coef, model_coef_s
 
 
-def get_border_score_solstad(fr_maps, border_fr_thr=0.3, min_field_size_bins=20, border_width_bins=3, return_all=False):
+def get_border_encoding_features(x, y, x_bin_edges, y_bin_edges, non_linear=True, **non_linear_params):
+    """
+    Returns proximity vectos given x y positions. 3 vectors, east, north, and center
+    :param y: array of y positions in cm
+    :param x_bin_edges: x bin edges
+    :param y_bin_edges: y bin edges
+    :param non_linear: if True, computes the proximity matrices with non_linear functions, otherwise uses linear
+    :param non_linear_params: dictionary of parameters for smooth proximity matrix calculation.
+        include border_width_bin, sigmoid_slope_thr, center_gaussian_spread,
+        see get_non_linear_border_proximity_mats for details.
+
+    :return: 3 arrays of proximity (1-distance) for each xy position to the east wall, north wall and center.
+    """
+    x_bin_idx, y_bin_idx = get_xy_samps_pos_bins(x, y, x_bin_edges, y_bin_edges)
+
+    width = len(x_bin_edges) - 1
+    height = len(y_bin_edges) - 1
+
+    if non_linear:
+        prox_mats = get_non_linear_border_proximity_mats(width=width, height=height, **non_linear_params)
+    else:
+        prox_mats = get_linear_border_proximity_mats(width=width, height=height)
+
+    return prox_mats[:, y_bin_idx, x_bin_idx].T
+
+
+def get_border_score_solstad(fr_maps, border_fr_thr=0.3, min_field_size_bins=20, border_width_bins=3,
+                             sig_alpha=0.02, n_perm=100, return_all=False):
     """
     Border score method from Solstad et al Science 2008. Returns the border score along with the max coverage by a field
     and the weighted firing rate. This works for a single fr_map or multiple.
@@ -528,6 +602,8 @@ def get_border_score_solstad(fr_maps, border_fr_thr=0.3, min_field_size_bins=20,
     :param min_field_size_bins: int, # of bins that correspond to the total area of the field. fields found
                     under this threshold are discarded
     :param border_width_bins: wall width by which the coverage is determined.
+    :param sig_alpha. float. permutation significance alpha
+    :param n_perm: int. number of permuations for significance
     :param return_all: bool, if False only returns the border_score
     :return: border score, max coverage, distanced weighted fr for each unit in fr_maps.
 
@@ -553,8 +629,9 @@ def get_border_score_solstad(fr_maps, border_fr_thr=0.3, min_field_size_bins=20,
 
     # pre-allocate scores
     border_score = np.zeros(n_units) * np.nan
-    max_coverage = np.zeros(n_units) * np.nan
-    weighted_fr = np.zeros(n_units) * np.nan
+    border_sig = np.zeros(n_units) * np.nan
+    border_max_cov = np.zeros(n_units) * np.nan
+    border_w_fr = np.zeros(n_units) * np.nan
 
     # loop and get scores
     for unit in range(n_units):
@@ -562,30 +639,94 @@ def get_border_score_solstad(fr_maps, border_fr_thr=0.3, min_field_size_bins=20,
         field_map = field_maps[unit]
         n_fields_unit = n_fields[unit]
         if n_fields_unit > 0:
-            # get coverage
-            wall_coverage = np.zeros((n_fields_unit, n_walls))
-            for field in range(n_fields_unit):
-                for wall in range(n_walls):
-                    wall_coverage[field, wall] = np.sum(
-                        (field_map == field) * (wall_labels_mask[wall] == wall)) / np.sum(
-                        wall_labels_mask[wall] == wall)
-            c_m = np.max(wall_coverage)
-
-            # get normalized distanced weighted firing rate
-            field_fr_map = fr_map * (field_map >= 0)
-            d_m = np.sum(field_fr_map * distance_mat) / np.sum(field_fr_map)
-
-            # get border score
-            b = (c_m - d_m) / (c_m + d_m)
-
-            border_score[unit] = b
-            max_coverage[unit] = c_m
-            weighted_fr[unit] = d_m
-
+            border_score[unit], border_max_cov[unit], border_w_fr[unit] = \
+                _border_score_solstad(field_map, fr_map, distance_mat, wall_labels_mask)
+            border_sig[unit] = _permutation_test_border_score(field_map, fr_map, distance_mat, wall_labels_mask,
+                                                              n_perm=n_perm, sig_alpha=sig_alpha,
+                                                              seed=int(n_fields_unit*unit))
     if return_all:
-        return border_score, max_coverage, weighted_fr
+        return border_score, border_sig, border_max_cov, border_w_fr
     else:
-        return border_score
+        return border_score, border_sig
+
+
+def _border_score_solstad(field_map, fr_map, distance_mat, wall_labels_mask):
+    """
+    computes the border scores given the field id map, firing rate and wall_mask
+    :param fr_map: 2d firing rate map
+    :param field_map: as obtained from get_map_fields
+    :param wall_labels_mask: as obtained from get_wall_masks
+    :return: border_score, max_coverage, weighted_fr
+    """
+    n_walls = 4
+    n_fields = int(np.max(field_map)) + 1
+
+    wall_coverage = np.zeros((n_fields, n_walls))
+    for field in range(n_fields):
+        for wall in range(n_walls):
+            wall_coverage[field, wall] = np.sum(
+                (field_map == field) * (wall_labels_mask[wall] == wall)) / np.sum(
+                wall_labels_mask[wall] == wall)
+    c_m = np.max(wall_coverage)
+
+    # get normalized distanced weighted firing rate
+    field_fr_map = fr_map * (field_map >= 0)
+    d_m = np.sum(field_fr_map * distance_mat) / np.sum(field_fr_map)
+
+    # get border score
+    b = (c_m - d_m) / (c_m + d_m)
+    return b, c_m, d_m
+
+
+def _shuffle_fields(field_map, fr_map):
+    """
+    shuffles fields in the map
+    :param field_map: as obtained from get_map_fields
+    :param fr_map: 2d firing rate map
+    :return: shuffled_field_map, shuffled_fr_map
+    """
+    height, width = field_map.shape
+    n_fields = int(np.max(field_map)) + 1
+
+    shuffled_field_map = np.zeros_like(field_map)
+    shufflued_fr_map = np.zeros_like(fr_map)
+    xy_shift = np.array([np.random.randint(dim) for dim in [height, width]])
+    for field in range(n_fields):
+        # find field idx and shift (circularly)
+        fields_idx = np.argwhere(field_map == field)
+        shift_fields = fields_idx + xy_shift
+        shift_fields[:, 0] = np.mod(shift_fields[:, 0], height)
+        shift_fields[:, 1] = np.mod(shift_fields[:, 1], width)
+
+        # get shuffled field map and fr map
+        shuffled_field_map[shift_fields[:, 0], shift_fields[:, 1]] = field
+        shufflued_fr_map[shift_fields[:, 0], shift_fields[:, 1]] = fr_map[fields_idx[:, 0], fields_idx[:, 1]]
+    return shuffled_field_map, shufflued_fr_map
+
+
+def _permutation_test_border_score(field_map, fr_map, distance_mat, wall_labels_mask, n_perm=100, sig_alpha=0.02, seed=0):
+    """
+    permuation test for border score. shuffles using the _shuffle_fields function that moves the field ids and the
+    corresponding firing rates
+    :param field_map: as obtained from get_map_fields
+    :param fr_map: 2d firing rate map
+    :param wall_labels_mask: as obtained from get_wall_masks
+    :param n_perm: number of permutations
+    :param sig_alpha: significance level
+    :param seed: random seed
+    :returns: bool, is the border score outside [=1] or within [=0] of the shuffled distribution
+    """
+
+    np.random.seed(seed)
+    b, _, _ = _border_score_solstad(field_map, fr_map, distance_mat, wall_labels_mask)
+    sh_b = np.zeros(n_perm)
+    for perm in range(n_perm):
+        sh_field_map, sh_fr_map = _shuffle_fields(field_map, fr_map)
+        sh_b[perm], _, _ = _border_score_solstad(sh_field_map, sh_fr_map, distance_mat, wall_labels_mask)
+
+    loc = (sh_b >= b).mean()
+    outside_dist = loc <= sig_alpha / 2 or loc >= 1 - sig_alpha / 2
+    return outside_dist
 
 
 # border score auxiliary functions
@@ -697,33 +838,7 @@ def get_map_fields(fr_maps, fr_thr=0.3, min_field_size=20, filt_structure=None):
     return field_maps, n_fields
 
 
-def get_border_proximity_samps(x, y, x_bin_edges, y_bin_edges, non_linear=True, **non_linear_params):
-    """
-    Returns proximity vectos given x y positions. 3 vectors, east, north, and center
-    :param y: array of y positions in cm
-    :param x_bin_edges: x bin edges
-    :param y_bin_edges: y bin edges
-    :param non_linear: if True, computes the proximity matrices with non_linear functions, otherwise uses linear
-    :param non_linear_params: dictionary of parameters for smooth proximity matrix calculation.
-        include border_width_bin, sigmoid_slope_thr, center_gaussian_spread,
-        see get_non_linear_border_proximity_mats for details.
-
-    :return: 3 arrays of proximity (1-distance) for each xy position to the east wall, north wall and center.
-    """
-    x_bin_idx, y_bin_idx = get_xy_samps_pos_bins(x, y, x_bin_edges, y_bin_edges)
-
-    width = len(x_bin_edges)-1
-    height = len(y_bin_edges)-1
-
-    if non_linear:
-        prox_mats = get_non_linear_border_proximity_mats(width=width, height=height, **non_linear_params)
-    else:
-        prox_mats = get_linear_border_proximity_mats(width=width, height=height)
-
-    return prox_mats[:, y_bin_idx, x_bin_idx].T
-
-
-def get_xy_samps_pos_bins(x, y, x_bin_edges, y_bin_edges,):
+def get_xy_samps_pos_bins(x, y, x_bin_edges, y_bin_edges, ):
     """
     Converts x y position samples to the corresponding bin ids based on the limits and step.
     This essentially discretizes the x,y positions into bin ids.

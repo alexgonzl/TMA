@@ -281,10 +281,10 @@ def get_nrmse(y, y_hat):
     return get_rmse(y, y_hat) / np.mean(y, axis=1)
 
 
-def permutation_test(function, x, y=None, n_perm=500, alpha=0.02, seed=0, **func_params):
+def permutation_test(function, x, y=None, n_perm=500, alpha=0.02, seed=0, **function_params):
     """
     Permutation test.
-    :param function: of the form func(x) -> float, or func(x,y) -> float
+    :param function: of the form func(x) -> float, or func(x,y) -> : eg. rs.spearman, np.mean
     :param x: array. first variable
     :param y: array. second variable (must be same length as x)
     :param n_perm: number of permutations
@@ -313,10 +313,10 @@ def permutation_test(function, x, y=None, n_perm=500, alpha=0.02, seed=0, **func
         def perm_func(x2):
             return np.random.permutation(x2)
 
-    real_out = func2(x, **func_params)
+    real_out = func2(x, **function_params)
     for p in range(n_perm):
         x_p = perm_func(x)
-        perm_out[p] = func2(x_p, **func_params)
+        perm_out[p] = func2(x_p, **function_params)
 
     loc = (perm_out >= real_out).mean()
 
@@ -392,7 +392,7 @@ def resultant_vector_length(alpha, w=None, d=None, axis=None, axial_correction=1
     # obtain resultant vector length
     r = np.abs(cmean)
     # obtain mean
-    mean = np.angle(cmean)
+    mean = np.mod(np.angle(cmean),2*np.pi)
 
     # for data with known spacing, apply correction factor to correct for bias
     # in the estimation of r (see Zar, p. 601, equ. 26.16)

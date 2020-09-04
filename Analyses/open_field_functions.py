@@ -261,64 +261,48 @@ def get_session_scores(session_info):
     fr_maps = session_info.get_fr_maps()
 
     of_dat = SimpleNamespace(**session_info.get_track_data())
-    track_params = SimpleNamespace(**session_info.task_params)
+    task_params = SimpleNamespace(**session_info.task_params)
 
     # preallocate output dictionary
-    output_dir = {x: {} for x in ['sp', 'ha', 'hd', 'border', 'grid', 'si']}
+    output_dir = {a: {'model_scores': {}, 'model_coef': {}, 'model_coef_s': {}}
+                  for a in ['sp', 'ha', 'hd', 'border', 'grid', 'si']}
 
-    # speed scores
-    n_units = session_info.n_units
-    scores, model_coef, model_coef_s = \
-        spatial_funcs.get_speed_score_discrete(of_dat.sp, fr,
-                                               track_params.sp_bin_edges_,
-                                               sig_alpha=track_params.sig_alpha,
-                                               n_perm=track_params.n_perm)
+    # prepare analyses
+    analyses = {
+                'sp': [spatial_funcs.get_speed_encoding_model,
+                       {'speed': of_dat.sp, 'fr': fr, 'speed_bin_edges': task_params.sp_bin_edges_,
+                        'sig_alpha': task_params.sig_alpha, 'n_perm': task_params.n_perm}],
 
-    output_dir['sp']['scores'] = scores
-    output_dir['sp']['model_coef'] = model_coef
-    output_dir['sp']['model_coef_s'] = model_coef_s
+                'ha': [spatial_funcs.get_angle_encoding_model,
+                       {'angle': of_dat.ha, 'fr': fr, 'ang_bin_edges': task_params.ang_bin_edges_,
+                        'speed': of_dat.sp, 'min_speed': task_params.min_speed_thr,
+                        'max_speed': task_params.max_speed_thr, 'sig_alpha': task_params.sig_alpha}],
 
-    # head direction scores
-    scores, model_coef, model_coef_s = \
-        spatial_funcs.get_angle_score(of_dat.hd, fr,
-                                      track_params.ang_bin_edges_,
-                                      speed=of_dat.sp,
-                                      min_speed=track_params.min_speed_thr,
-                                      max_speed=track_params.max_speed_thr,
-                                      sig_alpha=track_params.sig_alpha)
+                'hd': [spatial_funcs.get_angle_encoding_model,
+                       {'angle': of_dat.hd, 'fr': fr, 'ang_bin_edges': task_params.ang_bin_edges_,
+                        'speed': of_dat.sp, 'min_speed': task_params.min_speed_thr,
+                        'max_speed': task_params.max_speed_thr, 'sig_alpha': task_params.sig_alpha}],
 
-    output_dir['hd']['scores'] = scores
-    output_dir['hd']['model_coef'] = model_coef
-    output_dir['hd']['model_coef_s'] = model_coef_s
+                'border': [spatial_funcs.get_border_encoding_model,
+                           {'x': of_dat.x, 'y': of_dat.y, 'fr': fr, 'fr_maps': fr_maps,
+                            'x_bin_edges': task_params.x_bin_edges_, 'y_bin_edges': task_params.y_bin_edges_,
+                            'compute_solstad': True, 'sig_alpha': task_params.sig_alpha, 'n_perm':task_params.n_perm,
+                            'border_fr_thr': task_params.border_fr_thr,
+                            'min_field_size_bins': task_params.border_min_field_size_bins,
+                            'border_width_bins': task_params.border_width_bins,
+                            'non_linear': True}],
 
-    # head angle scores
-    scores, model_coef, model_coef_s, ang_bin_centers = \
-        spatial_funcs.get_angle_score(of_dat.ha, fr,
-                                      track_params.ang_bin_edges_,
-                                      speed=of_dat.sp,
-                                      min_speed=track_params.min_speed_thr,
-                                      max_speed=track_params.max_speed_thr,
-                                      sig_alpha=track_params.sig_alpha)
+                'grid': [],
+                'si': []
+                }
 
-    output_dir['ha']['scores'] = scores
-    output_dir['ha']['model_coef'] = model_coef
-    output_dir['ha']['model_coef_s'] = model_coef_s
+    for analysis in analyses.keys():
+        function = analyses[analysis][0]
+        arguments = analyses[analysis][1]
+        analysis_out = function(**arguments)
 
-    # border scores
-    scores, model_coef, model_coef_s, = \
-        spatial_funcs.get_border_score(of_dat.x, of_dat.y, fr, fr_maps,
-                                       track_params.x_cm_lims,
-                                       track_params.y_cm_lims, track_params.cm_bin,
-                                       sig_alpha=track_params.sig_alpha,
-                                       n_perm=track_params.n_perm,
-                                       border_fr_thr=track_params.border_fr_thr,
-                                       min_field_size_bins=track_params.border_min_field_size_bins,
-                                       border_width_bins=track_params.border_width_bins,
-                                       non_linear=True)
-
-    output_dir['border']['scores'] = scores
-    output_dir['border']['model_coef'] = model_coef
-    output_dir['border']['model_coef_s'] = model_coef_s
+        for key, val in analysis_out.items():
+            output_dir[analysis][key] = val
 
     return NotImplementedError
 

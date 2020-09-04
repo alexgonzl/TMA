@@ -468,7 +468,7 @@ class SubjectSessionInfo(SubjectInfo):
             wfi = None
             wfi2 = None
 
-            if (not session_paths['Cell_Spikes'].exists()) or overwrite:
+            if (not session_paths['cluster_spikes'].exists()) or overwrite:
                 print('Spikes Files not Found or overwrite=1, creating them.')
 
                 spikes, wfi = spike_funcs.get_session_spikes(self)
@@ -654,7 +654,7 @@ def get_task_params(session_info):
                 'spatial_sigma': 2,  # spatial smoothing sigma factor [au]
                 'spatial_window_size': 5,  # number of spatial position bins to smooth [bins]
                 'temporal_window_size': 11,  # smoothing temporal window for filtering [bins]
-                'temporal_angle_window_size': 11,  # smoothing temporal window for angles [bins]
+                # 'temporal_angle_window_size': 11,  # smoothing temporal window for angles [bins]
                 'temporal_window_type': 'hann',  # window type for temporal window smoothing
 
                 # statistical tests parameters:
