@@ -2,7 +2,8 @@ import numpy as np
 from scipy.signal import filtfilt
 from types import SimpleNamespace
 
-from treemazeanalyses2 import Utils as filter_funcs, Analyses as spatial_funcs
+from treemazeanalyses2.Utils import filter_functions as filter_funcs
+from treemazeanalyses2.Analyses import spatial_functions as spatial_funcs
 
 
 def get_session_track_data(session_info):

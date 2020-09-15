@@ -8,5 +8,5 @@ setup(name='TreeMazeAnalyses2',
       packages=find_packages(exclude='Notebooks'),
       include_package_data=True,
       platforms='any',
-      install_requires=[i.strip() for i in open("requirements.txt").readlines()],
-)
+      # install_requires=[i.strip() for i in open("requirements.txt").readlines()],
+      )

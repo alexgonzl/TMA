@@ -1,1 +1,2 @@
-from TreeMazeAnalyses2.Utils import filter_functions, robust_stats
+from . import filter_functions
+from . import robust_stats

@@ -7,9 +7,8 @@ import h5py
 import sys
 import traceback
 
-import treemazeanalyses2.Analyses.spike_functions as spike_funcs
-import treemazeanalyses2.Analyses.open_field_functions as of_funcs
-
+from . import spike_functions as spike_funcs
+from . import open_field_functions as of_funcs
 
 import scipy.signal as signal
 
