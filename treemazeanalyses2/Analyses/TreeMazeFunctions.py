@@ -1,26 +1,19 @@
 import numpy as np
 import pandas as pd
-from scipy import signal, interpolate
-import sys, os, time
+from scipy import signal
+import sys, time
 from pathlib import Path
 import h5py
 
 sys.path.append('../PreProcessing/')
 sys.path.append('../Lib/')
-sys.path.append('../Analyses/')
+sys.path.append('/')
 import spatial_tuning as ST
-import stats_functions as StF
-import Pre_Processing.pre_process_functions as pp
 from filters_ag import *
-import nept
 
-import seaborn as sns
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 from shapely.geometry import Point
-from shapely.geometry.polygon import LinearRing, Polygon
-from collections import Counter
-from descartes import PolygonPatch
+from shapely.geometry.polygon import Polygon
 
 font = {'family' : 'sans-serif',
         'size'   : 20}

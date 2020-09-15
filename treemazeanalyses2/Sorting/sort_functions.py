@@ -18,7 +18,7 @@ import spiketoolkit as st
 
 from spikemetrics.metrics import isi_violations
 
-import Pre_Processing.pre_process_functions as pp
+from treemazeanalyses2 import Pre_Processing as pp
 
 import matplotlib.pyplot as plt
 import seaborn as sns

@@ -6,8 +6,9 @@ import json
 import h5py
 import sys
 import traceback
-import Analyses.spike_functions as spike_funcs
-import Analyses.open_field_functions as of_funcs
+
+import treemazeanalyses2.Analyses.spike_functions as spike_funcs
+import treemazeanalyses2.Analyses.open_field_functions as of_funcs
 
 
 import scipy.signal as signal

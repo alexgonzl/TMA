@@ -1,5 +1,4 @@
 import sys
-import os
 from datetime import datetime
 import traceback
 import time
@@ -18,7 +17,7 @@ from fooof import FOOOF
 # pkg_dir = cwd.parent
 # sys.path.append(str(pkg_dir))
 
-import Utils.robust_stats as rs
+import treemazeanalyses2.Utils.robust_stats as rs
 
 import matplotlib.pyplot as plt
 import seaborn as sns

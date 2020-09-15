@@ -3,7 +3,7 @@ import pandas as pd
 from scipy import ndimage, stats
 from sklearn import linear_model as lm
 import statsmodels.api as sm
-from Utils import robust_stats as rs
+from TreeMazeAnalyses2.Utils import robust_stats as rs
 
 
 # spatial manipulation functions
