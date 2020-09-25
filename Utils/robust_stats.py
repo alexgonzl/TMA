@@ -203,6 +203,13 @@ def get_ar2(y, y_hat, p):
     return 1 - (n - 1) / (n - p - 1) * (1 - r2)
 
 
+def get_poisson_deviance(y, y_hat):
+    if y.ndim == 1:
+        y = y.reshape(1, -1)
+        y_hat = y_hat.reshape(1, -1)
+    return 2 * np.sum((np.log(y ** y) - np.log(y_hat ** y) - y + y_hat), axis=1)
+
+
 def get_poisson_d2(y, y_hat):
     """
     Pseudo coefficient of determination for a poisson glm. This implementation is the deviance square.
@@ -216,10 +223,17 @@ def get_poisson_d2(y, y_hat):
         y_hat = y_hat.reshape(1, -1)
 
     y_bar = y.mean(axis=1)
-    d = 2 * np.sum((np.log(y ** y) - np.log(y_hat ** y) - y + y_hat), axis=1)
-    d_null = 2 * np.sum((np.log(y ** y) - np.log(y_bar ** y) - y + y_bar), axis=1)
+    d = get_poisson_deviance(y, y_hat)
+    d_null = get_poisson_deviance(y, y_bar)
     d2 = 1 - d / d_null
     return d2
+
+
+def get_poisson_pearson_chi2(y, y_hat):
+    if y.ndim == 1:
+        y = y.reshape(1, -1)
+        y_hat = y_hat.reshape(1, -1)
+    return np.sum((y - y_hat)**2/y_hat, axis=1)
 
 
 def get_poisson_ad2(y, y_hat, p):
@@ -347,12 +361,12 @@ def get_discrete_data_mat(data, bin_edges):
 
 def spearman(x, y):
     """spearman correlation"""
-    return stats.spearmanr(x, y)[0]
+    return stats.spearmanr(x, y, nan_policy='omit')[0]
 
 
 def kendall(x, y):
     """kendall correlation"""
-    return stats.kendalltau(x, y)[0]
+    return stats.kendalltau(x, y, nan_policy='omit')[0]
 
 
 def pearson(x, y):
