@@ -1,7 +1,6 @@
 import numpy as np
 from scipy.signal import filtfilt
 from types import SimpleNamespace
-import pandas as pd
 
 import Analyses.spatial_functions as spatial_funcs
 import Utils.filter_functions as filter_funcs
@@ -30,7 +29,7 @@ def get_session_track_data(session_info):
     ha_vt = np.mod(np.deg2rad(ha_vt), 2 * np.pi)  # convert to radians.
 
     x, y, ha = _process_track_data(x_vt, y_vt, ha_vt, p)
-    speed, hd = spatial_funcs.get_velocity(x, y, p.vt_rate)
+    speed, hd = spatial_funcs.compute_velocity(x, y, p.vt_rate)
 
     # convert to cm
     x /= 10
@@ -46,14 +45,14 @@ def get_session_track_data(session_info):
     speed_rs = filter_funcs.resample_signal(t_vt, t_rs, speed)
 
     # occupation_counts in the spatial matrix
-    pos_map_counts = spatial_funcs.get_position_map_counts(x_rs, y_rs, p.x_bin_edges_, p.y_bin_edges_)
-    pos_counts_sm = spatial_funcs.get_smoothed_map(pos_map_counts, n_bins=p.spatial_window_size,
-                                                   sigma=p.spatial_sigma)
+    pos_map_counts = spatial_funcs.histogram_2d(x_rs, y_rs, p.x_bin_edges_, p.y_bin_edges_)
+    pos_counts_sm = spatial_funcs.smooth_2d_map(pos_map_counts, n_bins=p.spatial_window_size,
+                                                sigma=p.spatial_sigma)
 
     pos_valid_mask = pos_counts_sm >= p.occ_num_thr
 
     pos_map_secs = pos_map_counts * time_step
-    pos_map_secs = spatial_funcs.get_smoothed_map(pos_map_secs, p.spatial_window_size, p.spatial_sigma)
+    pos_map_secs = spatial_funcs.smooth_2d_map(pos_map_secs, p.spatial_window_size, p.spatial_sigma)
 
     # create output dictionary
     of_track_dat = {
@@ -164,9 +163,9 @@ def get_session_spike_maps(session_info):
     n_width_bins = track_params.n_width_bins
     spike_maps = np.zeros((n_units, n_height_bins, n_width_bins))
 
+    # get spike count maps. note that these are un-smooth.
     for unit in range(n_units):
-        x_spk, y_spk = spatial_funcs.get_bin_spikes_xy(spikes[unit], of_dat.x, of_dat.y)
-        spike_maps[unit] = spatial_funcs.get_position_map_counts(x_spk, y_spk, x_bin_edges, y_bin_edges)
+        spike_maps[unit] = spatial_funcs.get_spike_map(spikes[unit], of_dat.x, of_dat.y, x_bin_edges, y_bin_edges)
 
     return spike_maps
 
@@ -200,8 +199,8 @@ def get_session_fr_maps(session_info):
         temp_fr_map = temp_spk_map / pos_map_secs2
         temp_fr_map[~valid_mask] = 0.0
 
-        fr_maps[unit] = spatial_funcs.get_smoothed_map(temp_fr_map, n_bins=track_params.spatial_window_size,
-                                                       sigma=track_params.spatial_sigma)
+        fr_maps[unit] = spatial_funcs.smooth_2d_map(temp_fr_map, n_bins=track_params.spatial_window_size,
+                                                    sigma=track_params.spatial_sigma)
 
     return fr_maps
 
@@ -234,11 +233,11 @@ def get_session_fr_maps_cont(session_info):
     fr_maps = np.zeros((n_units, n_height_bins, n_width_bins))
 
     for unit in range(n_units):
-        temp_fr_map = spatial_funcs.get_weighted_position_map(x, y, fr[unit], x_bin_edges, y_bin_edges)
+        temp_fr_map = spatial_funcs.w_histogram_2d(x, y, fr[unit], x_bin_edges, y_bin_edges)
         temp_fr_map[valid_mask] /= pos_counts_sm[valid_mask]
 
-        fr_maps[unit] = spatial_funcs.get_smoothed_map(temp_fr_map, n_bins=track_params.spatial_window_size,
-                                                       sigma=track_params.spatial_sigma)
+        fr_maps[unit] = spatial_funcs.smooth_2d_map(temp_fr_map, n_bins=track_params.spatial_window_size,
+                                                    sigma=track_params.spatial_sigma)
 
     return fr_maps
 
@@ -286,11 +285,11 @@ def get_session_scores(session_info):
                 'border': [spatial_funcs.get_border_encoding_model,
                            {'x': of_dat.x, 'y': of_dat.y, 'fr': fr, 'fr_maps': fr_maps,
                             'x_bin_edges': task_params.x_bin_edges_, 'y_bin_edges': task_params.y_bin_edges_,
-                            'compute_solstad': True, 'sig_alpha': task_params.sig_alpha, 'n_perm':task_params.n_perm,
+                            'compute_solstad': True, 'sig_alpha': task_params.sig_alpha, 'n_perm': task_params.n_perm,
                             'border_fr_thr': task_params.border_fr_thr,
                             'min_field_size_bins': task_params.border_min_field_size_bins,
                             'border_width_bins': task_params.border_width_bins,
-                            'non_linear': True}],
+                            'feat_type': task_params.border_enc_model_type}],
 
                 'grid': [],
                 'si': []

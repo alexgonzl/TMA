@@ -664,10 +664,15 @@ def get_task_params(session_info):
                 # other analysis parameters
                 'border_width_cm': 9,  # distance from border to consider it a border cell [cm]
                 'border_width_bins': 3,  # distance from border to consider it a border cell [bins]
-                'border_min_field_size_cm2': 180,  # minimumm area for fields in cm2
-                'border_min_field_size_bins': 20,  # minimumm area for fields in # of bins
+                'border_min_field_size_cm2': 180,  # minimum area for fields in cm2
+                'border_min_field_size_bins': 20,  # minimum area for fields in # of bins
                 'border_fr_thr': 0.25,  # firing rate threshold
-                'border_model_non_lin': True,  # if use non-linear model for border score encodign model
+                # type of encoding model. see spatial_funcs.get_border_encoding_features
+                'border_enc_model_type': 'linear',
+                'border_enc_model_feature_params_': {'center_gaussian_spread': 0.2,  # as % of environment
+                                                     'sigmoid_slope_thr': 0.15,  # value of signmoid at border width
+                                                     }
+
             }
 
             # derived parameters

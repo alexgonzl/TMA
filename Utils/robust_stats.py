@@ -159,11 +159,11 @@ def get_simple_regression_se(x, y, y_hat):
     var_x = np.var(x)
 
     # standard error of the model
-    s = np.std(y-y_hat) * np.sqrt((n - 1) / (n - 2))
+    s = np.std(y - y_hat) * np.sqrt((n - 1) / (n - 2))
 
     # standard error of the coefficients
-    se_b0 = s/n_sr * np.sqrt(1 + x.mean() ** 2 / var_x)
-    se_b1 = s/n_sr * 1 / np.sqrt(var_x)
+    se_b0 = s / n_sr * np.sqrt(1 + x.mean() ** 2 / var_x)
+    se_b1 = s / n_sr * 1 / np.sqrt(var_x)
 
     return se_b0, se_b1
 
@@ -233,7 +233,7 @@ def get_poisson_pearson_chi2(y, y_hat):
     if y.ndim == 1:
         y = y.reshape(1, -1)
         y_hat = y_hat.reshape(1, -1)
-    return np.sum((y - y_hat)**2/y_hat, axis=1)
+    return np.sum((y - y_hat) ** 2 / y_hat, axis=1)
 
 
 def get_poisson_ad2(y, y_hat, p):
@@ -349,7 +349,7 @@ def get_discrete_data_mat(data, bin_edges):
     """
 
     n_samps = len(data)
-    n_bins = len(bin_edges)-1
+    n_bins = len(bin_edges) - 1
     data_bin_ids = np.digitize(data, bins=bin_edges) - 1  # shift ids so that first bin center corresponds to id 0
 
     design_matrix = np.zeros((n_samps, n_bins))
@@ -406,7 +406,7 @@ def resultant_vector_length(alpha, w=None, d=None, axis=None, axial_correction=1
     # obtain resultant vector length
     r = np.abs(cmean)
     # obtain mean
-    mean = np.mod(np.angle(cmean),2*np.pi)
+    mean = np.mod(np.angle(cmean), 2 * np.pi)
 
     # for data with known spacing, apply correction factor to correct for bias
     # in the estimation of r (see Zar, p. 601, equ. 26.16)
@@ -479,6 +479,27 @@ def _complex_mean(alpha, w=None, axis=None, axial_correction=1):
             print('Could not compute complex mean for MVL calculation', e)
             cmean = np.nan
     return cmean
+
+
+def compute_autocorr_2d(X):
+    """
+    Normalized 2D autocorrelation using the FFT approach.
+    :param X: 2d np.ndarray
+    :return: autocorrelation
+    """
+
+    assert isinstance(X, np.ndarray), 'input needs to be a numpy 2d array'
+    assert X.ndim == 2, 'input needs to be a 2d array'
+
+    n, m = X.shape
+
+    H = np.fft.fft2(X, [2 * n - 1, 2 * m - 1])  # 2d FFT w zero padding
+    H /= np.sqrt((H ** 2).sum())  # variance normalization
+
+    acc = np.fft.fftshift(np.fft.ifft2(H * np.conjugate(H)))  # HxH* and shifts fft quadrants to the center
+    acc = np.real(acc)  # takes care of numerical errors
+
+    return acc
 
 # def getDirZoneSpikeMaps(spikes, PosDat, sp_thr=[5, 2000]):
 #     SegSeq = PosDat['SegDirSeq']
