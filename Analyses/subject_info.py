@@ -669,9 +669,14 @@ def get_task_params(session_info):
                 'border_fr_thr': 0.25,  # firing rate threshold
                 # type of encoding model. see spatial_funcs.get_border_encoding_features
                 'border_enc_model_type': 'linear',
+                # these are ignoed if border_enc_model_type is linear.
                 'border_enc_model_feature_params_': {'center_gaussian_spread': 0.2,  # as % of environment
-                                                     'sigmoid_slope_thr': 0.15,  # value of signmoid at border width
-                                                     }
+                                                     'sigmoid_slope_thr': 0.15,  # value of sigmoid at border width
+                                                     },
+                'reg_type': 'linear',
+                # grid encoding model
+                'grid_fit': 'auto_corr',  # ['auto_corr', 'moire'], how to find parameters for grid
+
 
             }
 

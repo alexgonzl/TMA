@@ -6,10 +6,11 @@ import statsmodels.api as sm
 from Utils import robust_stats as rs
 from skimage import draw
 from skimage.transform import rotate
+from joblib import delayed, Parallel
 
 
 # spatial manipulation functions
-def smooth_2d_map(bin_map, n_bins=8, sigma=2):
+def smooth_2d_map(bin_map, n_bins=5, sigma=2):
     """
     :param bin_map: map to be smooth.
         array in which each cell corresponds to the value at that xy position
@@ -50,8 +51,21 @@ def w_histogram_2d(x, y, w, x_edges, y_edges):
     """
     # hist2d converts to a matrix, which reverses x,y
     # inverse order here to preserve visualization.
-    pos_counts_2d, _, _ = np.histogram2d(y, x, bins=[y_edges, x_edges], weights=w)
-    return pos_counts_2d
+    pos_sum_2d, _, _ = np.histogram2d(y, x, bins=[y_edges, x_edges], weights=w)
+
+    return pos_sum_2d
+
+
+def firing_rate_2_rate_map(fr, x, y, x_edges, y_edges, count_thr=1, n_bins=5, sigma=2):
+    fr_sum_2d = w_histogram_2d(x, y, fr, x_edges, y_edges)
+    pos_counts_2d = histogram_2d(x, y, x_edges, y_edges)
+
+    fr_avg_pos = np.zeros_like(fr_sum_2d)
+    fr_avg_pos[pos_counts_2d > count_thr] = fr_sum_2d[pos_counts_2d > count_thr] \
+                                            / pos_counts_2d[pos_counts_2d > count_thr]
+
+    sm_fr_map = smooth_2d_map(fr_avg_pos, n_bins=n_bins, sigma=sigma)
+    return sm_fr_map
 
 
 def compute_velocity(x, y, time_step):
@@ -530,13 +544,14 @@ def get_border_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges,
     if compute_solstad:
         border_score_solstad_params = {'border_fr_thr': border_fr_thr,
                                        'min_field_size_bins': min_field_size_bins,
-                                       'border_width_bins': border_width_bins,
-                                       'sig_alpha': sig_alpha,
-                                       'n_perm': n_perm}
-        border_score, score_sig = get_border_score_solstad(fr_maps, **border_score_solstad_params)
+                                       'border_width_bins': border_width_bins}
+        border_score = compute_border_score_solstad(fr_maps, **border_score_solstad_params)
+        score_sig = permutation_test_border_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges,
+                                                  n_perm=n_perm, alpha=sig_alpha, true_bs=border_score, n_jobs=8,
+                                                  **border_score_solstad_params)
     else:
-        border_score = np.zeros(n_units)*np.nan
-        score_sig = np.zeros(n_units)*np.nan
+        border_score = np.zeros(n_units) * np.nan
+        score_sig = np.zeros(n_units) * np.nan
 
     # border encoding model
     # get proximity vectors
@@ -560,7 +575,7 @@ def get_border_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges,
     scores = pd.DataFrame(index=range(n_units), columns=['solstad_score', 'solstad_sig', 'aR2', 'rmse', 'nrmse'])
     scores['solstad_score'] = border_score
     scores['solstad_sig'] = score_sig
-    scores['aR2'] = rs.get_ar2(fr, fr_hat, n_predictors-1)  # minus bias term
+    scores['aR2'] = rs.get_ar2(fr, fr_hat, n_predictors - 1)  # minus bias term
     scores['rmse'] = rs.get_rmse(fr, fr_hat)
     scores['nrmse'] = rs.get_nrmse(fr, fr_hat)
 
@@ -593,8 +608,7 @@ def get_border_encoding_features(x, y, x_bin_edges, y_bin_edges, feat_type='line
     return prox_mats[:, y_bin_idx, x_bin_idx].T
 
 
-def get_border_score_solstad(fr_maps, border_fr_thr=0.3, min_field_size_bins=20, border_width_bins=3,
-                             sig_alpha=0.02, n_perm=100, return_all=False):
+def compute_border_score_solstad(fr_maps, border_fr_thr=0.3, min_field_size_bins=20, border_width_bins=3, return_all=False):
     """
     Border score method from Solstad et al Science 2008. Returns the border score along with the max coverage by a field
     and the weighted firing rate. This works for a single fr_map or multiple.
@@ -604,8 +618,6 @@ def get_border_score_solstad(fr_maps, border_fr_thr=0.3, min_field_size_bins=20,
     :param min_field_size_bins: int, # of bins that correspond to the total area of the field. fields found
                     under this threshold are discarded
     :param border_width_bins: wall width by which the coverage is determined.
-    :param sig_alpha. float. permutation significance alpha
-    :param n_perm: int. number of permuations for significance
     :param return_all: bool, if False only returns the border_score
     :return: border score, max coverage, distanced weighted fr for each unit in fr_maps.
 
@@ -631,7 +643,6 @@ def get_border_score_solstad(fr_maps, border_fr_thr=0.3, min_field_size_bins=20,
 
     # pre-allocate scores
     border_score = np.zeros(n_units) * np.nan
-    border_sig = np.zeros(n_units) * np.nan
     border_max_cov = np.zeros(n_units) * np.nan
     border_w_fr = np.zeros(n_units) * np.nan
 
@@ -643,13 +654,11 @@ def get_border_score_solstad(fr_maps, border_fr_thr=0.3, min_field_size_bins=20,
         if n_fields_unit > 0:
             border_score[unit], border_max_cov[unit], border_w_fr[unit] = \
                 _border_score_solstad(field_map, fr_map, distance_mat, wall_labels_mask)
-            border_sig[unit] = _permutation_test_border_score(field_map, fr_map, distance_mat, wall_labels_mask,
-                                                              n_perm=n_perm, sig_alpha=sig_alpha,
-                                                              seed=int(n_fields_unit*unit))
+
     if return_all:
-        return border_score, border_sig, border_max_cov, border_w_fr
+        return border_score, border_max_cov, border_w_fr
     else:
-        return border_score, border_sig
+        return border_score
 
 
 def _border_score_solstad(field_map, fr_map, distance_mat, wall_labels_mask):
@@ -706,7 +715,8 @@ def _shuffle_fields(field_map, fr_map):
     return shuffled_field_map, shufflued_fr_map
 
 
-def _permutation_test_border_score(field_map, fr_map, distance_mat, wall_labels_mask, n_perm=100, sig_alpha=0.02, seed=0):
+def _permutation_test_border_score(field_map, fr_map, distance_mat, wall_labels_mask, n_perm=100, sig_alpha=0.02,
+                                   seed=0):
     """
     permuation test for border score. shuffles using the _shuffle_fields function that moves the field ids and the
     corresponding firing rates
@@ -729,6 +739,45 @@ def _permutation_test_border_score(field_map, fr_map, distance_mat, wall_labels_
     loc = (sh_b >= b).mean()
     outside_dist = loc <= sig_alpha / 2 or loc >= 1 - sig_alpha / 2
     return outside_dist
+
+
+def permutation_test_border_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges, n_perm=200, alpha=0.02,
+                                  true_bs=None, n_jobs=8, **border_score_params):
+    n_samps = len(x)
+    if fr.ndim == 1:
+        n_units = 1
+        fr = fr[np.newaxis,]
+        fr_maps = fr_maps[np.newaxis,]
+    else:
+        n_units, _ = fr.shape
+    assert n_samps == fr.shape[1], 'Mismatch lengths between samples and fr.'
+
+    if true_bs is None:
+        true_bs = compute_border_score_solstad(fr_maps, **border_score_params)
+
+    def p_worker(unit_id):
+        """ helper function for parallelization. Computes a single shuffled border score per unit."""
+        fr_unit = fr[unit_id]
+        # roll firing rate
+        p_fr = np.roll(fr_unit, np.random.randint(n_samps))
+        # get rate map
+        p_fr_map = firing_rate_2_rate_map(p_fr, x, y, x_bin_edges, y_bin_edges)
+        # get single border score
+        p_bs = compute_border_score_solstad(p_fr_map, **border_score_params)
+        return p_bs
+
+    sig = np.zeros(n_units)
+    with Parallel(n_jobs=n_jobs) as parallel:
+        for unit in range(n_units):
+            if not np.isnan(true_bs[unit]):
+                # get border score shuffle dist
+                perm_bs = parallel(delayed(p_worker)(unit) for perm in range(n_perm))
+                # find location of true gs
+                loc = np.array(perm_bs >= true_bs[unit]).mean()
+                # determine if outside distribution @ alpha level
+                sig[unit] = np.logical_or(loc <= alpha / 2, loc >= 1 - alpha / 2)
+
+    return sig
 
 
 # border score auxiliary functions
@@ -759,8 +808,8 @@ def get_wall_masks(map_height, map_width, wall_width):
 
     mask = np.ones((4, map_height, map_width), dtype=int) * -1
 
-    mask[0][:, map_width:(map_width - wall_width-1):-1] = 0  # right / East
-    mask[1][map_height:(map_height - wall_width-1):-1, :] = 1  # top / north
+    mask[0][:, map_width:(map_width - wall_width - 1):-1] = 0  # right / East
+    mask[1][map_height:(map_height - wall_width - 1):-1, :] = 1  # top / north
     mask[2][:, 0:wall_width] = 2  # left / West
     mask[3][0:wall_width, :] = 3  # bottom / south
 
@@ -941,8 +990,8 @@ def get_sigmoid_border_proximity_mats(width, height, border_width_bins=3,
 
 
 # grid scoring:
-def get_grid_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, sig_alpha=0.02, n_perm=200,
-                            grid_fit='auto_corr', reg_type='linear', **kwargs):
+def get_grid_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, grid_fit='auto_corr', reg_type='linear',
+                            compute_gs_sig=False, sig_alpha=0.02, n_perm=200, **kwargs):
     """
     Grid encoding model. Also obtains grid score.
     :param x: array n_samps of x positions of the animal
@@ -956,8 +1005,9 @@ def get_grid_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, sig_alp
     :param grid_fit: two types ['auto_corr', 'moire']. if auto_corr, uses the scale/angle obtain from the autocorr to
     generate encoding feature. otherwise, uses a grid-search of different moire patterns
     :param reg_type: string ['linear', 'poisson'], use linear for firing rate, poisson for binned spikes
-    :param kwargs:
-    :return: scores: pd.Dataframe with columns ['grid_score', 'grid_sig', 'scale', 'angle', 'aR2', 'rmse', 'nrmse'],
+    :param compute_gs_sig: bool. if True, performs permutations to determine grid score significance
+    :param kwargs: grid_score parameters
+    :return: scores: pd.Dataframe with columns ['grid_score', 'grid_sig', 'scale', 'phase', 'aR2', 'rmse', 'nrmse'],
           model_coef: array n_units x 2 of encoding coefficients [bias, east, north, west, south, center]
           model_coef_sem: array n_units x 4 sem for the coefficients
     """
@@ -976,33 +1026,42 @@ def get_grid_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, sig_alp
     del n_units2
 
     # pre-allocated outputs
-    coefs = np.zeros((n_units, 2))  # 2 coefficients, 1 for moire fit + bias
+    coefs = np.zeros((n_units, 2)) * np.nan  # 2 coefficients, 1 for moire fit + bias
     coefs_sem = np.zeros((n_units, 2)) * np.nan
     scores = pd.DataFrame(index=range(n_units),
-                          columns=['grid_score', 'grid_sig', 'scale', 'angle', 'r2', 'rmse', 'nrmse'])
+                          columns=['grid_score', 'grid_sig', 'scale', 'phase', 'r2', 'rmse', 'nrmse'])
 
     # compute grid score
     for unit in range(n_units):
+        print(f'Computing Grid Score unit # {unit}')
         temp = compute_grid_score(fr_maps[unit], **kwargs)
         scores.at[unit, 'grid_score'] = temp[0]
         scores.at[unit, 'scale'] = temp[1]
-        scores.at[unit, 'angle'] = temp[2]
+        scores.at[unit, 'phase'] = temp[2]
+
+    if compute_gs_sig:
+        scores['grid_sig'] = permutation_test_grid_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges,
+                                                         n_perm=n_perm, alpha=sig_alpha, true_gs=scores['grid_score'],
+                                                         n_jobs=8)
 
     # environment grid
     if grid_fit == 'auto_corr':
-        x_mat, y_mat = np.meshgrid(np.arange(width), np.arange(height))
-        env_points = PointsOF(x_mat.flatten(), y_mat.flatten())
+
         for unit in range(n_units):
-            fr_map = fr_maps[unit]
 
-            # max field location becomes the spatial phase of the moire grid / center of it.
-            max_field_loc = np.unravel_index(np.argmax(fr_map[unit]), fr_map.shape)
-            center = PointsOF(max_field_loc[1], max_field_loc[0])
+            if ~np.isnan(scores.at[unit, 'grid_score']):
+                fr_map = fr_maps[unit]
 
-            moire_mat = generate_moire_grid(env_points, center, scores.at[unit, 'scales'], scores.at[unit, 'angle'])
+                # max field location becomes the spatial phase of the moire grid / center of it.
+                max_field_loc = np.unravel_index(np.argmax(fr_map), fr_map.shape)
 
-            _, coefs[unit, :], scores.at[unit, 'r2'], scores.at[unit, 'rmse'], scores.at[unit, 'nrmse'] = \
-                get_encoding_map_fit(fr, moire_mat, x, y, x_edges=x_bin_edges, y_edges=y_bin_edges, reg_type=reg_type)
+                moire_mat = generate_moire_grid(width, height, [max_field_loc[1], max_field_loc[0]],
+                                                scores.at[unit, 'scale'], scores.at[unit, 'phase'])
+
+                _, coef_temp, scores.at[unit, 'r2'], scores.at[unit, 'rmse'], scores.at[unit, 'nrmse'] = \
+                    get_encoding_map_fit(fr[unit], moire_mat, x, y, x_edges=x_bin_edges, y_edges=y_bin_edges,
+                                         reg_type=reg_type)
+                coefs[unit, :] = coef_temp.flatten()
 
     elif grid_fit == 'moire':
         raise NotImplementedError
@@ -1012,7 +1071,7 @@ def get_grid_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, sig_alp
     return scores, coefs, coefs_sem
 
 
-def get_encoding_map_fit(fr, maps, x, y, x_edges, y_edges, reg_type='linear'):
+def get_encoding_map_fit(fr, maps, x, y, x_edges, y_edges, reg_type='linear', bias_term=False):
     """
     From spikes, an amplitude matrix map corresponding to locations, and the locations of the animals obtain encoding
     model predicting the firing or spiking as function of location.
@@ -1023,19 +1082,20 @@ def get_encoding_map_fit(fr, maps, x, y, x_edges, y_edges, reg_type='linear'):
     :param x_edges:
     :param y_edges:
     :param reg_type:  str, regression type ['poisson', 'linear']
+    :param bias_term: boolean, add a bias term to the fit
     :return: predictions [fr_hat], coeficcients [coefficients], variance exp. [r2/d2], error [rmse], norm. err. [nrmse]
     """
     n_samps = len(x)
     if fr.ndim == 1:
         n_units = 1
-        fr = fr[np.newaxis, ]
+        fr = fr[np.newaxis,]
     else:
         n_units, _ = fr.shape
-    assert n_samps == fr.shape[1], 'Mismatch lengths between speed and fr.'
+    assert n_samps == fr.shape[1], 'Mismatch lengths between samples and fr.'
 
     # if only one map, add a singleton axis
     if maps.ndim == 2:
-        maps = maps[np.newaxis, ]
+        maps = maps[np.newaxis,]
 
     # fit model
     _, x_bin_idx = rs.get_discrete_data_mat(x, bin_edges=x_edges)
@@ -1044,25 +1104,27 @@ def get_encoding_map_fit(fr, maps, x, y, x_edges, y_edges, reg_type='linear'):
     n_maps, height, width = maps.shape
 
     # encoding vectors
-    X = np.zeros((n_samps, n_maps))
-    for mm in range(n_maps):
-        X[:, mm] = maps[y_bin_idx, x_bin_idx]
+    if bias_term:
+        bias = 1
+    else:
+        bias = 0
 
-    # add constant column
-    X = sm.add_constant(X)
+    X = np.ones((n_samps, n_maps + bias))  # + bias vector
+    for mm in range(n_maps):
+        X[:, mm + bias] = maps[mm, y_bin_idx, x_bin_idx]
 
     # get model and fit
     if reg_type == 'poisson':
-        model = lm.PoissonRegressor(alpha=0, fit_intercept=False).fit(X, fr)
+        model = lm.PoissonRegressor(alpha=0, fit_intercept=False).fit(X, fr.T)
     elif reg_type == 'linear':
-        model = lm.LinearRegression(fit_intercept=False).fit(X, fr)
+        model = lm.LinearRegression(fit_intercept=False).fit(X, fr.T)
     else:
         print(f'method {reg_type} not implemented.')
         raise NotImplementedError
-    coef = model.coef_
+    coef = model.coef_.T
 
     # get predictions
-    fr_hat = model.predict(X)
+    fr_hat = model.predict(X).T
 
     # get_scores
     if reg_type == 'poisson':
@@ -1078,6 +1140,70 @@ def get_encoding_map_fit(fr, maps, x, y, x_edges, y_edges, reg_type='linear'):
         raise NotImplementedError
 
     return fr_hat, coef, r2, err, nerr
+
+
+def get_encoding_map_predictions(fr, maps, coefs, x, y, x_edges, y_edges, reg_type='linear', bias_term=False):
+    """
+    Test for 2d map models. Given a set of coefficients and data, obtain predicted firing rate or spikes, along with
+    metrics of performance. Note that the given fr, x, y should be from a held out test set.
+    :param fr: n_units x n_samps array of firing rate or binned spikes
+    :param maps: n_maps x height x width representing the amplitude of the map to be tested
+    :param coefs: n_units x n_coefs,  coefficients of the model. type of coefficients most match regression type
+    :param x: xlocation of the animal
+    :param y: y location of the animal
+    :param x_edges:
+    :param y_edges:
+    :param reg_type:  str, regression type ['poisson', 'linear']
+    :param bias_term: boolean, if there is bias term on the coefficients
+    :returns: predictions [fr_hat], coeficcients [coefficients], variance exp. [r2/d2], error [rmse], norm. err. [nrmse]
+    """
+
+    n_samps = len(x)
+    if fr.ndim == 1:
+        n_units = 1
+        fr = fr[np.newaxis,]
+    else:
+        n_units, _ = fr.shape
+    assert n_samps == fr.shape[1], 'Mismatch lengths between samples and fr.'
+
+    # if only one map, add a singleton axis
+    if maps.ndim == 2:
+        maps = maps[np.newaxis,]
+
+    # prepare data
+    _, x_bin_idx = rs.get_discrete_data_mat(x, bin_edges=x_edges)
+    _, y_bin_idx = rs.get_discrete_data_mat(y, bin_edges=y_edges)
+    n_maps, height, width = maps.shape
+
+    if bias_term:
+        bias = 1
+    else:
+        bias = 0
+
+    X = np.ones((n_samps, n_maps + bias))  # + bias vector
+    for mm in range(n_maps):
+        X[:, mm + bias] = maps[mm, y_bin_idx, x_bin_idx]
+
+    # get model predictions
+    if reg_type == 'linear':
+        fr_hat = X @ coefs.T
+    elif reg_type == 'poisson':
+        fr_hat = np.exp(X @ coefs.T)
+    else:
+        print(f'Method {reg_type} not implemented.')
+        raise NotImplementedError
+
+    # get_scores
+    if reg_type == 'poisson':
+        r2 = rs.get_poisson_d2(fr, fr_hat)
+        err = rs.get_poisson_deviance(fr, fr_hat)
+        nerr = rs.get_poisson_pearson_chi2(fr, fr_hat)
+    else:
+        r2 = rs.get_r2(fr, fr_hat)
+        err = rs.get_rmse(fr, fr_hat)
+        nerr = rs.get_nrmse(fr, fr_hat)
+
+    return fr_hat, r2, err, nerr
 
 
 def compute_grid_score(rate_map, thr=0.1, non_linearity=2, radix_rel_range=None):
@@ -1103,7 +1229,7 @@ def compute_grid_score(rate_map, thr=0.1, non_linearity=2, radix_rel_range=None)
 
     # get autoc-orrelation
     ac_map = rs.compute_autocorr_2d((rate_map / rate_map.max()) ** non_linearity)
-    ac_map = (ac_map/np.abs(ac_map.max()))
+    ac_map = (ac_map / np.abs(ac_map.max()))
 
     ac_map_w = ac_map.shape[1]
     ac_map_h = ac_map.shape[0]
@@ -1144,7 +1270,7 @@ def compute_grid_score(rate_map, thr=0.1, non_linearity=2, radix_rel_range=None)
     field_distances2 = field_distances[closest_six_fields_idx]
 
     mean_field_dist = np.mean(field_distances2.r)
-    angle = np.min(field_distances2.ang)  # min angle corresponds to closest autocorr from x axis
+    grid_phase = np.min(field_distances2.ang)  # min angle corresponds to closest autocorr from x axis
 
     radix_range = np.array(radix_rel_range) * mean_field_dist
 
@@ -1170,7 +1296,48 @@ def compute_grid_score(rate_map, thr=0.1, non_linearity=2, radix_rel_range=None)
 
     gs = np.mean(corrs[1::2]) - np.mean(corrs[::2])
 
-    return gs, mean_field_dist, angle, field_distances2.xy
+    return gs, mean_field_dist, grid_phase, field_distances2.xy
+
+
+def permutation_test_grid_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges, n_perm=200, alpha=0.02,
+                                true_gs=None, n_jobs=8):
+    n_samps = len(x)
+    if fr.ndim == 1:
+        n_units = 1
+        fr = fr[np.newaxis,]
+        fr_maps = fr_maps[np.newaxis,]
+    else:
+        n_units, _ = fr.shape
+    assert n_samps == fr.shape[1], 'Mismatch lengths between samples and fr.'
+
+    if true_gs is None:
+        true_gs = np.zeros(n_units) * np.nan
+        for unit in range(n_units):
+            true_gs[unit], _, _, _ = compute_grid_score(fr_maps[unit])
+
+    def p_worker(unit_id):
+        """ helper function for parallelization. Computes a single shuffled grid score per unit."""
+        fr_unit = fr[unit_id]
+        # roll firing rate
+        p_fr = np.roll(fr_unit, np.random.randint(n_samps))
+        # get rate map
+        p_fr_map = firing_rate_2_rate_map(p_fr, x, y, x_bin_edges, y_bin_edges)
+        # get single grid score
+        p_gs, _, _, _ = compute_grid_score(p_fr_map)
+        return p_gs
+
+    sig = np.zeros(n_units)
+    with Parallel(n_jobs=n_jobs) as parallel:
+        for unit in range(n_units):
+            if not np.isnan(true_gs[unit]):
+                # get grid score shuffle dist
+                perm_gs = parallel(delayed(p_worker)(unit) for perm in range(n_perm))
+                # find location of true gs
+                loc = np.array(perm_gs >= true_gs[unit]).mean()
+                # determine if outside distribution @ alpha level
+                sig[unit] = np.logical_or(loc <= alpha / 2, loc >= 1 - alpha / 2)
+
+    return sig
 
 
 def _get_optimum_sigmoid_slope(border_width, center, sigmoid_slope_thr=0.1):
@@ -1211,17 +1378,22 @@ def gaussian_2d(x=0, y=0, mx=0, my=0, sx=1, sy=1):
     return 1. / (2. * np.pi * sx * sy) * np.exp(-((x - mx) ** 2. / (2. * sx ** 2.) + (y - my) ** 2. / (2. * sy ** 2.)))
 
 
-def generate_moire_grid(r, c, scale=30, theta=0, a=5/9):
+def generate_moire_grid(width, height, center, scale=30, theta=0, a=1):
     """
     This function creates a Moire 2 dimensional grid. This is an idealized grid.
-    :param r: points
-    :param c: center
+    :param width: float width of environment
+    :param height: float heigth of environment
+    :param center: [x,y] location of the center of the grid
     :param scale: distance between grid noes
     :param theta: phase of the grid in radians
     :param a: field gain
-    :return: amplitude of the moire grid of the points in r.
+    :return: amplitude of the moire grid as a matrix
     """
     n_gratings = 3
+
+    c = PointsOF(center[0], center[1])
+    x_mat, y_mat = np.meshgrid(np.arange(width), np.arange(height))
+    r = PointsOF(x_mat.flatten(), y_mat.flatten())
 
     w = 1 / scale * 4 * np.pi / np.sqrt(3) * np.ones(n_gratings)  # 3 vecs w same length
 
@@ -1230,10 +1402,12 @@ def generate_moire_grid(r, c, scale=30, theta=0, a=5/9):
 
     ph_k = (r.xy - c.xy) @ wk.xy.T
     cos_k = np.cos(ph_k)
-    return gain_func(cos_k.sum(axis=1), a=a, xmin=-1.5, xmax=3)
+    g = gain_func(cos_k.sum(axis=1), a=a, xmin=-1.5, xmax=3)
+
+    return g.reshape(height, width)
 
 
-def gain_func(x, a=5/9, xmin=None, xmax=None):
+def gain_func(x, a=5 / 9, xmin=None, xmax=None):
     """
     Exponential gain function for moire grid
     :param x: array of values to be evaluated
@@ -1248,8 +1422,8 @@ def gain_func(x, a=5/9, xmin=None, xmax=None):
     if xmax is None:
         xmax = np.max(x)
 
-    c = a*(xmax-xmin)
-    return (np.exp(a*(x-xmin)) - 1)/(np.exp(c)-1)
+    c = a * (xmax - xmin)
+    return (np.exp(a * (x - xmin)) - 1) / (np.exp(c) - 1)
 
 
 class Points2D:
@@ -1401,5 +1575,3 @@ class PointsOF:
 
     def __len__(self):
         return self.n
-
-
