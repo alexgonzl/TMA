@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.signal import filtfilt
 from types import SimpleNamespace
+import warnings
 
 import Analyses.spatial_functions as spatial_funcs
 import Utils.filter_functions as filter_funcs
@@ -84,6 +85,10 @@ def _process_track_data(x, y, ha, track_params):
     """
 
     p = track_params
+
+    # make deep copies
+    x = np.array(x)
+    y = np.array(y)
 
     # 1. mask pixels that are out of bounds
     mask_x = np.logical_or(x < p.x_pix_lims[0], x > p.x_pix_lims[1])
@@ -174,7 +179,7 @@ def get_session_fr_maps(session_info):
     """
     Loops and computes smoothed fr maps for each unit.
     :param SubjectSessionInfo session_info: instance of class SubjectInfo for a particular subject
-    :return: np.ndarray fr_maps: shape n_units x n_vertical_bins x n_horizontal_bins
+    :return: np.ndarray maps: shape n_units x n_vertical_bins x n_horizontal_bins
     """
 
     # get data
@@ -210,7 +215,7 @@ def get_session_fr_maps_cont(session_info):
     Loops and computes smoothed fr maps for each unit. This version uses a weighted 2d histogram, such that each
     x,y sample is weighted by the continuous firing rate of the neuron.
     :param SubjectSessionInfo session_info: instance of class SubjectInfo for a particular subject
-    :return: np.ndarray fr_maps: shape n_units x n_vertical_bins x n_horizontal_bins
+    :return: np.ndarray maps: shape n_units x n_vertical_bins x n_horizontal_bins
     """
 
     # get data
@@ -273,17 +278,17 @@ def get_session_scores(session_info):
                 'sig_alpha': task_params.sig_alpha, 'n_perm': task_params.n_perm}],
 
         'ha': [spatial_funcs.get_angle_encoding_model,
-               {'angle': of_dat.ha, 'fr': fr, 'ang_bin_edges': task_params.ang_bin_edges_,
+               {'theta': of_dat.ha, 'fr': fr, 'ang_bin_edges': task_params.ang_bin_edges_,
                 'speed': of_dat.sp, 'min_speed': task_params.min_speed_thr,
                 'max_speed': task_params.max_speed_thr, 'sig_alpha': task_params.sig_alpha}],
 
         'hd': [spatial_funcs.get_angle_encoding_model,
-               {'angle': of_dat.hd, 'fr': fr, 'ang_bin_edges': task_params.ang_bin_edges_,
+               {'theta': of_dat.hd, 'fr': fr, 'ang_bin_edges': task_params.ang_bin_edges_,
                 'speed': of_dat.sp, 'min_speed': task_params.min_speed_thr,
                 'max_speed': task_params.max_speed_thr, 'sig_alpha': task_params.sig_alpha}],
 
         'border': [spatial_funcs.get_border_encoding_model,
-                   {'x': of_dat.x, 'y': of_dat.y, 'fr': fr, 'fr_maps': fr_maps,
+                   {'x': of_dat.x, 'y': of_dat.y, 'fr': fr, 'maps': fr_maps,
                     'x_bin_edges': task_params.x_bin_edges_, 'y_bin_edges': task_params.y_bin_edges_,
                     'compute_solstad': True, 'sig_alpha': task_params.sig_alpha, 'n_perm': task_params.n_perm,
                     'border_fr_thr': task_params.border_fr_thr,
@@ -292,22 +297,26 @@ def get_session_scores(session_info):
                     'feat_type': task_params.border_enc_model_type}],
 
         'grid': [spatial_funcs.get_grid_encoding_model,
-                 {'x': of_dat.x, 'y': of_dat.y, 'fr': fr, 'fr_maps': fr_maps,
+                 {'x': of_dat.x, 'y': of_dat.y, 'fr': fr, 'maps': fr_maps,
                   'x_bin_edges': task_params.x_bin_edges_, 'y_bin_edges': task_params.y_bin_edges_,
                   'compute_gs_sig': True, 'sig_alpha': task_params.sig_alpha, 'n_perm': task_params.n_perm,
-                  'grid_fit': task_params.grid_enc_model_fit,
-                  'min_field_size_bins': task_params.border_min_field_size_bins,
-                  'border_width_bins': task_params.border_width_bins,
-                  'feat_type': task_params.border_enc_model_type}]
+                  'grid_fit': task_params.grid_fit_type, 'reg_type': task_params.reg_type}]
     }
 
     for analysis in analyses.keys():
         function = analyses[analysis][0]
         arguments = analyses[analysis][1]
-        analysis_out = function(**arguments)
 
-        for key, val in analysis_out.items():
-            output_dir[analysis][key] = val
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore')
+                analysis_out = function(**arguments)
+
+                output_dir[analysis]['model_scores'] = analysis_out[0]
+                output_dir[analysis]['model_coef'] = analysis_out[1]
+                output_dir[analysis]['model_coef_s'] = analysis_out[2]
+        except:
+            print(f'Analyses {analysis} failed.')
 
     return output_dir
 

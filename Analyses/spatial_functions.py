@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from scipy import ndimage, stats
+from scipy import ndimage, stats, signal
 from sklearn import linear_model as lm
 import statsmodels.api as sm
 from Utils import robust_stats as rs
@@ -56,13 +56,25 @@ def w_histogram_2d(x, y, w, x_edges, y_edges):
     return pos_sum_2d
 
 
-def firing_rate_2_rate_map(fr, x, y, x_edges, y_edges, count_thr=1, n_bins=5, sigma=2):
+def firing_rate_2_rate_map(fr, x, y, x_edges, y_edges, count_thr=3, n_bins=5, sigma=2):
     fr_sum_2d = w_histogram_2d(x, y, fr, x_edges, y_edges)
-    pos_counts_2d = histogram_2d(x, y, x_edges, y_edges)
+    pos_counts_map = histogram_2d(x, y, x_edges, y_edges)
 
     fr_avg_pos = np.zeros_like(fr_sum_2d)
-    fr_avg_pos[pos_counts_2d > count_thr] = fr_sum_2d[pos_counts_2d > count_thr] \
-                                            / pos_counts_2d[pos_counts_2d > count_thr]
+    fr_avg_pos[pos_counts_map > count_thr] = fr_sum_2d[pos_counts_map > count_thr] \
+                                            / pos_counts_map[pos_counts_map > count_thr]
+
+    sm_fr_map = smooth_2d_map(fr_avg_pos, n_bins=n_bins, sigma=sigma)
+    return sm_fr_map
+
+
+def spikes_2_rate_map(spikes, x, y, x_edges, y_edges, time_step=0.02, time_thr=0.06, n_bins=5, sigma=2):
+    spk_sum_2d = w_histogram_2d(x, y, spikes, x_edges, y_edges)
+    pos_sec_map = histogram_2d(x, y, x_edges, y_edges)*time_step
+
+    fr_avg_pos = np.zeros_like(spk_sum_2d)
+    fr_avg_pos[pos_sec_map > time_thr] = spk_sum_2d[pos_sec_map > time_thr] \
+                                            / pos_sec_map[pos_sec_map > time_thr]
 
     sm_fr_map = smooth_2d_map(fr_avg_pos, n_bins=n_bins, sigma=sigma)
     return sm_fr_map
@@ -174,7 +186,7 @@ def get_spike_map(bin_spikes, x, y, x_edges, y_edges):
     :return: np.ndarray spike_map: number of spikes at each xy position
     """
     x_spk, y_spk = get_bin_spikes_xy(bin_spikes, x, y)
-    spike_map, _, _ = histogram_2d(x_spk, y_spk, x_edges, y_edges)
+    spike_map = histogram_2d(x_spk, y_spk, x_edges, y_edges)
     return spike_map
 
 
@@ -310,10 +322,10 @@ def get_speed_encoding_model(speed, fr, speed_bin_edges, compute_sp_score=True, 
     fr_hat = model_coef @ sp_design_matrix.T
 
     # get scores arrange into a data frame
-    scores = pd.DataFrame(index=range(n_units), columns=['score', 'sig', 'aR2', 'rmse', 'nrmse'])
+    scores = pd.DataFrame(index=range(n_units), columns=['score', 'sig', 'r2', 'rmse', 'nrmse'])
     scores['score'] = score
     scores['sig'] = score_sig
-    scores['aR2'] = rs.get_ar2(fr_valid, fr_hat, n_sp_bins)
+    scores['r2'] = rs.get_ar2(fr_valid, fr_hat, n_sp_bins)
     scores['rmse'] = rs.get_rmse(fr_valid, fr_hat)
     scores['nrmse'] = rs.get_nrmse(fr_valid, fr_hat)
 
@@ -473,7 +485,7 @@ def get_angle_encoding_model(theta, fr, ang_bin_edges, speed=None, min_speed=Non
 
     # pre-allocate score outputs
     scores = pd.DataFrame(index=range(n_units),
-                          columns=['vec_len', 'mean_ang', 'p_val', 'sig', 'aR2', 'rmse', 'nrmse'])
+                          columns=['score', 'mean_ang', 'p_val', 'sig', 'r2', 'rmse', 'nrmse'])
 
     # loop to get circular stats scores
     for unit in range(n_units):
@@ -483,11 +495,11 @@ def get_angle_encoding_model(theta, fr, ang_bin_edges, speed=None, min_speed=Non
         p_val, _ = rs.rayleigh(ang_bin_centers, w=model_coef[unit], d=ang_bin_spacing)
 
         # store results
-        scores.at[unit, 'vec_len'] = vec_len
+        scores.at[unit, 'score'] = vec_len
         scores.at[unit, 'mean_ang'] = np.mod(mean_ang, 2 * np.pi)
         scores.at[unit, 'sig'] = p_val < sig_alpha
 
-    scores['aR2'] = rs.get_ar2(fr, fr_hat, n_ang_bins)
+    scores['r2'] = rs.get_ar2(fr, fr_hat, n_ang_bins)
     scores['rmse'] = rs.get_rmse(fr, fr_hat)
     scores['nrmse'] = scores['rmse'] / fr.mean(axis=1)
 
@@ -556,7 +568,7 @@ def get_border_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges,
     # border encoding model
     # get proximity vectors
     X = get_border_encoding_features(x, y, x_bin_edges, y_bin_edges, feat_type=feat_type)
-    X = sm.add_constant(X)
+    #X = sm.add_constant(X)
 
     # pre-allocate
     n_predictors = X.shape[1]  # number of columns
@@ -572,10 +584,10 @@ def get_border_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges,
         model_coef_s[unit] = model.summary2().tables[1]['Std.Err.'].values
 
     # get performance scores
-    scores = pd.DataFrame(index=range(n_units), columns=['solstad_score', 'solstad_sig', 'aR2', 'rmse', 'nrmse'])
-    scores['solstad_score'] = border_score
-    scores['solstad_sig'] = score_sig
-    scores['aR2'] = rs.get_ar2(fr, fr_hat, n_predictors - 1)  # minus bias term
+    scores = pd.DataFrame(index=range(n_units), columns=['score', 'sig', 'r2', 'rmse', 'nrmse'])
+    scores['score'] = border_score
+    scores['sig'] = score_sig
+    scores['r2'] = rs.get_ar2(fr, fr_hat, n_predictors)  # minus bias term
     scores['rmse'] = rs.get_rmse(fr, fr_hat)
     scores['nrmse'] = rs.get_nrmse(fr, fr_hat)
 
@@ -619,7 +631,7 @@ def compute_border_score_solstad(fr_maps, border_fr_thr=0.3, min_field_size_bins
                     under this threshold are discarded
     :param border_width_bins: wall width by which the coverage is determined.
     :param return_all: bool, if False only returns the border_score
-    :return: border score, max coverage, distanced weighted fr for each unit in fr_maps.
+    :return: border score, max coverage, distanced weighted fr for each unit in maps.
 
     -> code based of the description on Solstad et al, Science 2008
     """
@@ -630,7 +642,7 @@ def compute_border_score_solstad(fr_maps, border_fr_thr=0.3, min_field_size_bins
     n_units, map_height, map_width = fr_maps.shape
 
     # get fields
-    field_maps, n_fields = get_map_fields(fr_maps, fr_thr=border_fr_thr, min_field_size=min_field_size_bins)
+    field_maps, n_fields = get_map_fields(fr_maps, thr=border_fr_thr, min_field_size=min_field_size_bins)
 
     if field_maps.ndim == 2:
         field_maps = field_maps[np.newaxis, ]
@@ -761,7 +773,7 @@ def permutation_test_border_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges, n
         # roll firing rate
         p_fr = np.roll(fr_unit, np.random.randint(n_samps))
         # get rate map
-        p_fr_map = firing_rate_2_rate_map(p_fr, x, y, x_bin_edges, y_bin_edges)
+        p_fr_map = firing_rate_2_rate_map(p_fr, x=x, y=y, x_edges=x_bin_edges, y_edges=y_bin_edges)
         # get single border score
         p_bs = compute_border_score_solstad(p_fr_map, **border_score_params)
         return p_bs
@@ -816,31 +828,30 @@ def get_wall_masks(map_height, map_width, wall_width):
     return mask
 
 
-def get_map_fields(fr_maps, fr_thr=0.3, min_field_size=20, filt_structure=None):
+def get_map_fields(maps, thr=0.3, min_field_size=20, filt_structure=None):
     """
     gets labeled firing rate maps. works on either single maps or an array of maps.
     returns an array of the same dimensions as fr_maps with
-    :param fr_maps: np.ndarray, (dimensions can be 2 or 3), if 3 dimensions, first dimensions must
+    :param maps: np.ndarray, (dimensions can be 2 or 3), if 3 dimensions, first dimensions must
                     correspond to the # of units, other 2 dims are height and width of the map
-    :param fr_thr: float, proportion of the max firing rate to threshold the data
+    :param thr: float, proportion of the max firing rate to threshold the data
     :param min_field_size: int, # of bins that correspond to the total area of the field. fields found
                     under this threshold are discarded
     :param filt_structure: 3x3 array of connectivity. see ndimage for details
     :return field_labels (same dimensions as input), -1 values are background, each field has an int label
 
-    -> code based of the description on Solstad et al, Science 2008
     """
     if filt_structure is None:
         filt_structure = np.ones((3, 3))
 
     # add a singleton dimension in case of only one map to find fields.
-    if fr_maps.ndim == 2:
-        fr_maps = fr_maps[np.newaxis, :, :]
-    elif fr_maps.ndim == 1:
-        print('fr_maps is a one dimensional variable.')
+    if maps.ndim == 2:
+        maps = maps[np.newaxis, :, :]
+    elif maps.ndim == 1:
+        print('maps is a one dimensional variable.')
         return None
 
-    n_units, map_height, map_width = fr_maps.shape
+    n_units, map_height, map_width = maps.shape
 
     # create border mask to avoid elimating samples during the image processing step
     border_mask = np.ones((map_height, map_width), dtype=bool)
@@ -848,14 +859,14 @@ def get_map_fields(fr_maps, fr_thr=0.3, min_field_size=20, filt_structure=None):
     border_mask[:, [0, -1]] = False
 
     # determine thresholds
-    max_fr = fr_maps.max(axis=1).max(axis=1)
+    max_fr = maps.max(axis=1).max(axis=1)
 
     # get fields
-    field_maps = np.zeros_like(fr_maps)
+    field_maps = np.zeros_like(maps)
     n_fields = np.zeros(n_units, dtype=int)
     for unit in range(n_units):
         # threshold the maps
-        thr_map = fr_maps[unit] >= max_fr[unit] * fr_thr
+        thr_map = maps[unit] >= max_fr[unit] * thr
 
         # eliminates small/noisy fields, fills in gaps
         thr_map = ndimage.binary_closing(thr_map, structure=filt_structure, mask=border_mask)
@@ -885,6 +896,7 @@ def get_map_fields(fr_maps, fr_thr=0.3, min_field_size=20, filt_structure=None):
     # if only one unit, squeeze to match input dimensions
     if n_units == 1:
         field_maps = field_maps.squeeze()
+        n_fields = n_fields.squeeze()
 
     return field_maps, n_fields
 
@@ -991,7 +1003,7 @@ def get_sigmoid_border_proximity_mats(width, height, border_width_bins=3,
 
 # grid scoring:
 def get_grid_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, grid_fit='auto_corr', reg_type='linear',
-                            compute_gs_sig=False, sig_alpha=0.02, n_perm=200, **kwargs):
+                            compute_gs_sig=False, sig_alpha=0.02, n_perm=200, verbose=False, **kwargs):
     """
     Grid encoding model. Also obtains grid score.
     :param x: array n_samps of x positions of the animal
@@ -1006,6 +1018,7 @@ def get_grid_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, grid_fi
     generate encoding feature. otherwise, uses a grid-search of different moire patterns
     :param reg_type: string ['linear', 'poisson'], use linear for firing rate, poisson for binned spikes
     :param compute_gs_sig: bool. if True, performs permutations to determine grid score significance
+    :param verbose: bool.
     :param kwargs: grid_score parameters
     :return: scores: pd.Dataframe with columns ['grid_score', 'grid_sig', 'scale', 'phase', 'aR2', 'rmse', 'nrmse'],
           model_coef: array n_units x 2 of encoding coefficients [bias, east, north, west, south, center]
@@ -1029,27 +1042,36 @@ def get_grid_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, grid_fi
     coefs = np.zeros((n_units, 2)) * np.nan  # 2 coefficients, 1 for moire fit + bias
     coefs_sem = np.zeros((n_units, 2)) * np.nan
     scores = pd.DataFrame(index=range(n_units),
-                          columns=['grid_score', 'grid_sig', 'scale', 'phase', 'r2', 'rmse', 'nrmse'])
+                          columns=['score', 'sig', 'scale', 'phase', 'r2', 'rmse', 'nrmse'])
 
     # compute grid score
     for unit in range(n_units):
-        print(f'Computing Grid Score unit # {unit}')
+        if verbose:
+            print(f'Computing Grid Score unit # {unit}')
         temp = compute_grid_score(fr_maps[unit], **kwargs)
-        scores.at[unit, 'grid_score'] = temp[0]
+        scores.at[unit, 'score'] = temp[0]
         scores.at[unit, 'scale'] = temp[1]
         scores.at[unit, 'phase'] = temp[2]
 
+        if np.isnan(temp[0]):  # failed grid score computation
+            if verbose:
+                print('Grid Score compt. Failed.')
+                print('Finding scale and phase by finding best fitting moire grid')
+            temp = fit_moire_grid(fr_maps[unit])
+            scores.at[unit, 'scale'] = temp[0]
+            scores.at[unit, 'phase'] = temp[1]
+
     if compute_gs_sig:
-        scores['grid_sig'] = permutation_test_grid_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges,
-                                                         n_perm=n_perm, alpha=sig_alpha, true_gs=scores['grid_score'],
-                                                         n_jobs=8)
+        scores['sig'] = permutation_test_grid_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges,
+                                                    n_perm=n_perm, alpha=sig_alpha, true_gs=scores['score'],
+                                                    n_jobs=8)
 
     # environment grid
     if grid_fit == 'auto_corr':
 
         for unit in range(n_units):
 
-            if ~np.isnan(scores.at[unit, 'grid_score']):
+            if ~np.isnan(scores.at[unit, 'scale']):
                 fr_map = fr_maps[unit]
 
                 # max field location becomes the spatial phase of the moire grid / center of it.
@@ -1063,8 +1085,6 @@ def get_grid_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, grid_fi
                                          reg_type=reg_type)
                 coefs[unit, :] = coef_temp.flatten()
 
-    elif grid_fit == 'moire':
-        raise NotImplementedError
     else:
         raise NotImplementedError
 
@@ -1088,14 +1108,14 @@ def get_encoding_map_fit(fr, maps, x, y, x_edges, y_edges, reg_type='linear', bi
     n_samps = len(x)
     if fr.ndim == 1:
         n_units = 1
-        fr = fr[np.newaxis,]
+        fr = fr[np.newaxis, ]
     else:
         n_units, _ = fr.shape
     assert n_samps == fr.shape[1], 'Mismatch lengths between samples and fr.'
 
     # if only one map, add a singleton axis
     if maps.ndim == 2:
-        maps = maps[np.newaxis,]
+        maps = maps[np.newaxis, ]
 
     # fit model
     _, x_bin_idx = rs.get_discrete_data_mat(x, bin_edges=x_edges)
@@ -1115,24 +1135,28 @@ def get_encoding_map_fit(fr, maps, x, y, x_edges, y_edges, reg_type='linear', bi
 
     # get model and fit
     if reg_type == 'poisson':
-        model = lm.PoissonRegressor(alpha=0, fit_intercept=False).fit(X, fr.T)
+        coef = np.zeros((n_units, n_maps+bias))
+        fr_hat = np.zeros_like(fr)
+        for unit in range(n_units):
+            model = lm.PoissonRegressor(alpha=0, fit_intercept=False).fit(X, fr[unit])
+            coef[unit] = model.coef_
+            fr_hat[unit] = model.predict(X)
     elif reg_type == 'linear':
         model = lm.LinearRegression(fit_intercept=False).fit(X, fr.T)
+        coef = model.coef_.T
+        fr_hat = model.predict(X).T
     else:
         print(f'method {reg_type} not implemented.')
         raise NotImplementedError
-    coef = model.coef_.T
 
-    # get predictions
-    fr_hat = model.predict(X).T
 
     # get_scores
     if reg_type == 'poisson':
-        r2 = rs.get_poisson_d2(fr, fr_hat)
+        r2 = rs.get_poisson_ad2(fr, fr_hat, n_maps)
         err = rs.get_poisson_deviance(fr, fr_hat)
         nerr = rs.get_poisson_pearson_chi2(fr, fr_hat)
     elif reg_type == 'linear':
-        r2 = rs.get_r2(fr, fr_hat)
+        r2 = rs.get_ar2(fr, fr_hat, n_maps)
         err = rs.get_rmse(fr, fr_hat)
         nerr = rs.get_nrmse(fr, fr_hat)
     else:
@@ -1161,14 +1185,14 @@ def get_encoding_map_predictions(fr, maps, coefs, x, y, x_edges, y_edges, reg_ty
     n_samps = len(x)
     if fr.ndim == 1:
         n_units = 1
-        fr = fr[np.newaxis,]
+        fr = fr[np.newaxis, ]
     else:
         n_units, _ = fr.shape
     assert n_samps == fr.shape[1], 'Mismatch lengths between samples and fr.'
 
     # if only one map, add a singleton axis
     if maps.ndim == 2:
-        maps = maps[np.newaxis,]
+        maps = maps[np.newaxis, ]
 
     # prepare data
     _, x_bin_idx = rs.get_discrete_data_mat(x, bin_edges=x_edges)
@@ -1186,36 +1210,43 @@ def get_encoding_map_predictions(fr, maps, coefs, x, y, x_edges, y_edges, reg_ty
 
     # get model predictions
     if reg_type == 'linear':
-        fr_hat = X @ coefs.T
+        fr_hat = (X @ coefs.T).T
     elif reg_type == 'poisson':
-        fr_hat = np.exp(X @ coefs.T)
+        fr_hat = np.exp(X @ coefs.T).T
     else:
         print(f'Method {reg_type} not implemented.')
         raise NotImplementedError
 
     # get_scores
     if reg_type == 'poisson':
-        r2 = rs.get_poisson_d2(fr, fr_hat)
+        r2 = rs.get_poisson_ad2(fr, fr_hat, n_maps)
         err = rs.get_poisson_deviance(fr, fr_hat)
         nerr = rs.get_poisson_pearson_chi2(fr, fr_hat)
     else:
-        r2 = rs.get_r2(fr, fr_hat)
+        r2 = rs.get_ar2(fr, fr_hat, n_maps)
         err = rs.get_rmse(fr, fr_hat)
         nerr = rs.get_nrmse(fr, fr_hat)
 
     return fr_hat, r2, err, nerr
 
 
-def compute_grid_score(rate_map, thr=0.1, non_linearity=2, radix_rel_range=None):
+def compute_grid_score(rate_map, ac_thr=0.1, radix_rel_range=None,
+                       amplify_rate_map=True, sigmoid_center=None, sigmoid_slope=None,
+                       find_rate_fields=True,
+                       verbose=False, ):
     """
     Function to compute grid score as detailed in Moser 07. Code inspired on version from Matt Nolans lab:
     https://github.com/MattNolanLab/grid_cell_analysis
 
     :param rate_map: original rate map. 2dim
-    :param thr: cut threshold to find fields in the autocorrelation in relation to max
-    :param non_linearity: exponential to increase relative field amplitude); 1 = no effect.
+    :param ac_thr: cut threshold to find fields in the autocorrelation in relation to max
     :param radix_rel_range: ring size dimensions in relation to the spacing/scale
         (as computed by the mean distance to the six closest autocorrelation fields).
+    :param amplify_rate_map: bool. uses a sigmoid non linearity to amplify rate map SNR
+    :param sigmoid_center: float. center of sigmoid for amplify_rate, ignored if amplify_rate_map is False
+    :param sigmoid_slope: float. slope of sigmoid for amplify_rate, ignored if amplify_rate_map is False
+    :param find_rate_fields: bool. 
+    :param verbose: bool.
     :return: 4 elements:
         1. grid score, float
         2. scale (grid spacing), float
@@ -1225,17 +1256,53 @@ def compute_grid_score(rate_map, thr=0.1, non_linearity=2, radix_rel_range=None)
     """
 
     if radix_rel_range is None:
-        radix_rel_range = [0.5, 1.5]
+        radix_rel_range = [0.5, 2.0]
 
-    # get autoc-orrelation
-    ac_map = rs.compute_autocorr_2d((rate_map / rate_map.max()) ** non_linearity)
+    # normalize rate map
+    max_rate = rate_map.max()
+    n_rate_map = rate_map / max_rate
+
+    if amplify_rate_map:
+        if sigmoid_center is None:
+            sigmoid_center = 0.5
+        if sigmoid_slope is None:
+            sigmoid_slope = 10
+        sigmoid_params = {'center': sigmoid_center,
+                          'slope': sigmoid_slope}
+        n_rate_map = sigmoid(n_rate_map, **sigmoid_params)
+
+    if find_rate_fields:
+        mean_rate = n_rate_map.mean()
+
+        while_counter = 0
+        found_three_fields_flag = False
+        thr_factor = 1
+        while (not found_three_fields_flag) and (while_counter <= 4):
+            fields_map, n_fields = get_map_fields(n_rate_map, thr=mean_rate*thr_factor)
+            if n_fields >= 3:
+                found_three_fields_flag = True
+                break
+            else:
+                thr_factor *= 0.5
+                while_counter += 1
+
+        if not found_three_fields_flag:
+            if verbose:
+                print('Not enought rate fields found to have a reliable computation.')
+            return np.nan, np.nan, np.nan, np.nan
+
+        n_rate_map = (fields_map >= 0) * n_rate_map
+
+    # get auto-correlation
+    ac_map = rs.compute_autocorr_2d(n_rate_map)
+    # ac_map = signal.correlate2d(n_rate_map, n_rate_map, boundary='wrap')
     ac_map = (ac_map / np.abs(ac_map.max()))
 
     ac_map_w = ac_map.shape[1]
     ac_map_h = ac_map.shape[0]
 
     # get fields
-    map_fields, n_fields = get_map_fields(ac_map, fr_thr=thr)
+    map_fields, n_fields = get_map_fields(ac_map, thr=ac_thr)
     n_fields = int(n_fields)
 
     # get field positions
@@ -1257,7 +1324,8 @@ def compute_grid_score(rate_map, thr=0.1, non_linearity=2, radix_rel_range=None)
     elif n_fields >= 3:
         closest_six_fields_idx = dist_sorted_field_idx[1:n_fields]
     else:
-        print('Did not find enough fields.')
+        if verbose:
+            print('Did not find enough auto correlation fields.')
         return np.nan, np.nan, np.nan, np.nan
 
     # maske the closest fields
@@ -1321,7 +1389,7 @@ def permutation_test_grid_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges, n_p
         # roll firing rate
         p_fr = np.roll(fr_unit, np.random.randint(n_samps))
         # get rate map
-        p_fr_map = firing_rate_2_rate_map(p_fr, x, y, x_bin_edges, y_bin_edges)
+        p_fr_map =  firing_rate_2_rate_map(p_fr, x=x, y=y, x_edges=x_bin_edges, y_edges=y_bin_edges)
         # get single grid score
         p_gs, _, _, _ = compute_grid_score(p_fr_map)
         return p_gs
@@ -1348,7 +1416,7 @@ def _get_optimum_sigmoid_slope(border_width, center, sigmoid_slope_thr=0.1):
     :param sigmoid_slope_thr: value of the sigmoid at the first bin of the border_width (symmetric)
     :return: slope value for sigmoid
     """
-    slopes = np.linspace(0, 2, 200)
+    slopes = np.linspace(0, 50, 1000)
     z = sigmoid(border_width, center / 2, slopes)
     return slopes[np.argmin((z - sigmoid_slope_thr) ** 2)]
 
@@ -1424,6 +1492,66 @@ def gain_func(x, a=5 / 9, xmin=None, xmax=None):
 
     c = a * (xmax - xmin)
     return (np.exp(a * (x - xmin)) - 1) / (np.exp(c) - 1)
+
+
+def moire_grid_fit_params(**kwargs):
+    fit_params_default = {'func': rs.get_mse, 'find_max': False,
+                          'scale_range': np.arange(10, 40), 'angle_range': np.linspace(0, np.pi / 3, 30), 'gain': 1}
+
+    fit_params = {}
+    for k in fit_params_default.keys():
+        if k in kwargs.keys():
+            fit_params[k] = kwargs[k]
+        else:
+            fit_params[k] = fit_params_default[k]
+
+    return fit_params
+
+
+def fit_moire_grid(fr_map, **kwargs):
+
+    n_jobs = 6
+    fit_params = moire_grid_fit_params(**kwargs)
+
+    # normalize the map
+    fr_map = fr_map / fr_map.max()
+
+    height, width = fr_map.shape
+    c = np.unravel_index(np.argmax(fr_map), fr_map.shape)
+
+    ls = fit_params['scale_range']
+    thetas = fit_params['angle_range']
+    gain = fit_params['gain']
+    func = fit_params['func']
+    find_max = fit_params['find_max']
+
+    def worker(scale, th):
+        moire_grid_ = generate_moire_grid(width, height, center=c, scale=l, theta=th, a=gain)
+        score = func(fr_map.flatten(), moire_grid_.flatten())
+        return score
+
+    score_mat = np.zeros((len(ls), len(thetas)))
+    with Parallel(n_jobs=n_jobs) as parallel:
+        for ii, l in enumerate(ls):
+            score_mat[ii] = parallel(delayed(worker)(l, th) for th in thetas)
+    # score_mat = np.zeros((len(ls), len(thetas)))
+    #
+
+
+    #     for ii, l in enumerate(ls):
+    #         for jj, th in enumerate(thetas):
+    #             moire_grid = generate_moire_grid(width, height, center=c, scale=l, theta=th, a=gain)
+    #             score_mat[ii, jj] = func(fr_map.flatten(), moire_grid.flatten())
+    if find_max:
+        fit_idx = np.unravel_index(np.argmax(score_mat), score_mat.shape)
+    else:
+        fit_idx = np.unravel_index(np.argmin(score_mat), score_mat.shape)
+
+    fit_l = ls[fit_idx[0]]
+    fit_theta = thetas[fit_idx[1]]
+    moire_grid = generate_moire_grid(width, height, center=[c[1], c[0]], scale=fit_l, theta=fit_theta, a=gain)
+
+    return fit_l, fit_theta, moire_grid, score_mat
 
 
 class Points2D:

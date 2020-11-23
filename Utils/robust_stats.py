@@ -298,7 +298,7 @@ def get_nrmse(y, y_hat):
 def permutation_test(function, x, y=None, n_perm=500, alpha=0.02, seed=0, **function_params):
     """
     Permutation test.
-    :param function: of the form func(x) -> float, or func(x,y) -> : eg. rs.spearman, np.mean
+    :param function: of the form func(x) -> float, or func(x,y) -> : eg. rs.spearman, np.mean_fr_map##
     :param x: array. first variable
     :param y: array. second variable (must be same length as x)
     :param n_perm: number of permutations
@@ -500,6 +500,51 @@ def compute_autocorr_2d(X):
     acc = np.real(acc)  # takes care of numerical errors
 
     return acc
+
+
+def split_timeseries_data(data, n_splits=2, samp_rate=0.02, split_interval=30):
+    """
+    Function that divides time every split_interval samples
+    :param data: dictionary of the time series to be split. if the time series do not have all the same the same number of samples the function will exit with an error.
+    :param n_splits: number of splits to divide the data
+    :param samp_rate: sampling rate [samps / seconds]
+    :param split_interval: interval for each split in [seconds]
+    :return: split_data: dictionary with the same keys as data, now each entry is the same ts as the original data but
+     it is a numpy object indexed by the splits.
+    """
+
+    n_ts = len(data)
+    ts_lengths = np.zeros(n_ts)
+    cnt = 0
+    for key, ts in data.items():
+        ts_lengths[cnt] = max(ts.shape)
+        cnt += 1
+    assert np.all(ts_lengths[0] == ts_lengths), "Time series have different lengths."
+    n_total_samps = ts_lengths[0]
+
+    split_interval_samps = int(split_interval / samp_rate)
+    split_edges = np.append(np.arange(0, n_total_samps, split_interval_samps), n_total_samps)
+    n_split_segments = len(split_edges) - 1
+
+    split_samps = np.zeros(n_total_samps, dtype=int)
+    for ii in np.arange(0, n_split_segments, dtype=int):
+        split_id = np.mod(ii, n_splits)
+        split_samps[split_edges[ii]:split_edges[ii + 1]] = split_id
+
+    split_data = {}
+    for key, ts in data.items():  # for every timeseries in the data
+        split_data[key] = np.empty(n_splits, dtype=object)
+        dim = np.where(np.array(ts.shape) == n_total_samps)[0]
+
+        if dim > 0:
+            ts_temp = np.moveaxis(ts, dim, 0)
+            for split in range(n_splits):
+                split_data[key][split] = np.moveaxis(ts_temp[split_samps == split], 0, dim)
+        else:
+            for split in range(n_splits):
+                split_data[key][split] = ts[split_samps == split]
+
+    return split_data
 
 # def getDirZoneSpikeMaps(spikes, PosDat, sp_thr=[5, 2000]):
 #     SegSeq = PosDat['SegDirSeq']

@@ -9,7 +9,6 @@ import traceback
 import Analyses.spike_functions as spike_funcs
 import Analyses.open_field_functions as of_funcs
 
-
 import scipy.signal as signal
 
 # TO DO!!! GET cluster stats for merged clusters #############
@@ -47,10 +46,10 @@ class SubjectInfo:
 
         if data_root == 'BigPC':
             if subject in ['Li', 'Ne']:
-                self.root_path = Path('/Data_SSD2T/Data')
+                self.root_path = Path('/mnt/Data1_SSD2T/Data')
             elif subject in ['Cl']:
-                self.root_path = Path('/Data2_SSD2T/Data')
-            self.raw_path = Path('/RawData/Data', subject)
+                self.root_path = Path('/mnt/Data2_SSD2T/Data')
+            self.raw_path = Path('/mnt/RawData/Data', subject)
 
         elif data_root == 'oak':
             self.root_path = Path('/mnt/o/giocomo/alexg/')
@@ -136,8 +135,6 @@ class SubjectInfo:
 
         tmp = session.split('_')
         subject = tmp[0]
-        assert subject == self.subject, 'Session does not match with expected animal.'
-
         task = tmp[1]
         date = tmp[2]
 
@@ -165,7 +162,7 @@ class SubjectInfo:
         paths['cluster_fr'] = paths['Results'] / 'fr.npy'
 
         paths['cluster_spike_maps'] = paths['Results'] / 'spike_maps.npy'
-        paths['cluster_fr_maps'] = paths['Results'] / 'fr_maps.npy'
+        paths['cluster_fr_maps'] = paths['Results'] / 'maps.npy'
         paths['cluster_OF_metrics'] = paths['Results'] / 'OF_metrics.pkl'
         paths['cluster_OF_lnp_metrics'] = paths['Results'] / 'OF_lnp_metrics.pkl'
 
@@ -295,7 +292,14 @@ class SubjectSessionInfo(SubjectInfo):
         self.session = session
         self.paths = self.session_paths[session]
         self.clusters = self.session_clusters[session]
-        self.subject, self.task, self.date = session.split('_')
+        if len(session.split('_')) == 3:
+            self.subject, self.task, self.date = session.split('_')
+            self.subject = self.subject.capitalize()
+            self.sub_session_id = '0000'
+        elif len(session.split('_')) == 4:
+            self.subject, self.task, self.date, self.sub_session_id = session.split('_')
+            self.subject = self.subject.capitalize()
+
         self.task_params = get_task_params(self)
         self.n_units = self.clusters['n_cell'] + self.clusters['n_mua']
         print('number of units in session {}'.format(self.clusters['n_cell'] + self.clusters['n_mua']))
@@ -338,7 +342,7 @@ class SubjectSessionInfo(SubjectInfo):
                 'binned_spikes': (self.get_binned_spikes, self.paths['cluster_binned_spikes'].exists()),
                 'fr': (self.get_fr, self.paths['cluster_fr'].exists()),
                 'spike_maps': (self.get_spike_maps, self.paths['cluster_spike_maps'].exists()),
-                'fr_maps': (self.get_fr_maps, self.paths['cluster_fr_maps'].exists()),
+                'maps': (self.get_fr_maps, self.paths['cluster_fr_maps'].exists()),
                 'scores': (self.get_scores, self.paths['cluster_OF_metrics'].exists()),
                 'lnp_scores': (self.get_lnp_scores, self.paths['cluster_OF_lnp_metrics'].exists())
             }
@@ -352,20 +356,25 @@ class SubjectSessionInfo(SubjectInfo):
         :param bool overwrite: overwrite flag.
         :return: None
         """
-        for a, m in self._analyses.items():
-            if a == 'time':
-                continue
-            if not m[1] or overwrite:
-                try:
-                    # calls methods in _analyses
-                    _ = m[0](overwrite=True)
-                    print(f'Analysis {a} completed.')
-                except NotImplementedError:
-                    print(f'Analysis {a} not implemented.')
-                except FileNotFoundError:
-                    print(f'Analysis {a} did not find the dependent files.')
-        # update analyses
-        self._analyses = self._check_analyses()
+        if self.n_units>0:
+            for a, m in self._analyses.items():
+                if a == 'time':
+                    continue
+                if not m[1] or overwrite:
+                    try:
+                        # calls methods in _analyses
+                        _ = m[0](overwrite=True)
+                        print(f'Analysis {a} completed.')
+                    except NotImplementedError:
+                        print(f'Analysis {a} not implemented.')
+                    except FileNotFoundError:
+                        print(f'Analysis {a} did not find the dependent files.')
+                    except:
+                        print(f'Analysis {a} failed.')
+            # update analyses
+            self._analyses = self._check_analyses()
+        else:
+            print('This session does not have units. No analyses were ran. ')
 
     #  default methods
     def get_time(self, which='resamp'):
@@ -459,69 +468,69 @@ class SubjectSessionInfo(SubjectInfo):
         :return: np.ndarray spikes: object array containing spike trains per cluster
         :return: dict tt_cl: [for return_numpy] dictinonary with cluster keys and identification for each cluster
         """
-        if self.n_units > 0:
-            session_paths = self.paths
-
-            spikes = None
-            spikes_numpy = None
-            tt_cl = None
-            wfi = None
-            wfi2 = None
-
-            if (not session_paths['cluster_spikes'].exists()) or overwrite:
-                print('Spikes Files not Found or overwrite=1, creating them.')
-
-                spikes, wfi = spike_funcs.get_session_spikes(self)
-
-                # convert spike dictionaries to numpy and a json dict with info
-                cell_spikes, cell_tt_cl = spike_funcs.get_spikes_numpy(spikes['Cell'])
-                mua_spikes, mua_tt_cl = spike_funcs.get_spikes_numpy(spikes['Mua'])
-                spikes_numpy, tt_cl, wfi2 = spike_funcs.aggregate_spikes_numpy(cell_spikes, cell_tt_cl, mua_spikes,
-                                                                               mua_tt_cl, wfi)
-
-                self.cluster_ids = tt_cl
-                self.n_units = len(self.cluster_ids)
-                self.cell_ids = np.array([v[0] == 'cell' for k, v in self.cluster_ids.items()])
-                self.mua_ids = ~self.cell_ids
-
-                # save numpy spikes
-                np.save(session_paths['cluster_spikes'], spikes_numpy)
-                with session_paths['cluster_spikes_ids'].open(mode='w') as f:
-                    json.dump(tt_cl, f, indent=4)
-
-                # save waveform info
-                with session_paths['cluster_wf_info'].open(mode='wb') as f:
-                    pickle.dump(wfi2, f, pickle.HIGHEST_PROTOCOL)
-
-                # save Cell/Mua spike dictionaries and waveform info
-                if save_spikes_dict:
-                    for ut in ['Cell', 'Mua']:
-                        with session_paths[ut + '_Spikes'].open(mode='w') as f:
-                            json.dump(spikes[ut], f, indent=4)
-                        with session_paths[ut + '_WaveForms'].open(mode='w') as f:
-                            pickle.dump(wfi[ut], f, pickle.HIGHEST_PROTOCOL)
-
-            else:  # Load data.
-                if return_numpy:
-                    spikes_numpy = np.load(session_paths['cluster_spikes'], allow_pickle=True)
-                    with session_paths['cluster_spikes_ids'].open() as f:
-                        tt_cl = json.load(f)
-                    with session_paths['cluster_wf_info'].open(mode='rb') as f:
-                        wfi2 = pickle.load(f)
-                else:
-                    with session_paths['Cell_Spikes'].open() as f:
-                        cell_spikes = json.load(f)
-                    with session_paths['Mua_Spikes'].open() as f:
-                        mua_spikes = json.load(f)
-                    spikes = {'Cell': cell_spikes, 'Mua': mua_spikes}
-
-            if return_numpy:
-                return spikes_numpy, tt_cl, wfi2
-            else:
-                return spikes, wfi
-        else:
+        if self.n_units == 0:
             print('No units in the session.')
             return None
+
+        session_paths = self.paths
+
+        spikes = None
+        spikes_numpy = None
+        tt_cl = None
+        wfi = None
+        wfi2 = None
+
+        if (not session_paths['cluster_spikes'].exists()) or overwrite:
+            print('Spikes Files not Found or overwrite=1, creating them.')
+
+            spikes, wfi = spike_funcs.get_session_spikes(self)
+
+            # convert spike dictionaries to numpy and a json dict with info
+            cell_spikes, cell_tt_cl = spike_funcs.get_spikes_numpy(spikes['Cell'])
+            mua_spikes, mua_tt_cl = spike_funcs.get_spikes_numpy(spikes['Mua'])
+            spikes_numpy, tt_cl, wfi2 = spike_funcs.aggregate_spikes_numpy(cell_spikes, cell_tt_cl, mua_spikes,
+                                                                           mua_tt_cl, wfi)
+
+            self.cluster_ids = tt_cl
+            self.n_units = len(self.cluster_ids)
+            self.cell_ids = np.array([v[0] == 'cell' for k, v in self.cluster_ids.items()])
+            self.mua_ids = ~self.cell_ids
+
+            # save numpy spikes
+            np.save(session_paths['cluster_spikes'], spikes_numpy)
+            with session_paths['cluster_spikes_ids'].open(mode='w') as f:
+                json.dump(tt_cl, f, indent=4)
+
+            # save waveform info
+            with session_paths['cluster_wf_info'].open(mode='wb') as f:
+                pickle.dump(wfi2, f, pickle.HIGHEST_PROTOCOL)
+
+            # save Cell/Mua spike dictionaries and waveform info
+            if save_spikes_dict:
+                for ut in ['Cell', 'Mua']:
+                    with session_paths[ut + '_Spikes'].open(mode='w') as f:
+                        json.dump(spikes[ut], f, indent=4)
+                    with session_paths[ut + '_WaveForms'].open(mode='w') as f:
+                        pickle.dump(wfi[ut], f, pickle.HIGHEST_PROTOCOL)
+
+        else:  # Load data.
+            if return_numpy:
+                spikes_numpy = np.load(session_paths['cluster_spikes'], allow_pickle=True)
+                with session_paths['cluster_spikes_ids'].open() as f:
+                    tt_cl = json.load(f)
+                with session_paths['cluster_wf_info'].open(mode='rb') as f:
+                    wfi2 = pickle.load(f)
+            else:
+                with session_paths['Cell_Spikes'].open() as f:
+                    cell_spikes = json.load(f)
+                with session_paths['Mua_Spikes'].open() as f:
+                    mua_spikes = json.load(f)
+                spikes = {'Cell': cell_spikes, 'Mua': mua_spikes}
+
+        if return_numpy:
+            return spikes_numpy, tt_cl, wfi2
+        else:
+            return spikes, wfi
 
     def get_binned_spikes(self, spike_trains=None, overwrite=False):
         """
@@ -529,6 +538,10 @@ class SubjectSessionInfo(SubjectInfo):
         :param bool overwrite: overwrite flag. if false, loads data from the subject_info paths
         :returns: np.ndarray bin_spikes: shape n_clusters x n_bin_samps. simply the spike counts for each cluster/bin
         """
+
+        if self.n_units == 0:
+            print('No units.')
+            return None
 
         session_paths = self.paths
         if (not session_paths['cluster_binned_spikes'].exists()) or overwrite:
@@ -538,7 +551,6 @@ class SubjectSessionInfo(SubjectInfo):
             np.save(session_paths['cluster_binned_spikes'], bin_spikes)
         else:  # load
             bin_spikes = np.load(session_paths['cluster_binned_spikes'])
-
         return bin_spikes
 
     def get_fr(self, bin_spikes=None, overwrite=False):
@@ -547,6 +559,10 @@ class SubjectSessionInfo(SubjectInfo):
         :param bool overwrite: flag, if false loads data
         :return: np.ndarray fr: firing rate shape [n_clusters x n_timebins]
         """
+
+        if self.n_units == 0:
+            print('No units.')
+            return None
 
         session_paths = self.paths
         if (not session_paths['cluster_fr'].exists()) | overwrite:
@@ -557,10 +573,12 @@ class SubjectSessionInfo(SubjectInfo):
 
         else:  # load firing rate
             fr = np.load(session_paths['cluster_fr'])
-
         return fr
 
     def get_spike_maps(self, overwrite=False):
+        if self.n_units == 0:
+            print('No units.')
+            return None
         if self.task == 'OF':
             if not self.paths['cluster_spike_maps'].exists() or overwrite:
                 print('Open Field Spike Maps not Found or Overwrite= True, creating them.')
@@ -583,6 +601,10 @@ class SubjectSessionInfo(SubjectInfo):
         :param bool overwrite:
         :return:
         """
+        if self.n_units == 0:
+            print('No units.')
+            return None
+
         if self.task == 'OF':
             if not self.paths['cluster_fr_maps'].exists() or overwrite:
                 print('Open Field Firing Rate Maps not Found or Overwrite= True, creating them.')
@@ -599,7 +621,29 @@ class SubjectSessionInfo(SubjectInfo):
             return None
 
     def get_scores(self, overwrite=False):
-        raise NotImplementedError
+        """
+        obtains a series of pandas data frames quantifying the extent of coding to environmental variables
+        :param overwrite:
+        :returns: dictionary of pandas data frames.
+        """
+        if self.n_units == 0:
+            print('No units.')
+            return None
+
+        if self.task == 'OF':
+            if not self.paths['cluster_OF_metrics'].exists() or overwrite:
+                print('Open Field Score Metrics do not exits or overwrite=True, creating them.')
+                scores = of_funcs.get_session_scores(self)
+                with self.paths['cluster_OF_metrics'].open(mode='wb') as f:
+                    pickle.dump(scores, f, protocol=pickle.HIGHEST_PROTOCOL)
+            else:
+                with self.paths['cluster_OF_metrics'].open(mode='rb') as f:
+                    scores = pickle.load(f)
+        else:
+            print('Method not develop for other tasks.')
+            raise NotImplementedError
+
+        return scores
 
     def get_lnp_scores(self, overwrite=False):
         raise NotImplementedError
@@ -675,7 +719,7 @@ def get_task_params(session_info):
                                                      },
                 'reg_type': 'linear',
                 # grid encoding model
-                'grid_fit': 'auto_corr',  # ['auto_corr', 'moire'], how to find parameters for grid
+                'grid_fit_type': 'auto_corr',  # ['auto_corr', 'moire'], how to find parameters for grid
 
 
             }
