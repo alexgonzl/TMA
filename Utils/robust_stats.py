@@ -513,15 +513,17 @@ def split_timeseries_data(data, n_splits=2, samp_rate=0.02, split_interval=30):
      it is a numpy object indexed by the splits.
     """
 
+    # check all time series match
     n_ts = len(data)
-    ts_lengths = np.zeros(n_ts)
+    ts_lengths = np.zeros(n_ts, dtype=int)
     cnt = 0
     for key, ts in data.items():
-        ts_lengths[cnt] = max(ts.shape)
+        ts_lengths[cnt] = max(ts.shape)  # time series dimension expected to be the longest^*
         cnt += 1
     assert np.all(ts_lengths[0] == ts_lengths), "Time series have different lengths."
     n_total_samps = ts_lengths[0]
 
+    # obtain time series segment splits
     split_interval_samps = int(split_interval / samp_rate)
     split_edges = np.append(np.arange(0, n_total_samps, split_interval_samps), n_total_samps)
     n_split_segments = len(split_edges) - 1
@@ -534,9 +536,11 @@ def split_timeseries_data(data, n_splits=2, samp_rate=0.02, split_interval=30):
     split_data = {}
     for key, ts in data.items():  # for every timeseries in the data
         split_data[key] = np.empty(n_splits, dtype=object)
-        dim = np.where(np.array(ts.shape) == n_total_samps)[0]
+        dim = np.where(np.array(ts.shape) == n_total_samps)[0]  # find what dimension the time series is on
 
         if dim > 0:
+            # if the ts is in dimension other than the first, reshape the ts temporarely to boolean find the the correct
+            # segment indices
             ts_temp = np.moveaxis(ts, dim, 0)
             for split in range(n_splits):
                 split_data[key][split] = np.moveaxis(ts_temp[split_samps == split], 0, dim)

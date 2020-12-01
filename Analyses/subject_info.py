@@ -705,19 +705,24 @@ def get_task_params(session_info):
                 'sig_alpha': 0.02,  # double sided alpha level for significance testing
                 'n_perm': 200,  # number of permutations
 
-                # other analysis parameters
-                'border_width_cm': 9,  # distance from border to consider it a border cell [cm]
-                'border_width_bins': 3,  # distance from border to consider it a border cell [bins]
-                'border_min_field_size_cm2': 180,  # minimum area for fields in cm2
-                'border_min_field_size_bins': 20,  # minimum area for fields in # of bins
-                'border_fr_thr': 0.25,  # firing rate threshold
                 # type of encoding model. see spatial_funcs.get_border_encoding_features
-                'border_enc_model_type': 'linear',
+                'reg_type': 'poisson',
                 # these are ignoed if border_enc_model_type is linear.
-                'border_enc_model_feature_params_': {'center_gaussian_spread': 0.2,  # as % of environment
-                                                     'sigmoid_slope_thr': 0.15,  # value of sigmoid at border width
+                'border_enc_model_feature_params__': {'center_gaussian_spread': 0.2,  # as % of environment
+                                                      'sigmoid_slope_thr': 0.15,  # value of sigmoid at border width
                                                      },
-                'reg_type': 'linear',
+
+                'border_score_params__': {'fr_thr': 0.25,  # firing rate threshold
+                                          'width_bin': 3,  # distance from border to consider it a border cell [bins]
+                                          'min_field_size_bins': 10},  # minimum area for fields in # of bins
+
+                'grid_score_params__': {'ac_thr': 0.1,  # autocorrelation threshold for finding fields
+                                          'radix_range': [0.5, 2.0],  # range of radii for grid score in the autocorr
+                                          'sigmoid_rate': True,  # apply sigmoid to rate maps
+                                          'sigmoid_center': 0.5,  # center for sigmoid
+                                          'sigmoid_slope': 10,   # slope for sigmoid
+                                          'find_fields': True},  # mask fields before autocorrelation
+
                 # grid encoding model
                 'grid_fit_type': 'auto_corr',  # ['auto_corr', 'moire'], how to find parameters for grid
 

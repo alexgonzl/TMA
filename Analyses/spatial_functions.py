@@ -7,6 +7,7 @@ from Utils import robust_stats as rs
 from skimage import draw
 from skimage.transform import rotate
 from joblib import delayed, Parallel
+import time
 
 
 # spatial manipulation functions
@@ -25,58 +26,58 @@ def smooth_2d_map(bin_map, n_bins=5, sigma=2):
     return ndimage.filters.gaussian_filter(sm_map, sigma, mode='constant', truncate=trunc)
 
 
-def histogram_2d(x, y, x_edges, y_edges):
+def histogram_2d(x, y, x_bin_edges, y_bin_edges):
     """
     :param np.array x: x position of the animal
     :param np.array y: y position of the animal
-    :param x_edges: bin edges in the x position
-    :param y_edges: bin edges in the y position
-    :return: 2d array of position counts, x_edges, and y_edges
+    :param x_bin_edges: bin edges in the x position
+    :param y_bin_edges: bin edges in the y position
+    :return: 2d array of position counts, x_bin_edges, and y_bin_edges
     """
 
     # hist2d converts to a matrix, which reverses x,y
     # inverse order here to preserve visualization.
-    pos_counts_2d, _, _ = np.histogram2d(y, x, bins=[y_edges, x_edges])
+    pos_counts_2d, _, _ = np.histogram2d(y, x, bins=[y_bin_edges, x_bin_edges])
     return pos_counts_2d
 
 
-def w_histogram_2d(x, y, w, x_edges, y_edges):
+def w_histogram_2d(x, y, w, x_bin_edges, y_bin_edges):
     """
     :param np.array x: x position of the animal
     :param np.array y: y position of the animal
     :param np.array w: weight of each position sample (eg. spike counts or firing rate)
-    :param x_edges: bin edges in the x position
-    :param y_edges: bin edges in the y position
-    :return: 2d array of position counts, x_edges, and y_edges
+    :param x_bin_edges: bin edges in the x position
+    :param y_bin_edges: bin edges in the y position
+    :return: 2d array of position counts, x_bin_edges, and y_bin_edges
     """
     # hist2d converts to a matrix, which reverses x,y
     # inverse order here to preserve visualization.
-    pos_sum_2d, _, _ = np.histogram2d(y, x, bins=[y_edges, x_edges], weights=w)
+    pos_sum_2d, _, _ = np.histogram2d(y, x, bins=[y_bin_edges, x_bin_edges], weights=w)
 
     return pos_sum_2d
 
 
-def firing_rate_2_rate_map(fr, x, y, x_edges, y_edges, count_thr=3, n_bins=5, sigma=2):
-    fr_sum_2d = w_histogram_2d(x, y, fr, x_edges, y_edges)
-    pos_counts_map = histogram_2d(x, y, x_edges, y_edges)
+def firing_rate_2_rate_map(fr, x, y, x_bin_edges, y_bin_edges, occ_num_thr=3, spatial_window_size=5, spatial_sigma=2):
+    fr_sum_2d = w_histogram_2d(x, y, fr, x_bin_edges, y_bin_edges)
+    pos_counts_map = histogram_2d(x, y, x_bin_edges, y_bin_edges)
 
     fr_avg_pos = np.zeros_like(fr_sum_2d)
-    fr_avg_pos[pos_counts_map > count_thr] = fr_sum_2d[pos_counts_map > count_thr] \
-                                            / pos_counts_map[pos_counts_map > count_thr]
+    fr_avg_pos[pos_counts_map > occ_num_thr] = fr_sum_2d[pos_counts_map > occ_num_thr] \
+                                            / pos_counts_map[pos_counts_map > occ_num_thr]
 
-    sm_fr_map = smooth_2d_map(fr_avg_pos, n_bins=n_bins, sigma=sigma)
+    sm_fr_map = smooth_2d_map(fr_avg_pos, n_bins=spatial_window_size, sigma=spatial_sigma)
     return sm_fr_map
 
 
-def spikes_2_rate_map(spikes, x, y, x_edges, y_edges, time_step=0.02, time_thr=0.06, n_bins=5, sigma=2):
-    spk_sum_2d = w_histogram_2d(x, y, spikes, x_edges, y_edges)
-    pos_sec_map = histogram_2d(x, y, x_edges, y_edges)*time_step
+def spikes_2_rate_map(spikes, x, y, x_bin_edges, y_bin_edges, time_step=0.02, occ_time_thr=0.06, spatial_window_size=5, spatial_sigma=2):
+    spk_sum_2d = w_histogram_2d(x, y, spikes, x_bin_edges, y_bin_edges)
+    pos_sec_map = histogram_2d(x, y, x_bin_edges, y_bin_edges)*time_step
 
     fr_avg_pos = np.zeros_like(spk_sum_2d)
-    fr_avg_pos[pos_sec_map > time_thr] = spk_sum_2d[pos_sec_map > time_thr] \
-                                            / pos_sec_map[pos_sec_map > time_thr]
+    fr_avg_pos[pos_sec_map > occ_time_thr] = spk_sum_2d[pos_sec_map > occ_time_thr] \
+                                            / pos_sec_map[pos_sec_map > occ_time_thr]
 
-    sm_fr_map = smooth_2d_map(fr_avg_pos, n_bins=n_bins, sigma=sigma)
+    sm_fr_map = smooth_2d_map(fr_avg_pos, n_bins=spatial_window_size, sigma=spatial_sigma)
     return sm_fr_map
 
 
@@ -176,17 +177,17 @@ def get_zone_spike_counts(bin_spikes, zones):
     return zone_spk_counts
 
 
-def get_spike_map(bin_spikes, x, y, x_edges, y_edges):
+def get_spike_map(bin_spikes, x, y, x_bin_edges, y_bin_edges):
     """
     :param np.array bin_spikes: spike counts by time bin
     :param np.array x: x bin position of animal
     :param np.array y: y bin position of animal
-    :param x_edges: np.array of edges
-    :param y_edges: np.array of edges
+    :param x_bin_edges: np.array of edges
+    :param y_bin_edges: np.array of edges
     :return: np.ndarray spike_map: number of spikes at each xy position
     """
     x_spk, y_spk = get_bin_spikes_xy(bin_spikes, x, y)
-    spike_map = histogram_2d(x_spk, y_spk, x_edges, y_edges)
+    spike_map = histogram_2d(x_spk, y_spk, x_bin_edges, y_bin_edges)
     return spike_map
 
 
@@ -207,7 +208,7 @@ def get_fr_map(spike_map, pos_map_secs):
 
 
 # speed scores
-def get_speed_score_traditional(speed, fr, min_speed=2, max_speed=80, sig_alpha=0.02, n_perm=100):
+def speed_score_traditional(speed, fr, min_speed=2, max_speed=80, sig_alpha=0.02, n_perm=100):
     """
     Traditional method of computing speed score. simple correlation of speed & firing rate
     :param speed: array floats vector of speed n_samps
@@ -238,7 +239,7 @@ def get_speed_score_traditional(speed, fr, min_speed=2, max_speed=80, sig_alpha=
     sig = np.zeros(n_units, dtype=bool)
     for unit in range(n_units):
         score[unit] = rs.spearman(speed_valid, fr_valid[unit])
-        sig[unit], _ = rs.permutation_test(function=rs.spearman, x=speed_valid, y=fr_valid[unit],
+        sig[unit], _ = rs.permutation_test(function=rs.pearson, x=speed_valid, y=fr_valid[unit],
                                            n_perm=n_perm, alpha=sig_alpha)
 
     return score, sig
@@ -396,7 +397,7 @@ def get_angle_stats(theta, step, weights=None):
     return out_dir, w_counts, bin_centers, bin_edges
 
 
-def get_angle_score_traditional(theta, fr, speed=None, min_speed=None, max_speed=None, sig_alpha=0.02):
+def angle_score_traditional(theta, fr, speed=None, min_speed=None, max_speed=None, sig_alpha=0.02):
     """"
     computes angle by firing rate without binning
     :param theta: array n_samps of angles in radians
@@ -620,16 +621,16 @@ def get_border_encoding_features(x, y, x_bin_edges, y_bin_edges, feat_type='line
     return prox_mats[:, y_bin_idx, x_bin_idx].T
 
 
-def compute_border_score_solstad(fr_maps, border_fr_thr=0.3, min_field_size_bins=20, border_width_bins=3, return_all=False):
+def compute_border_score_solstad(fr_maps, fr_thr=0.3, min_field_size_bins=20, width_bins=3, return_all=False):
     """
     Border score method from Solstad et al Science 2008. Returns the border score along with the max coverage by a field
     and the weighted firing rate. This works for a single fr_map or multiple.
     :param fr_maps: np.ndarray, (dimensions can be 2 or 3), if 3 dimensions, first dimensions must
                     correspond to the # of units, other 2 dims are height and width of the map
-    :param border_fr_thr: float, proportion of the max firing rate to threshold the data
+    :param fr_thr: float, proportion of the max firing rate to threshold the data
     :param min_field_size_bins: int, # of bins that correspond to the total area of the field. fields found
                     under this threshold are discarded
-    :param border_width_bins: wall width by which the coverage is determined.
+    :param width_bins: wall width by which the coverage is determined.
     :param return_all: bool, if False only returns the border_score
     :return: border score, max coverage, distanced weighted fr for each unit in maps.
 
@@ -642,21 +643,48 @@ def compute_border_score_solstad(fr_maps, border_fr_thr=0.3, min_field_size_bins
     n_units, map_height, map_width = fr_maps.shape
 
     # get fields
-    field_maps, n_fields = get_map_fields(fr_maps, thr=border_fr_thr, min_field_size=min_field_size_bins)
+    field_maps, n_fields = get_map_fields(fr_maps, thr=fr_thr, min_field_size=min_field_size_bins)
 
     if field_maps.ndim == 2:
         field_maps = field_maps[np.newaxis, ]
+        n_fields = n_fields[np.newaxis, ]
 
     # get border distance matrix
     distance_mat = get_center_border_distance_mat(map_height, map_width)  # linear distance to closest wall [bins]
 
     # get wall labels
-    wall_labels_mask = get_wall_masks(map_height, map_width, border_width_bins)
+    wall_labels_mask = get_wall_masks(map_height, map_width, width_bins)
 
     # pre-allocate scores
     border_score = np.zeros(n_units) * np.nan
     border_max_cov = np.zeros(n_units) * np.nan
     border_w_fr = np.zeros(n_units) * np.nan
+
+    def _border_score_solstad(_field_map, _fr_map, _distance_mat, _wall_labels_mask):
+        """
+        computes the border scores given the field id map, firing rate and wall_mask
+        :param _fr_map: 2d firing rate map
+        :param _field_map: as obtained from get_map_fields
+        :param _wall_labels_mask: as obtained from get_wall_masks
+        :return: border_score, max_coverage, weighted_fr
+        """
+        _n_fields = int(np.max(_field_map)) + 1
+
+        wall_coverage = np.zeros((_n_fields, n_walls))
+        for field in range(_n_fields):
+            for wall in range(n_walls):
+                wall_coverage[field, wall] = np.sum(
+                    (_field_map == field) * (_wall_labels_mask[wall] == wall)) / np.sum(
+                    _wall_labels_mask[wall] == wall)
+        c_m = np.max(wall_coverage)
+
+        # get normalized distanced weighted firing rate
+        field_fr_map = _fr_map * (_field_map >= 0)
+        d_m = np.sum(field_fr_map * _distance_mat) / np.sum(field_fr_map)
+
+        # get border score
+        b = (c_m - d_m) / (c_m + d_m)
+        return b, c_m, d_m
 
     # loop and get scores
     for unit in range(n_units):
@@ -673,93 +701,13 @@ def compute_border_score_solstad(fr_maps, border_fr_thr=0.3, min_field_size_bins
         return border_score
 
 
-def _border_score_solstad(field_map, fr_map, distance_mat, wall_labels_mask):
-    """
-    computes the border scores given the field id map, firing rate and wall_mask
-    :param fr_map: 2d firing rate map
-    :param field_map: as obtained from get_map_fields
-    :param wall_labels_mask: as obtained from get_wall_masks
-    :return: border_score, max_coverage, weighted_fr
-    """
-    n_walls = 4
-    n_fields = int(np.max(field_map)) + 1
-
-    wall_coverage = np.zeros((n_fields, n_walls))
-    for field in range(n_fields):
-        for wall in range(n_walls):
-            wall_coverage[field, wall] = np.sum(
-                (field_map == field) * (wall_labels_mask[wall] == wall)) / np.sum(
-                wall_labels_mask[wall] == wall)
-    c_m = np.max(wall_coverage)
-
-    # get normalized distanced weighted firing rate
-    field_fr_map = fr_map * (field_map >= 0)
-    d_m = np.sum(field_fr_map * distance_mat) / np.sum(field_fr_map)
-
-    # get border score
-    b = (c_m - d_m) / (c_m + d_m)
-    return b, c_m, d_m
-
-
-def _shuffle_fields(field_map, fr_map):
-    """
-    shuffles fields in the map
-    :param field_map: as obtained from get_map_fields
-    :param fr_map: 2d firing rate map
-    :return: shuffled_field_map, shuffled_fr_map
-    """
-    height, width = field_map.shape
-    n_fields = int(np.max(field_map)) + 1
-
-    shuffled_field_map = np.zeros_like(field_map)
-    shufflued_fr_map = np.zeros_like(fr_map)
-    xy_shift = np.array([np.random.randint(dim) for dim in [height, width]])
-    for field in range(n_fields):
-        # find field idx and shift (circularly)
-        fields_idx = np.argwhere(field_map == field)
-        shift_fields = fields_idx + xy_shift
-        shift_fields[:, 0] = np.mod(shift_fields[:, 0], height)
-        shift_fields[:, 1] = np.mod(shift_fields[:, 1], width)
-
-        # get shuffled field map and fr map
-        shuffled_field_map[shift_fields[:, 0], shift_fields[:, 1]] = field
-        shufflued_fr_map[shift_fields[:, 0], shift_fields[:, 1]] = fr_map[fields_idx[:, 0], fields_idx[:, 1]]
-    return shuffled_field_map, shufflued_fr_map
-
-
-def _permutation_test_border_score(field_map, fr_map, distance_mat, wall_labels_mask, n_perm=100, sig_alpha=0.02,
-                                   seed=0):
-    """
-    permuation test for border score. shuffles using the _shuffle_fields function that moves the field ids and the
-    corresponding firing rates
-    :param field_map: as obtained from get_map_fields
-    :param fr_map: 2d firing rate map
-    :param wall_labels_mask: as obtained from get_wall_masks
-    :param n_perm: number of permutations
-    :param sig_alpha: significance level
-    :param seed: random seed
-    :returns: bool, is the border score outside [=1] or within [=0] of the shuffled distribution
-    """
-
-    np.random.seed(seed)
-    b, _, _ = _border_score_solstad(field_map, fr_map, distance_mat, wall_labels_mask)
-    sh_b = np.zeros(n_perm)
-    for perm in range(n_perm):
-        sh_field_map, sh_fr_map = _shuffle_fields(field_map, fr_map)
-        sh_b[perm], _, _ = _border_score_solstad(sh_field_map, sh_fr_map, distance_mat, wall_labels_mask)
-
-    loc = (sh_b >= b).mean()
-    outside_dist = loc <= sig_alpha / 2 or loc >= 1 - sig_alpha / 2
-    return outside_dist
-
-
-def permutation_test_border_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges, n_perm=200, alpha=0.02,
+def permutation_test_border_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges, n_perm=200, sig_alpha=0.02,
                                   true_bs=None, n_jobs=8, **border_score_params):
     n_samps = len(x)
     if fr.ndim == 1:
         n_units = 1
-        fr = fr[np.newaxis,]
-        fr_maps = fr_maps[np.newaxis,]
+        fr = fr[np.newaxis, ]
+        fr_maps = fr_maps[np.newaxis, ]
     else:
         n_units, _ = fr.shape
     assert n_samps == fr.shape[1], 'Mismatch lengths between samples and fr.'
@@ -773,7 +721,7 @@ def permutation_test_border_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges, n
         # roll firing rate
         p_fr = np.roll(fr_unit, np.random.randint(n_samps))
         # get rate map
-        p_fr_map = firing_rate_2_rate_map(p_fr, x=x, y=y, x_edges=x_bin_edges, y_edges=y_bin_edges)
+        p_fr_map = firing_rate_2_rate_map(p_fr, x=x, y=y, x_bin_edges=x_bin_edges, y_bin_edges=y_bin_edges)
         # get single border score
         p_bs = compute_border_score_solstad(p_fr_map, **border_score_params)
         return p_bs
@@ -783,13 +731,85 @@ def permutation_test_border_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges, n
         for unit in range(n_units):
             if not np.isnan(true_bs[unit]):
                 # get border score shuffle dist
-                perm_bs = parallel(delayed(p_worker)(unit) for perm in range(n_perm))
+                perm_bs = parallel(delayed(p_worker)(unit) for _ in range(n_perm))
                 # find location of true gs
                 loc = np.array(perm_bs >= true_bs[unit]).mean()
                 # determine if outside distribution @ alpha level
-                sig[unit] = np.logical_or(loc <= alpha / 2, loc >= 1 - alpha / 2)
+                sig[unit] = np.logical_or(loc <= sig_alpha / 2, loc >= 1 - sig_alpha / 2)
 
-    return sig
+    return true_bs, sig
+
+
+def permutation_test_spatial_stability(fr, x, y, x_bin_edges, y_bin_edges, sig_alpha=0.02, n_perm=200, occ_num_thr=3,
+                                       spatial_window_size=5, spatial_sigma=2, n_jobs=8):
+    n_samps = len(x)
+    if fr.ndim == 1:
+        n_units = 1
+        fr = fr[np.newaxis, ]
+    else:
+        n_units, _ = fr.shape
+    assert n_samps == fr.shape[1], 'Mismatch lengths between samples and fr.'
+
+    # helper function to get slit correlation
+    def get_map_split_corr(_fr):
+
+        data = {'x': x, 'y': y, 'fr': _fr}
+        data_split = rs.split_timeseries_data(data=data, n_splits=2)
+
+        x1 = data_split['x'][0]
+        x2 = data_split['x'][1]
+
+        y1 = data_split['y'][0]
+        y2 = data_split['y'][1]
+
+        fr1 = data_split['fr'][0]
+        fr2 = data_split['fr'][1]
+
+        fr_map_corr = np.zeros(n_units)
+
+        for _unit in range(n_units):
+            fr_map1 = firing_rate_2_rate_map(fr1[_unit], x1, y1,
+                                             x_bin_edges=x_bin_edges,
+                                             y_bin_edges=y_bin_edges,
+                                             occ_num_thr=occ_num_thr,
+                                             spatial_window_size=spatial_window_size,
+                                             spatial_sigma=spatial_sigma)
+            fr_map2 = firing_rate_2_rate_map(fr2[_unit], x2, y2,
+                                             x_bin_edges=x_bin_edges,
+                                             y_bin_edges=y_bin_edges,
+                                             occ_num_thr=occ_num_thr,
+                                             spatial_window_size=spatial_window_size,
+                                             spatial_sigma=spatial_sigma)
+            fr_map_corr[_unit] = rs.pearson(fr_map1.flatten(), fr_map2.flatten())
+
+        return fr_map_corr
+
+    # compute true split half correlation
+    true_split_corr = get_map_split_corr(fr)
+
+    # helper function to permute the firing rates
+    def p_worker():
+        """ helper function for parallelization. Computes a single shuffled border score per unit."""
+
+        perm_fr = np.zeros_like(fr)
+        for _unit in range(n_units):
+            perm_fr[_unit] = np.roll(fr[_unit], np.random.randint(n_samps))
+
+        split_corr = get_map_split_corr(perm_fr)
+        return split_corr
+
+    with Parallel(n_jobs=n_jobs) as parallel:
+        perm_split_corr = parallel(delayed(p_worker)() for _ in range(n_perm))
+    perm_split_corr=np.array(perm_split_corr)
+
+    sig = np.zeros(n_units)
+    for unit in range(n_units):
+        # find location of true corr
+        loc = np.array(perm_split_corr[:, unit] >= true_split_corr[unit]).mean()
+        # determine if outside distribution @ alpha level
+        sig[unit] = np.logical_or(loc <= sig_alpha / 2, loc >= 1 - sig_alpha / 2)
+
+    return true_split_corr, sig
 
 
 # border score auxiliary functions
@@ -1002,8 +1022,7 @@ def get_sigmoid_border_proximity_mats(width, height, border_width_bins=3,
 
 
 # grid scoring:
-def get_grid_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, grid_fit='auto_corr', reg_type='linear',
-                            compute_gs_sig=False, sig_alpha=0.02, n_perm=200, verbose=False, **kwargs):
+def get_grid_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, grid_fit='auto_corr', reg_type='linear', compute_gs_sig=False, sig_alpha=0.02, n_perm=200, verbose=False, **kwargs):
     """
     Grid encoding model. Also obtains grid score.
     :param x: array n_samps of x positions of the animal
@@ -1081,7 +1100,7 @@ def get_grid_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, grid_fi
                                                 scores.at[unit, 'scale'], scores.at[unit, 'phase'])
 
                 _, coef_temp, scores.at[unit, 'r2'], scores.at[unit, 'rmse'], scores.at[unit, 'nrmse'] = \
-                    get_encoding_map_fit(fr[unit], moire_mat, x, y, x_edges=x_bin_edges, y_edges=y_bin_edges,
+                    get_encoding_map_fit(fr[unit], moire_mat, x, y, x_bin_edges=x_bin_edges, y_bin_edges=y_bin_edges,
                                          reg_type=reg_type)
                 coefs[unit, :] = coef_temp.flatten()
 
@@ -1091,7 +1110,7 @@ def get_grid_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, grid_fi
     return scores, coefs, coefs_sem
 
 
-def get_encoding_map_fit(fr, maps, x, y, x_edges, y_edges, reg_type='linear', bias_term=False):
+def get_encoding_map_fit(fr, maps, x, y, x_bin_edges, y_bin_edges, reg_type='linear', bias_term=False):
     """
     From spikes, an amplitude matrix map corresponding to locations, and the locations of the animals obtain encoding
     model predicting the firing or spiking as function of location.
@@ -1099,8 +1118,8 @@ def get_encoding_map_fit(fr, maps, x, y, x_edges, y_edges, reg_type='linear', bi
     :param maps: n_maps x height x width representing the amplitude of the map to be tested
     :param x: xlocation of the animal
     :param y: y location of the animal
-    :param x_edges:
-    :param y_edges:
+    :param x_bin_edges:
+    :param y_bin_edges:
     :param reg_type:  str, regression type ['poisson', 'linear']
     :param bias_term: boolean, add a bias term to the fit
     :return: predictions [fr_hat], coeficcients [coefficients], variance exp. [r2/d2], error [rmse], norm. err. [nrmse]
@@ -1118,8 +1137,8 @@ def get_encoding_map_fit(fr, maps, x, y, x_edges, y_edges, reg_type='linear', bi
         maps = maps[np.newaxis, ]
 
     # fit model
-    _, x_bin_idx = rs.get_discrete_data_mat(x, bin_edges=x_edges)
-    _, y_bin_idx = rs.get_discrete_data_mat(y, bin_edges=y_edges)
+    _, x_bin_idx = rs.get_discrete_data_mat(x, bin_edges=x_bin_edges)
+    _, y_bin_idx = rs.get_discrete_data_mat(y, bin_edges=y_bin_edges)
 
     n_maps, height, width = maps.shape
 
@@ -1166,7 +1185,7 @@ def get_encoding_map_fit(fr, maps, x, y, x_edges, y_edges, reg_type='linear', bi
     return fr_hat, coef, r2, err, nerr
 
 
-def get_encoding_map_predictions(fr, maps, coefs, x, y, x_edges, y_edges, reg_type='linear', bias_term=False):
+def get_encoding_map_predictions(fr, maps, coefs, x, y, x_bin_edges, y_bin_edges, reg_type='linear', bias_term=False):
     """
     Test for 2d map models. Given a set of coefficients and data, obtain predicted firing rate or spikes, along with
     metrics of performance. Note that the given fr, x, y should be from a held out test set.
@@ -1175,8 +1194,8 @@ def get_encoding_map_predictions(fr, maps, coefs, x, y, x_edges, y_edges, reg_ty
     :param coefs: n_units x n_coefs,  coefficients of the model. type of coefficients most match regression type
     :param x: xlocation of the animal
     :param y: y location of the animal
-    :param x_edges:
-    :param y_edges:
+    :param x_bin_edges:
+    :param y_bin_edges:
     :param reg_type:  str, regression type ['poisson', 'linear']
     :param bias_term: boolean, if there is bias term on the coefficients
     :returns: predictions [fr_hat], coeficcients [coefficients], variance exp. [r2/d2], error [rmse], norm. err. [nrmse]
@@ -1195,8 +1214,8 @@ def get_encoding_map_predictions(fr, maps, coefs, x, y, x_edges, y_edges, reg_ty
         maps = maps[np.newaxis, ]
 
     # prepare data
-    _, x_bin_idx = rs.get_discrete_data_mat(x, bin_edges=x_edges)
-    _, y_bin_idx = rs.get_discrete_data_mat(y, bin_edges=y_edges)
+    _, x_bin_idx = rs.get_discrete_data_mat(x, bin_edges=x_bin_edges)
+    _, y_bin_idx = rs.get_discrete_data_mat(y, bin_edges=y_bin_edges)
     n_maps, height, width = maps.shape
 
     if bias_term:
@@ -1230,9 +1249,9 @@ def get_encoding_map_predictions(fr, maps, coefs, x, y, x_edges, y_edges, reg_ty
     return fr_hat, r2, err, nerr
 
 
-def compute_grid_score(rate_map, ac_thr=0.1, radix_rel_range=None,
-                       amplify_rate_map=True, sigmoid_center=None, sigmoid_slope=None,
-                       find_rate_fields=True,
+def compute_grid_score(rate_map, ac_thr=0.1, radix_range=None,
+                       apply_sigmoid=True, sigmoid_center=None, sigmoid_slope=None,
+                       find_fields=True,
                        verbose=False, ):
     """
     Function to compute grid score as detailed in Moser 07. Code inspired on version from Matt Nolans lab:
@@ -1240,12 +1259,12 @@ def compute_grid_score(rate_map, ac_thr=0.1, radix_rel_range=None,
 
     :param rate_map: original rate map. 2dim
     :param ac_thr: cut threshold to find fields in the autocorrelation in relation to max
-    :param radix_rel_range: ring size dimensions in relation to the spacing/scale
+    :param radix_range: ring size dimensions in relation to the spacing/scale
         (as computed by the mean distance to the six closest autocorrelation fields).
-    :param amplify_rate_map: bool. uses a sigmoid non linearity to amplify rate map SNR
+    :param apply_sigmoid: bool. uses a sigmoid non linearity to amplify rate map SNR
     :param sigmoid_center: float. center of sigmoid for amplify_rate, ignored if amplify_rate_map is False
     :param sigmoid_slope: float. slope of sigmoid for amplify_rate, ignored if amplify_rate_map is False
-    :param find_rate_fields: bool. 
+    :param find_fields: bool.
     :param verbose: bool.
     :return: 4 elements:
         1. grid score, float
@@ -1255,14 +1274,14 @@ def compute_grid_score(rate_map, ac_thr=0.1, radix_rel_range=None,
 
     """
 
-    if radix_rel_range is None:
-        radix_rel_range = [0.5, 2.0]
+    if radix_range is None:
+        radix_range = [0.5, 2.0]
 
     # normalize rate map
     max_rate = rate_map.max()
     n_rate_map = rate_map / max_rate
 
-    if amplify_rate_map:
+    if apply_sigmoid:
         if sigmoid_center is None:
             sigmoid_center = 0.5
         if sigmoid_slope is None:
@@ -1271,7 +1290,7 @@ def compute_grid_score(rate_map, ac_thr=0.1, radix_rel_range=None,
                           'slope': sigmoid_slope}
         n_rate_map = sigmoid(n_rate_map, **sigmoid_params)
 
-    if find_rate_fields:
+    if find_fields:
         mean_rate = n_rate_map.mean()
 
         while_counter = 0
@@ -1340,7 +1359,7 @@ def compute_grid_score(rate_map, ac_thr=0.1, radix_rel_range=None,
     mean_field_dist = np.mean(field_distances2.r)
     grid_phase = np.min(field_distances2.ang)  # min angle corresponds to closest autocorr from x axis
 
-    radix_range = np.array(radix_rel_range) * mean_field_dist
+    radix_range = np.array(radix_range) * mean_field_dist
 
     # mask the region
     mask_radix_out = np.zeros_like(map_fields)
@@ -1367,8 +1386,8 @@ def compute_grid_score(rate_map, ac_thr=0.1, radix_rel_range=None,
     return gs, mean_field_dist, grid_phase, field_distances2.xy
 
 
-def permutation_test_grid_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges, n_perm=200, alpha=0.02,
-                                true_gs=None, n_jobs=8):
+def permutation_test_grid_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges,
+                                n_perm=200, sig_alpha=0.02, n_jobs=8, **grid_score_params):
     n_samps = len(x)
     if fr.ndim == 1:
         n_units = 1
@@ -1378,10 +1397,11 @@ def permutation_test_grid_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges, n_p
         n_units, _ = fr.shape
     assert n_samps == fr.shape[1], 'Mismatch lengths between samples and fr.'
 
-    if true_gs is None:
-        true_gs = np.zeros(n_units) * np.nan
-        for unit in range(n_units):
-            true_gs[unit], _, _, _ = compute_grid_score(fr_maps[unit])
+    true_gs = np.zeros(n_units) * np.nan
+    true_scale = np.zeros(n_units) * np.nan
+    true_phase = np.zeros(n_units) * np.nan
+    for unit in range(n_units):
+        true_gs[unit], true_scale[unit], true_phase[unit], _ = compute_grid_score(fr_maps[unit], **grid_score_params)
 
     def p_worker(unit_id):
         """ helper function for parallelization. Computes a single shuffled grid score per unit."""
@@ -1389,9 +1409,9 @@ def permutation_test_grid_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges, n_p
         # roll firing rate
         p_fr = np.roll(fr_unit, np.random.randint(n_samps))
         # get rate map
-        p_fr_map =  firing_rate_2_rate_map(p_fr, x=x, y=y, x_edges=x_bin_edges, y_edges=y_bin_edges)
+        p_fr_map = firing_rate_2_rate_map(p_fr, x=x, y=y, x_bin_edges=x_bin_edges, y_bin_edges=y_bin_edges)
         # get single grid score
-        p_gs, _, _, _ = compute_grid_score(p_fr_map)
+        p_gs, _, _, _ = compute_grid_score(p_fr_map, **grid_score_params)
         return p_gs
 
     sig = np.zeros(n_units)
@@ -1403,9 +1423,9 @@ def permutation_test_grid_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges, n_p
                 # find location of true gs
                 loc = np.array(perm_gs >= true_gs[unit]).mean()
                 # determine if outside distribution @ alpha level
-                sig[unit] = np.logical_or(loc <= alpha / 2, loc >= 1 - alpha / 2)
+                sig[unit] = np.logical_or(loc <= sig_alpha / 2, loc >= 1 - sig_alpha / 2)
 
-    return sig
+    return true_gs, sig, true_scale, true_phase
 
 
 def _get_optimum_sigmoid_slope(border_width, center, sigmoid_slope_thr=0.1):
@@ -1553,6 +1573,209 @@ def fit_moire_grid(fr_map, **kwargs):
 
     return fit_l, fit_theta, moire_grid, score_mat
 
+
+class SpatialMetrics:
+
+    def __init__(self, x, y, speed, ha, hd, fr, spikes, n_jobs=-1, **params):
+        self.x = x
+        self.y = y
+        self.speed = speed
+        self.ha = ha
+        self.hd = hd
+        self.fr = fr
+        self.spikes = spikes
+
+        self.n_jobs = -1
+        self.n_units = spikes.shape[0]
+        self.n_samples = len(x)
+
+        if len(params) > 0:
+            for key, val in params.items():
+                setattr(self, key, val)
+
+        default_params = default_OF_params()
+        for key, val in default_params.items():
+            if not hasattr(self, key):
+                setattr(self, key, val)
+
+        self.fr_maps = self.get_fr_maps()
+
+        _scores = ['speed_score', 'hd_score', 'ha_score', 'border_score',
+                   'grid_score', 'spatial_stability', 'all_scores']
+        for s in _scores:
+            setattr(self, s, [])
+
+    def get_fr_maps(self):
+        fr_maps = np.zeros((self.n_units, self.height, self.width))
+        for unit in range(self.n_units):
+
+            fr_maps[unit] = firing_rate_2_rate_map(self.fr[unit], self.x, self.y,
+                                                   x_bin_edges=self.x_bin_edges_, y_bin_edges=self.y_bin_edges_,
+                                                   occ_num_thr=self.occ_num_thr,
+                                                   spatial_window_size=self.spatial_window_size,
+                                                   spatial_sigma=self.spatial_sigma)
+        return fr_maps
+
+    def get_speed_score(self):
+        score, sig = speed_score_traditional(speed=self.speed, fr=self.fr,
+                                             min_speed=self.min_speed_thr,
+                                             max_speed=self.max_speed_thr,
+                                             n_perm=self.n_perm, sig_alpha=self.sig_alpha)
+
+        out = pd.DataFrame(columns=['speed_score', 'speed_sig'])
+        out['speed_score'] = score
+        out['speed_sig'] = sig
+
+        self.speed_score = out
+        return out
+
+    def get_hd_score(self):
+        scores = angle_score_traditional(theta=self.hd, fr=self.fr, speed=self.speed,
+                                         min_speed=self.min_speed_thr,
+                                         max_speed=self.max_speed_thr,
+                                         sig_alpha=self.sig_alpha)
+
+        out = scores[['vec_len', 'mean_ang', 'sig']]
+        out = out.rename(columns={'sig': 'hd_sig', 'vec_len': 'hd_score', 'mean_ang': 'hd_ang'})
+
+        self.hd_score = out
+        return out
+
+    def get_ha_score(self):
+        scores = angle_score_traditional(theta=self.ha, fr=self.fr, speed=self.speed,
+                                         min_speed=self.min_speed_thr,
+                                         max_speed=self.max_speed_thr,
+                                         sig_alpha=self.sig_alpha)
+
+        out = scores[['vec_len', 'mean_ang', 'sig']]
+        out = out.rename(columns={'sig': 'ha_sig', 'vec_len': 'ha_score', 'mean_ang': 'ha_ang'})
+
+        self.ha_score = out
+
+        return out
+
+    def get_border_score(self):
+
+        score, sig = permutation_test_border_score(self.fr, self.fr_maps, self.x, self.y,
+                                                   x_bin_edges=self.x_bin_edges_, y_bin_edges=self.y_bin_edges_,
+                                                   n_perm=self.n_perm, sig_alpha=self.sig_alpha,
+                                                   n_jobs=self.n_jobs,
+                                                   **self.border_score_params__)
+
+        out = pd.DataFrame(columns=['border_score', 'border_sig'])
+        out['border_score'] = score
+        out['border_sig'] = sig
+
+        self.border_score = out
+
+        return out
+
+    def get_grid_score(self):
+        """
+        Computes grid score.
+        :return:
+        """
+
+        score, sig, scale, phase = permutation_test_grid_score(self.fr, self.fr_maps, self.x, self.y,
+                                                               x_bin_edges=self.x_bin_edges_,
+                                                               y_bin_edges=self.y_bin_edges_,
+                                                               n_perm=self.n_perm, sig_alpha=self.sig_alpha,
+                                                               n_jobs=self.n_jobs,
+                                                               **self.grid_score_params__)
+
+        out = pd.DataFrame(columns=['grid_score', 'grid_sig', 'grid_scale', 'grid_phase'])
+        out['grid_score'] = score
+        out['grid_sig'] = sig
+        out['grid_scale'] = scale
+        out['grid_phase'] = phase
+
+        self.grid_score = out
+
+        return out
+
+    def get_spatial_stability(self):
+
+        stability_corr, stability_sig = \
+            permutation_test_spatial_stability(self.fr, self.x, self.y,
+                                               x_bin_edges=self.x_bin_edges_, y_bin_edges=self.y_bin_edges_,
+                                               sig_alpha=self.sig_alpha, n_perm=self.n_perm,
+                                               occ_num_thr=self.occ_num_thr, spatial_window_size=self.spatial_window_size,
+                                               spatial_sigma=self.spatial_sigma,
+                                               n_jobs=self.n_jobs)
+
+        out = pd.DataFrame(columns=['stability_corr', 'stability_sig'])
+        out['stability_corr'] = stability_corr
+        out['stability_sig'] = stability_sig
+
+        self.spatial_stability = out
+
+        return out
+
+    def get_all_metrics(self):
+
+        t0 = time.time()
+        speed = self.get_speed_score()
+        t1 = time.time()
+        print(f'Speed Score Completed: {t1-t0:0.2f}')
+
+        hd = self.get_hd_score()
+        t2 = time.time()
+        print(f'Head Dir Score Completed: {t2 - t1:0.2f}')
+
+        ha = self.get_ha_score()
+        t3 = time.time()
+        print(f'Head Ang Score Completed: {t3 - t2:0.2f}')
+
+        border = self.get_border_score()
+        t4 = time.time()
+        print(f'Border Score Completed: {t4 - t3:0.2f}')
+
+        grid = self.get_grid_score()
+        t5 = time.time()
+        print(f'Grid Score Completed: {t5 - t4:0.2f}')
+
+        spatial_stability = self.get_spatial_stability()
+        t6 = time.time()
+        print(f'Spatial Stability Score Completed: {t6 - t5:0.2f}')
+
+        scores = speed + hd + ha + border + grid + spatial_stability
+
+        self.all_scores = scores
+        return scores
+
+
+class SpatialEncodingModels:
+
+    def __init__(self, x, y, speed, ha, hd, neural, **params):
+        self.x = x
+        self.y = y
+        self.speed = speed
+        self.ha = ha
+        self.hd = hd
+        self.neural = neural
+
+        self.n_neurons = neural.shape[0]
+        self.n_samples = len(x)
+
+        if len(params) > 0:
+            for key, val in params.items():
+                setattr(self, key, val)
+
+        default_params = default_OF_params()
+        for key, val in default_params.items():
+            if not hasattr(self, key):
+                setattr(self, key, val)
+
+    def get_speed_model(self):
+        return
+    def get_hd_model(self):
+        return
+    def get_ha_model(self):
+        return
+    def get_grid_model(self):
+        return
+    def get_border_model(self):
+        return
 
 class Points2D:
     def __init__(self, x, y, polar=False):
@@ -1703,3 +1926,164 @@ class PointsOF:
 
     def __len__(self):
         return self.n
+
+
+def default_OF_params():
+    params = {
+        'time_step': 0.02,  # time step
+
+        # pixel params
+        'x_pix_lims': [100, 650],  # camera field of view x limits [pixels]
+        'y_pix_lims': [100, 500],  # camera field of view y limits [pixels]
+        'x_pix_bias': -380,  # factor for centering the x pixel position
+        'y_pix_bias': -280,  # factor for centering the y pixel position
+        'vt_rate': 1.0 / 60.0,  # video acquisition frame rate
+        'xy_pix_rot_rad': np.pi / 2 + 0.08,  # rotation of original xy pix camera to experimenter xy
+
+        # conversion params
+        'x_pix_mm': 1300.0 / 344.0,  # pixels to mm for the x axis [pix/mm]
+        'y_pix_mm': 1450.0 / 444.0,  # pixels to mm for the y axis [pix/mm]
+        'x_mm_bias': 20,  # factor for centering the x mm position
+        'y_mm_bias': 650,  # factor for centering the y mm position
+        'x_mm_lims': [-630, 630],  # limits on the x axis of the maze [mm]
+        'y_mm_lims': [-60, 1350],  # limits on the y axis of the maze [mm]
+        'x_cm_lims': [-63, 63],  # limits on the x axis of the maze [cm]
+        'y_cm_lims': [-6, 135],  # limits on the y axis of the maze [cm]
+
+        # binning parameters
+        'mm_bin': 30,  # millimeters per bin [mm]
+        'cm_bin': 3,  # cm per bin [cm]
+        'max_speed_thr': 80,  # max speed threshold for allowing valid movement [cm/s]
+        'min_speed_thr': 2,  # min speed threshold for allowing valid movement [cm/s]
+        'rad_bin': np.deg2rad(10),  # angle radians per bin [rad]
+        'occ_num_thr': 3,  # number of occupation times threshold [bins
+        'occ_time_thr': 0.02 * 3,  # time occupation threshold [sec]
+        'speed_bin': 2,  # speed bin size [cm/s]
+
+        # filtering parameters
+        'spatial_sigma': 2,  # spatial smoothing sigma factor [au]
+        'spatial_window_size': 5,  # number of spatial position bins to smooth [bins]
+        'temporal_window_size': 11,  # smoothing temporal window for filtering [bins]
+        'temporal_angle_window_size': 11,  # smoothing temporal window for angles [bins]
+        'temporal_window_type': 'hann',  # window type for temporal window smoothing
+
+        # statistical tests parameters:
+        'sig_alpha': 0.02,  # double sided alpha level for significance testing
+        'n_perm': 500,  # number of permutations
+
+        # type of encoding model. see spatial_funcs.get_border_encoding_features
+        'border_enc_model_type': 'linear',
+        # these are ignoed if border_enc_model_type is linear.
+        'border_enc_model_feature_params_': {'center_gaussian_spread': 0.2,  # as % of environment
+                                             'sigmoid_slope_thr': 0.15,  # value of sigmoid at border width
+                                             },
+        'reg_type': 'poisson',
+
+        'border_score_params__': {'fr_thr': 0.25,  # firing rate threshold
+                                  'width_bins': 3,  # distance from border to consider it a border cell [bins]
+                                  'min_field_size_bins': 10},  # minimum area for fields in # of bins
+
+        'grid_score_params__': {'ac_thr': 0.1,  # autocorrelation threshold for finding fields
+                                'radix_range': [0.5, 2.0],  # range of radii for grid score in the autocorr
+                                'apply_sigmoid': True,  # apply sigmoid to rate maps
+                                'sigmoid_center': 0.5,  # center for sigmoid
+                                'sigmoid_slope': 10,  # slope for sigmoid
+                                'find_fields': True},  # mask fields before autocorrelation
+
+        # grid encoding model
+        'grid_fit_type': 'auto_corr',  # ['auto_corr', 'moire'], how to find parameters for grid
+    }
+
+    # derived parameters
+    # -- filter coefficients --
+    params['filter_coef_'] = signal.get_window(params['temporal_window_type'],
+                                                    params['temporal_window_size'],
+                                                    fftbins=False)
+    params['filter_coef_'] /= params['filter_coef_'].sum()
+
+    params['filter_coef_angle_'] = signal.get_window(params['temporal_window_type'],
+                                                          params['temporal_angle_window_size'],
+                                                          fftbins=False)
+    params['filter_coef_angle_'] /= params['filter_coef_angle_'].sum()
+
+    # -- bins --
+    params['ang_bin_edges_'] = np.arange(0, 2 * np.pi + params['rad_bin'], params['rad_bin'])
+    params['ang_bin_centers_'] = params['ang_bin_edges_'][:-1] + params['rad_bin'] / 2
+    params['n_ang_bins'] = len(params['ang_bin_centers_'])
+
+    params['sp_bin_edges_'] = np.arange(params['min_speed_thr'],
+                                             params['max_speed_thr'] + params['speed_bin'],
+                                             params['speed_bin'])
+    params['sp_bin_centers_'] = params['sp_bin_edges_'][:-1] + params['speed_bin'] / 2
+    params['n_sp_bins'] = len(params['sp_bin_centers_'])
+
+    params['x_bin_edges_'] = np.arange(params['x_cm_lims'][0],
+                                            params['x_cm_lims'][1] + params['cm_bin'],
+                                            params['cm_bin'])
+    params['x_bin_centers_'] = params['x_bin_edges_'][:-1] + params['cm_bin'] / 2
+    params['n_x_bins'] = len(params['x_bin_centers_'])
+    params['n_width_bins'] = params['n_x_bins']
+    params['width'] = params['n_x_bins']
+
+    params['y_bin_edges_'] = np.arange(params['y_cm_lims'][0],
+                                            params['y_cm_lims'][1] + params['cm_bin'],
+                                            params['cm_bin'])
+    params['y_bin_centers_'] = params['y_bin_edges_'][:-1] + params['cm_bin'] / 2
+    params['n_y_bins'] = len(params['y_bin_centers_'])
+    params['n_height_bins'] = params['n_y_bins']
+    params['height'] = params['n_y_bins']
+
+
+    return params
+
+
+# def _shuffle_fields(field_map, fr_map):
+#     """
+#     shuffles fields in the map
+#     :param field_map: as obtained from get_map_fields
+#     :param fr_map: 2d firing rate map
+#     :return: shuffled_field_map, shuffled_fr_map
+#     """
+#     height, width = field_map.shape
+#     n_fields = int(np.max(field_map)) + 1
+#
+#     shuffled_field_map = np.zeros_like(field_map)
+#     shufflued_fr_map = np.zeros_like(fr_map)
+#     xy_shift = np.array([np.random.randint(dim) for dim in [height, width]])
+#     for field in range(n_fields):
+#         # find field idx and shift (circularly)
+#         fields_idx = np.argwhere(field_map == field)
+#         shift_fields = fields_idx + xy_shift
+#         shift_fields[:, 0] = np.mod(shift_fields[:, 0], height)
+#         shift_fields[:, 1] = np.mod(shift_fields[:, 1], width)
+#
+#         # get shuffled field map and fr map
+#         shuffled_field_map[shift_fields[:, 0], shift_fields[:, 1]] = field
+#         shufflued_fr_map[shift_fields[:, 0], shift_fields[:, 1]] = fr_map[fields_idx[:, 0], fields_idx[:, 1]]
+#     return shuffled_field_map, shufflued_fr_map
+#
+
+# def _permutation_test_border_score(field_map, fr_map, distance_mat, wall_labels_mask, n_perm=100, sig_alpha=0.02,
+#                                    seed=0):
+#     """
+#     permuation test for border score. shuffles using the _shuffle_fields function that moves the field ids and the
+#     corresponding firing rates
+#     :param field_map: as obtained from get_map_fields
+#     :param fr_map: 2d firing rate map
+#     :param wall_labels_mask: as obtained from get_wall_masks
+#     :param n_perm: number of permutations
+#     :param sig_alpha: significance level
+#     :param seed: random seed
+#     :returns: bool, is the border score outside [=1] or within [=0] of the shuffled distribution
+#     """
+#
+#     np.random.seed(seed)
+#     b, _, _ = _border_score_solstad(field_map, fr_map, distance_mat, wall_labels_mask)
+#     sh_b = np.zeros(n_perm)
+#     for perm in range(n_perm):
+#         sh_field_map, sh_fr_map = _shuffle_fields(field_map, fr_map)
+#         sh_b[perm], _, _ = _border_score_solstad(sh_field_map, sh_fr_map, distance_mat, wall_labels_mask)
+#
+#     loc = (sh_b >= b).mean()
+#     outside_dist = loc <= sig_alpha / 2 or loc >= 1 - sig_alpha / 2
+#     return outside_dist
