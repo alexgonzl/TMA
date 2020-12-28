@@ -74,7 +74,7 @@ def get_session_fr(session_info, bin_spikes=None):
     Get the firing rate for all the clusters in the session, from the binned spikes
     :param SubjectInfo session_info: instance of class SubjectInfo for a particular subject
     :param np.ndarray bin_spikes: shape [n_clusters x n_timebins]
-    :return: np.ndarray fr: firing rate shape [n_clusters x n_timebins]
+    :return: np.ndarray neural_data: firing rate shape [n_clusters x n_timebins]
     """
 
     time_step = session_info.params['time_step']

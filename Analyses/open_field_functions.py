@@ -247,7 +247,7 @@ def get_session_fr_maps_cont(session_info):
     return fr_maps
 
 
-def get_session_scores(session_info):
+def get_session_encoding_models(session_info):
     """
     Loops and computes traditional scores open-field scores for each unit, these include:
         -> speed score: correlation between firing rate and speed
@@ -261,64 +261,40 @@ def get_session_scores(session_info):
     """
     # get data
     fr = session_info.get_fr()
-    spike_maps = session_info.get_spike_maps()
-    fr_maps = session_info.get_fr_maps()
-
+    spikes = session_info.get_binned_spikes()
     of_dat = SimpleNamespace(**session_info.get_track_data())
-    task_params = SimpleNamespace(**session_info.task_params)
+    task_params = session_info.task_params
 
-    # preallocate output dictionary
-    output_dir = {a: {'model_scores': {}, 'model_coef': {}, 'model_coef_s': {}}
-                  for a in ['sp', 'ha', 'hd', 'border', 'grid']}
+    sem = spatial_funcs.SpatialEncodingModels(x=of_dat.x, y=of_dat.y, speed=of_dat.sp, ha=of_dat.ha,
+                                              hd=of_dat.hd, fr=fr, spikes=spikes, n_jobs=10, **task_params)
+    sem.get_all_models()
 
-    # prepare analyses
-    analyses = {
-        'sp': [spatial_funcs.get_speed_encoding_model,
-               {'speed': of_dat.sp, 'fr': fr, 'speed_bin_edges': task_params.sp_bin_edges_,
-                'sig_alpha': task_params.sig_alpha, 'n_perm': task_params.n_perm}],
+    return sem.all_models
 
-        'ha': [spatial_funcs.get_angle_encoding_model,
-               {'theta': of_dat.ha, 'fr': fr, 'ang_bin_edges': task_params.ang_bin_edges_,
-                'speed': of_dat.sp, 'min_speed': task_params.min_speed_thr,
-                'max_speed': task_params.max_speed_thr, 'sig_alpha': task_params.sig_alpha}],
 
-        'hd': [spatial_funcs.get_angle_encoding_model,
-               {'theta': of_dat.hd, 'fr': fr, 'ang_bin_edges': task_params.ang_bin_edges_,
-                'speed': of_dat.sp, 'min_speed': task_params.min_speed_thr,
-                'max_speed': task_params.max_speed_thr, 'sig_alpha': task_params.sig_alpha}],
+def get_session_scores(session_info):
+    """
+    Loops and computes traditional scores open-field scores for each unit, these include:
+        -> speed score: correlation between firing rate and speed
+        -> head angle score: correlation between firing rate and head angle
+        -> head directation score: correlation between firing rate and head direction
+        -> border score:
+        -> spatial information:
+        -> grid score:
+    :param SubjectSessionInfo session_info: instance of class SubjectInfo for a particular subject
+    :return: pandas data frame with scores by neuron
+    """
+    # get data
+    fr = session_info.get_fr()
+    spikes = session_info.get_binned_spikes()
+    of_dat = SimpleNamespace(**session_info.get_track_data())
+    task_params = session_info.task_params
 
-        'border': [spatial_funcs.get_border_encoding_model,
-                   {'x': of_dat.x, 'y': of_dat.y, 'fr': fr, 'maps': fr_maps,
-                    'x_bin_edges': task_params.x_bin_edges_, 'y_bin_edges': task_params.y_bin_edges_,
-                    'compute_solstad': True, 'sig_alpha': task_params.sig_alpha, 'n_perm': task_params.n_perm,
-                    'border_fr_thr': task_params.border_fr_thr,
-                    'min_field_size_bins': task_params.border_min_field_size_bins,
-                    'border_width_bins': task_params.border_width_bins,
-                    'feat_type': task_params.border_enc_model_type}],
+    sm = spatial_funcs.SpatialMetrics(x=of_dat.x, y=of_dat.y, speed=of_dat.sp, ha=of_dat.ha,
+                                      hd=of_dat.hd, fr=fr, spikes=spikes, n_jobs=10, **task_params)
+    sm.get_all_metrics()
 
-        'grid': [spatial_funcs.get_grid_encoding_model,
-                 {'x': of_dat.x, 'y': of_dat.y, 'fr': fr, 'maps': fr_maps,
-                  'x_bin_edges': task_params.x_bin_edges_, 'y_bin_edges': task_params.y_bin_edges_,
-                  'compute_gs_sig': True, 'sig_alpha': task_params.sig_alpha, 'n_perm': task_params.n_perm,
-                  'grid_fit': task_params.grid_fit_type, 'reg_type': task_params.reg_type}]
-    }
-
-    for analysis in analyses.keys():
-        function = analyses[analysis][0]
-        arguments = analyses[analysis][1]
-
-        try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings('ignore')
-                analysis_out = function(**arguments)
-
-                output_dir[analysis]['model_scores'] = analysis_out[0]
-                output_dir[analysis]['model_coef'] = analysis_out[1]
-                output_dir[analysis]['model_coef_s'] = analysis_out[2]
-        except:
-            print(f'Analyses {analysis} failed.')
-
-    return output_dir
+    return sm.all_scores
 
 # def allOFBehavPlots(OFBehavDat):
 #     sp = OFBehavDat['sp']

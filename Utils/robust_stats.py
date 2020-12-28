@@ -1,5 +1,6 @@
 import numpy as np
 from scipy import stats
+from joblib import delayed, Parallel
 import warnings
 
 
@@ -119,6 +120,16 @@ def robust_zscore(signal):
     return (signal - np.nanmedian(signal)) / (mad(signal) * 1.4826)
 
 
+def zscore(signal):
+    mu = np.nanmean(signal)
+    s = np.nanstd(signal)
+    if s > 0:
+        z = (signal-mu)/s
+    else:
+        z = signal-mu
+    return z
+
+
 def sig_stats(signal):
     """ sig_stats
         function that returns various signal statistics:
@@ -185,7 +196,7 @@ def get_r2(y, y_hat):
     return 1 - ((y - y_hat) ** 2).sum(axis=1) / ((y - y_bar) ** 2).sum(axis=1)
 
 
-def get_ar2(y, y_hat, p):
+def get_ar2(y, y_hat, p, r2=None):
     """
     Adjusted coefficient of determination for number of parameters used in the prediction.
     :param y: array n_samps of dependent variable;
@@ -199,7 +210,10 @@ def get_ar2(y, y_hat, p):
         y = y.reshape(1, -1)
         y_hat = y_hat.reshape(1, -1)
     n = y.shape[1]
-    r2 = get_r2(y, y_hat)
+
+    if r2 is None:
+        r2 = get_r2(y, y_hat)
+
     return 1 - (n - 1) / (n - p - 1) * (1 - r2)
 
 
@@ -207,7 +221,20 @@ def get_poisson_deviance(y, y_hat):
     if y.ndim == 1:
         y = y.reshape(1, -1)
         y_hat = y_hat.reshape(1, -1)
-    return 2 * np.sum((np.log(y ** y) - np.log(y_hat ** y) - y + y_hat), axis=1)
+
+    if np.all(y >= 0):
+
+        # the implementation below is for numerical stability.
+        with np.errstate(divide='ignore'):
+            dev_per_samp = np.log(y**y) - np.log(y_hat**y) - y + y_hat
+
+        # for invalid samples [y_hat<=0], make deviance equal to y
+        invalid_samps = y_hat <= 0
+        dev_per_samp[invalid_samps] = y[invalid_samps]
+
+        return 2*np.nanmean(dev_per_samp, axis=1)
+    else:
+        return np.nan
 
 
 def get_poisson_d2(y, y_hat):
@@ -233,10 +260,10 @@ def get_poisson_pearson_chi2(y, y_hat):
     if y.ndim == 1:
         y = y.reshape(1, -1)
         y_hat = y_hat.reshape(1, -1)
-    return np.sum((y - y_hat) ** 2 / y_hat, axis=1)
+    return np.nansum((y - y_hat) ** 2 / y_hat, axis=1)
 
 
-def get_poisson_ad2(y, y_hat, p):
+def get_poisson_ad2(y, y_hat, p, d2=None):
     """
     Pseudo adjusted coefficient of determination for a poisson glm. This implementation is the deviance square.
     :param y: array n_samps of dependent variable;
@@ -250,7 +277,9 @@ def get_poisson_ad2(y, y_hat, p):
         y_hat = y_hat.reshape(1, -1)
     n = y.shape[1]
 
-    d2 = get_poisson_d2(y, y_hat)
+    if d2 is None:
+        d2 = get_poisson_d2(y, y_hat)
+
     ad2 = 1 - (n - 1) / (n - p - 1) * (1 - d2)
 
     return ad2
@@ -295,7 +324,7 @@ def get_nrmse(y, y_hat):
     return get_rmse(y, y_hat) / np.mean(y, axis=1)
 
 
-def permutation_test(function, x, y=None, n_perm=500, alpha=0.02, seed=0, **function_params):
+def permutation_test(function, x, y=None, n_perm=500, alpha=0.02, seed=0, n_jobs=-1, **function_params):
     """
     Permutation test.
     :param function: of the form func(x) -> float, or func(x,y) -> : eg. rs.spearman, np.mean_fr_map##
@@ -321,17 +350,22 @@ def permutation_test(function, x, y=None, n_perm=500, alpha=0.02, seed=0, **func
             return function(x2, y2, **kwargs)
 
     if x.ndim > 1:
-        def perm_func(x2):
-            return np.random.permutation(x2.flatten()).reshape(*x2.shape)
+        def p_worker():
+            x_p = np.random.permutation(x.flatten()).reshape(*x.shape)
+            res = func2(x_p, **function_params)
+            return res
     else:
-        def perm_func(x2):
-            return np.random.permutation(x2)
+        def p_worker():
+            x_p = np.random.permutation(x)
+            res = func2(x_p, **function_params)
+            return res
 
     real_out = func2(x, **function_params)
-    for p in range(n_perm):
-        x_p = perm_func(x)
-        perm_out[p] = func2(x_p, **function_params)
 
+    with Parallel(n_jobs=n_jobs) as parallel:
+        perm_out = parallel(delayed(p_worker)() for _ in range(n_perm))
+
+    perm_out = np.array(perm_out)
     loc = (perm_out >= real_out).mean()
 
     outside_dist = loc <= alpha / 2 or loc >= 1 - alpha / 2
@@ -371,7 +405,103 @@ def kendall(x, y):
 
 def pearson(x, y):
     """pearsons correlation"""
-    return stats.pearsonr(x, y)[0]
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore')
+        r = stats.pearsonr(x, y)[0]
+    return r
+
+
+def circ_corrcl(x, y):
+    """Correlation coefficient between one circular and one linear variable
+    random variables.
+
+    Parameters
+    ----------
+    x : 1-D array_like
+        First circular variable (expressed in radians).
+        The range of ``x`` must be either :math:`[0, 2\\pi]` or
+        :math:`[-\\pi, \\pi]`. If ``angles`` is not
+        expressed in radians (e.g. degrees or 24-hours), please use the
+        :py:func:`pingouin.convert_angles` function prior to using the present
+        function.
+    y : 1-D array_like
+        Second circular variable (linear)
+    tail : string
+        Specify whether to return 'one-sided' or 'two-sided' p-value.
+
+    Returns
+    -------
+    r : float
+        Correlation coefficient
+    pval : float
+        Uncorrected p-value
+
+    Notes
+    -----
+    Please note that NaN are automatically removed from datasets.
+
+    Examples
+    --------
+    Compute the r and p-value between one circular and one linear variables.
+    #
+    # >>> from pingouin import circ_corrcl
+    # >>> x = [0.785, 1.570, 3.141, 0.839, 5.934]
+    # >>> y = [1.593, 1.291, -0.248, -2.892, 0.102]
+    # >>> r, pval = circ_corrcl(x, y)
+    # >>> print(round(r, 3), round(pval, 3))
+    0.109 0.971
+
+    # modified from pingouin
+    """
+    x = np.asarray(x)
+    y = np.asarray(y)
+    assert x.size == y.size, 'x and y must have the same length.'
+
+    # Remove NA
+    valid_samps = np.logical_and(~np.isnan(x), ~np.isnan(y))
+    x = x[valid_samps]
+    y = y[valid_samps]
+    n = x.size
+
+    # Compute correlation coefficent for sin and cos independently
+    rxs = pearson(y, np.sin(x))
+    rxc = pearson(y, np.cos(x))
+    rcs = pearson(np.sin(x), np.cos(x))
+
+    # Compute angular-linear correlation (equ. 27.47)
+    r = np.sqrt((rxc**2 + rxs**2 - 2 * rxc * rxs * rcs) / (1 - rcs**2))
+
+    # Compute p-value
+    # pval = chi2.sf(n * r**2, 2)
+    # pval = pval / 2 if tail == 'one-sided' else pval
+    return r
+
+
+def get_regression_metrics(y, y_hat, n_params=1, reg_type='linear'):
+    if y.ndim > 1:
+        y_bar = np.nanmean(y, axis=1)
+    else:
+        y_bar = np.nanmean(y)
+
+    if reg_type == 'poisson':
+        r2 = get_poisson_d2(y, y_hat)
+        ar2 = get_poisson_ad2(y, y_hat, n_params, d2=r2)
+        err = get_poisson_deviance(y, y_hat)
+        nerr = err/y_bar
+
+    elif reg_type == 'linear':
+        r2 = get_r2(y, y_hat)
+        ar2 = get_ar2(y, y_hat, n_params, r2=r2)
+        err = get_rmse(y, y_hat)
+        nerr = err/y_bar
+
+    else:
+        print(f'method {reg_type} not implemented.')
+        raise NotImplementedError
+
+    out = {'r2': r2, 'ar2': ar2, 'err': err, 'n_err': nerr}
+
+    return out
 
 
 def resultant_vector_length(alpha, w=None, d=None, axis=None, axial_correction=1, ci=None, bootstrap_iter=None):
@@ -502,10 +632,33 @@ def compute_autocorr_2d(X):
     return acc
 
 
+def split_timeseries(n_samps, samps_per_split=1500, n_data_splits=10, ):
+    """
+    Function that returns a time series of length of n_samps, and every samps_per_splits has a different id up to
+    n_data_splits. That is, it segments a time series by integers. Useful for crossvalidation and wanting to maintain
+    some temporal integrety between samples. If want more randomization, use the np.roll function to move the split ids.
+    :param n_samps: number of samples in the time series
+    :param samps_per_split: samples per split
+    :param n_data_splits: number of splits/ids in the time series
+    :return: time series of integers, each with the id of the split.
+    """
+
+    split_edges = np.append(np.arange(0, n_samps, samps_per_split), n_samps)
+    n_ts_segments = len(split_edges)-1
+
+    ts_seg_id = np.zeros(n_samps, dtype=int)
+    for ii in range(n_ts_segments):
+        split_id = np.mod(ii, n_data_splits)
+        ts_seg_id[split_edges[ii]:split_edges[ii+1]] = split_id
+
+    return ts_seg_id
+
+
 def split_timeseries_data(data, n_splits=2, samp_rate=0.02, split_interval=30):
     """
     Function that divides time every split_interval samples
-    :param data: dictionary of the time series to be split. if the time series do not have all the same the same number of samples the function will exit with an error.
+    :param data: dictionary of the time series to be split. if the time series do not have all the same the same number
+        of samples the function will exit with an error.
     :param n_splits: number of splits to divide the data
     :param samp_rate: sampling rate [samps / seconds]
     :param split_interval: interval for each split in [seconds]
@@ -524,14 +677,8 @@ def split_timeseries_data(data, n_splits=2, samp_rate=0.02, split_interval=30):
     n_total_samps = ts_lengths[0]
 
     # obtain time series segment splits
-    split_interval_samps = int(split_interval / samp_rate)
-    split_edges = np.append(np.arange(0, n_total_samps, split_interval_samps), n_total_samps)
-    n_split_segments = len(split_edges) - 1
-
-    split_samps = np.zeros(n_total_samps, dtype=int)
-    for ii in np.arange(0, n_split_segments, dtype=int):
-        split_id = np.mod(ii, n_splits)
-        split_samps[split_edges[ii]:split_edges[ii + 1]] = split_id
+    samps_per_split = int(split_interval / samp_rate)
+    split_samps = split_timeseries(n_total_samps, samps_per_split=samps_per_split, n_data_splits=n_splits)
 
     split_data = {}
     for key, ts in data.items():  # for every timeseries in the data

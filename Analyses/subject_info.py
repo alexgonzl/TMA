@@ -163,9 +163,8 @@ class SubjectInfo:
 
         paths['cluster_spike_maps'] = paths['Results'] / 'spike_maps.npy'
         paths['cluster_fr_maps'] = paths['Results'] / 'maps.npy'
-        paths['cluster_OF_metrics'] = paths['Results'] / 'OF_metrics.pkl'
-        paths['cluster_OF_lnp_metrics'] = paths['Results'] / 'OF_lnp_metrics.pkl'
-
+        paths['cluster_OF_metrics'] = paths['Results'] / 'OF_metrics.csv'
+        paths['cluster_OF_encoding_models'] = paths['Results'] / 'OF_encoding.csv'
 
         paths['ZoneAnalyses'] = paths['Results'] / 'ZoneAnalyses.pkl'
 
@@ -344,7 +343,7 @@ class SubjectSessionInfo(SubjectInfo):
                 'spike_maps': (self.get_spike_maps, self.paths['cluster_spike_maps'].exists()),
                 'maps': (self.get_fr_maps, self.paths['cluster_fr_maps'].exists()),
                 'scores': (self.get_scores, self.paths['cluster_OF_metrics'].exists()),
-                'lnp_scores': (self.get_lnp_scores, self.paths['cluster_OF_lnp_metrics'].exists())
+                'encoding_models': (self.get_encoding_models, self.paths['cluster_OF_encoding_models'].exists())
             }
         else:
             raise NotImplementedError
@@ -369,6 +368,9 @@ class SubjectSessionInfo(SubjectInfo):
                         print(f'Analysis {a} not implemented.')
                     except FileNotFoundError:
                         print(f'Analysis {a} did not find the dependent files.')
+                    except KeyboardInterrupt:
+                        print('Keyboard Interrupt')
+                        break
                     except:
                         print(f'Analysis {a} failed.')
             # update analyses
@@ -634,19 +636,45 @@ class SubjectSessionInfo(SubjectInfo):
             if not self.paths['cluster_OF_metrics'].exists() or overwrite:
                 print('Open Field Score Metrics do not exits or overwrite=True, creating them.')
                 scores = of_funcs.get_session_scores(self)
-                with self.paths['cluster_OF_metrics'].open(mode='wb') as f:
-                    pickle.dump(scores, f, protocol=pickle.HIGHEST_PROTOCOL)
+                scores.to_csv(self.paths['cluster_OF_metrics'])
+                # with self.paths['cluster_OF_metrics'].open(mode='wb') as f:
+                #     pickle.dump(scores, f, protocol=pickle.HIGHEST_PROTOCOL)
             else:
-                with self.paths['cluster_OF_metrics'].open(mode='rb') as f:
-                    scores = pickle.load(f)
+                scores = pd.read_csv(self.paths['cluster_OF_metrics'].open(mode='rb'), index_col=0)
+                # with self.paths['cluster_OF_metrics'].open(mode='rb') as f:
+                #     scores = pickle.load(f)
         else:
             print('Method not develop for other tasks.')
             raise NotImplementedError
 
         return scores
 
-    def get_lnp_scores(self, overwrite=False):
-        raise NotImplementedError
+    def get_encoding_models(self, overwrite=False):
+        """
+        obtains a series of pandas data frames quantifying the extent of coding to environmental variables
+        :param overwrite:
+        :returns: dictionary of pandas data frames.
+        """
+        if self.n_units == 0:
+            print('No units.')
+            return None
+
+        if self.task == 'OF':
+            if not self.paths['cluster_OF_encoding_models'].exists() or overwrite:
+                print('Encoding Models do not exist or overwrite=True, creating them.')
+                scores = of_funcs.get_session_encoding_models(self)
+                scores.to_csv(self.paths['cluster_OF_encoding_models'])
+                # with self.paths['cluster_OF_metrics'].open(mode='wb') as f:
+                #     pickle.dump(scores, f, protocol=pickle.HIGHEST_PROTOCOL)
+            else:
+                scores = pd.read_csv(self.paths['cluster_OF_encoding_models'].open(mode='rb'), index_col=0)
+                # with self.paths['cluster_OF_metrics'].open(mode='rb') as f:
+                #     scores = pickle.load(f)
+        else:
+            print('Method not develop for other tasks.')
+            raise NotImplementedError
+
+        return scores
 
 
 def get_task_params(session_info):
@@ -713,19 +741,20 @@ def get_task_params(session_info):
                                                      },
 
                 'border_score_params__': {'fr_thr': 0.25,  # firing rate threshold
-                                          'width_bin': 3,  # distance from border to consider it a border cell [bins]
+                                          'width_bins': 3,  # distance from border to consider it a border cell [bins]
                                           'min_field_size_bins': 10},  # minimum area for fields in # of bins
 
                 'grid_score_params__': {'ac_thr': 0.1,  # autocorrelation threshold for finding fields
                                           'radix_range': [0.5, 2.0],  # range of radii for grid score in the autocorr
-                                          'sigmoid_rate': True,  # apply sigmoid to rate maps
+                                          'apply_sigmoid': True,  # apply sigmoid to rate maps
                                           'sigmoid_center': 0.5,  # center for sigmoid
                                           'sigmoid_slope': 10,   # slope for sigmoid
                                           'find_fields': True},  # mask fields before autocorrelation
 
                 # grid encoding model
                 'grid_fit_type': 'auto_corr',  # ['auto_corr', 'moire'], how to find parameters for grid
-
+                'pos_feat_type': 'pca',  # feature type for position encoding model
+                'pos_feat_n_comp': 0.95,  # variance explaiend for pca in position feautrues
 
             }
 

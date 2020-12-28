@@ -2,15 +2,632 @@ import numpy as np
 import pandas as pd
 from scipy import ndimage, stats, signal
 from sklearn import linear_model as lm
-import statsmodels.api as sm
+from sklearn.decomposition import PCA, NMF
+
 from Utils import robust_stats as rs
 from skimage import draw
 from skimage.transform import rotate
 from joblib import delayed, Parallel
 import time
+from pathlib import Path
+import pickle
+import warnings
 
 
-# spatial manipulation functions
+# TODO: make global constant params
+
+
+# class functions
+class SpatialMetrics:
+
+    def __init__(self, x, y, speed, ha, hd, fr, spikes, n_jobs=-1, **params):
+        self.x = x
+        self.y = y
+        self.speed = speed
+        self.ha = ha
+        self.hd = hd
+        self.fr = fr
+        self.spikes = spikes
+
+        self.n_jobs = n_jobs
+        self.n_units = spikes.shape[0]
+        self.n_samples = len(x)
+
+        if len(params) > 0:
+            for key, val in params.items():
+                setattr(self, key, val)
+
+        default_params = default_OF_params()
+        for key, val in default_params.items():
+            if not hasattr(self, key):
+                setattr(self, key, val)
+
+        self.fr_maps = self.get_fr_maps()
+
+        _scores = ['speed_score', 'hd_score', 'ha_score', 'border_score',
+                   'grid_score', 'spatial_stability', 'all_scores']
+        for s in _scores:
+            setattr(self, s, [])
+
+    def get_fr_maps(self):
+        fr_maps = np.zeros((self.n_units, self.height, self.width))
+        for unit in range(self.n_units):
+            fr_maps[unit] = firing_rate_2_rate_map(self.fr[unit], self.x, self.y,
+                                                   x_bin_edges=self.x_bin_edges_, y_bin_edges=self.y_bin_edges_,
+                                                   occ_num_thr=self.occ_num_thr,
+                                                   spatial_window_size=self.spatial_window_size,
+                                                   spatial_sigma=self.spatial_sigma)
+        return fr_maps
+
+    def get_speed_score(self):
+        score, sig = speed_score_traditional(speed=self.speed, fr=self.fr,
+                                             min_speed=self.min_speed_thr,
+                                             max_speed=self.max_speed_thr,
+                                             n_perm=self.n_perm, sig_alpha=self.sig_alpha,
+                                             n_jobs=self.n_jobs)
+
+        out = pd.DataFrame(columns=['speed_score', 'speed_sig'])
+        out['speed_score'] = score
+        out['speed_sig'] = sig
+
+        self.speed_score = out
+        return out
+
+    def get_hd_score(self):
+        scores = angle_score_traditional(theta=self.hd, fr=self.fr, speed=self.speed,
+                                         min_speed=self.min_speed_thr,
+                                         max_speed=self.max_speed_thr,
+                                         sig_alpha=self.sig_alpha)
+
+        out = scores[['vec_len', 'mean_ang', 'sig']]
+        out = out.rename(columns={'sig': 'hd_sig', 'vec_len': 'hd_score', 'mean_ang': 'hd_ang'})
+
+        self.hd_score = out
+        return out
+
+    def get_ha_score(self):
+        scores = angle_score_traditional(theta=self.ha, fr=self.fr, speed=self.speed,
+                                         min_speed=self.min_speed_thr,
+                                         max_speed=self.max_speed_thr,
+                                         sig_alpha=self.sig_alpha)
+
+        out = scores[['vec_len', 'mean_ang', 'sig']]
+        out = out.rename(columns={'sig': 'ha_sig', 'vec_len': 'ha_score', 'mean_ang': 'ha_ang'})
+
+        self.ha_score = out
+
+        return out
+
+    def get_border_score(self):
+
+        score, sig = permutation_test_border_score(self.fr, self.fr_maps, self.x, self.y,
+                                                   x_bin_edges=self.x_bin_edges_, y_bin_edges=self.y_bin_edges_,
+                                                   n_perm=self.n_perm, sig_alpha=self.sig_alpha,
+                                                   n_jobs=self.n_jobs,
+                                                   **self.border_score_params__)
+
+        out = pd.DataFrame(columns=['border_score', 'border_sig'])
+        out['border_score'] = score
+        out['border_sig'] = sig
+
+        self.border_score = out
+
+        return out
+
+    def get_grid_score(self):
+        """
+        Computes grid score.
+        :return:
+        """
+
+        score, sig, scale, phase = permutation_test_grid_score(self.fr, self.fr_maps, self.x, self.y,
+                                                               x_bin_edges=self.x_bin_edges_,
+                                                               y_bin_edges=self.y_bin_edges_,
+                                                               n_perm=self.n_perm, sig_alpha=self.sig_alpha,
+                                                               n_jobs=self.n_jobs,
+                                                               **self.grid_score_params__)
+
+        out = pd.DataFrame(columns=['grid_score', 'grid_sig', 'grid_scale', 'grid_phase'])
+        out['grid_score'] = score
+        out['grid_sig'] = sig
+        out['grid_scale'] = scale
+        out['grid_phase'] = phase
+
+        self.grid_score = out
+
+        return out
+
+    def get_spatial_stability(self):
+
+        stability_corr, stability_sig = \
+            permutation_test_spatial_stability(self.fr, self.x, self.y,
+                                               x_bin_edges=self.x_bin_edges_, y_bin_edges=self.y_bin_edges_,
+                                               sig_alpha=self.sig_alpha, n_perm=self.n_perm,
+                                               occ_num_thr=self.occ_num_thr,
+                                               spatial_window_size=self.spatial_window_size,
+                                               spatial_sigma=self.spatial_sigma,
+                                               n_jobs=self.n_jobs)
+
+        out = pd.DataFrame(columns=['stability_corr', 'stability_sig'])
+        out['stability_corr'] = stability_corr
+        out['stability_sig'] = stability_sig
+
+        self.spatial_stability = out
+
+        return out
+
+    def get_all_metrics(self):
+
+        t0 = time.time()
+        speed = self.get_speed_score()
+        t1 = time.time()
+        print(f'Speed Score Completed: {t1 - t0:0.2f}s')
+
+        hd = self.get_hd_score()
+        t2 = time.time()
+        print(f'Head Dir Score Completed: {t2 - t1:0.2f}s')
+
+        ha = self.get_ha_score()
+        t3 = time.time()
+        print(f'Head Ang Score Completed: {t3 - t2:0.2f}s')
+
+        border = self.get_border_score()
+        t4 = time.time()
+        print(f'Border Score Completed: {t4 - t3:0.2f}s')
+
+        grid = self.get_grid_score()
+        t5 = time.time()
+        print(f'Grid Score Completed: {t5 - t4:0.2f}s')
+
+        spatial_stability = self.get_spatial_stability()
+        t6 = time.time()
+        print(f'Spatial Stability Score Completed: {t6 - t5:0.2f}s')
+
+        scores = pd.concat([speed, hd, ha, border, grid, spatial_stability], axis=1)
+
+        self.all_scores = scores
+        return scores
+
+
+class SpatialEncodingModels:
+
+    def __init__(self, x, y, speed, ha, hd, fr, spikes, data_type='fr', bias_term=True, n_xval=5, n_jobs=-1,
+                 **params):
+        self.x = x
+        self.y = y
+        self.speed = speed
+        self.ha = ha
+        self.hd = hd
+        self.fr = fr
+        self.spikes = spikes
+        self.data_type = data_type
+        self.bias_term = bias_term
+        self.n_xval = n_xval
+        self.n_jobs = n_jobs
+
+        self.n_neurons = fr.shape[0]
+        self.n_samples = len(x)
+
+        if len(params) > 0:
+            for key, val in params.items():
+                setattr(self, key, val)
+
+        default_params = default_OF_params()
+        for key, val in default_params.items():
+            if not hasattr(self, key):
+                setattr(self, key, val)
+
+        _models = ['speed_model', 'hd_model', 'ha_model', 'border_model',
+                   'grid_model', 'pos_model', 'all_models']
+        for s in _models:
+            if s == 'all_models':
+                setattr(self, s, pd.DataFrame())
+            else:
+                setattr(self, s, [])
+            setattr(self, s + '_computed', False)
+
+    def get_all_models(self):
+        t0 = time.time()
+        _ = self.get_speed_model()
+        t1 = time.time()
+        print(f'Speed Model Completed: {t1 - t0:0.2f}s')
+
+        _ = self.get_hd_model()
+        t2 = time.time()
+        print(f'Head Dir Model Completed: {t2 - t1:0.2f}s')
+
+        _ = self.get_ha_model()
+        t3 = time.time()
+        print(f'Head Ang Model Completed: {t3 - t2:0.2f}s')
+
+        _ = self.get_border_model()
+        t4 = time.time()
+        print(f'Border Model Completed: {t4 - t3:0.2f}s')
+
+        _ = self.get_grid_model()
+        t5 = time.time()
+        print(f'Grid Model Completed: {t5 - t4:0.2f}s')
+
+        _ = self.get_position_model()
+        t6 = time.time()
+        print(f'Spatial Stability Model Completed: {t6 - t5:0.2f}s')
+
+        return self.all_models
+
+    def get_speed_model(self):
+        if self.data_type == 'fr':
+            coeffs, train_perf, test_perf = get_speed_encoding_model(self.speed, self.fr, self.sp_bin_edges_,
+                                                                     data_type='fr', n_xval=self.n_xval)
+        elif self.data_type == 'spikes':
+            coeffs, train_perf, test_perf = get_speed_encoding_model(self.speed, self.spikes, self.sp_bin_edges_,
+                                                                     data_type='spikes', n_xval=self.n_xval)
+        else:
+            return np.nan
+
+        out = {'coeffs': coeffs, 'train_perf': train_perf, 'test_perf': test_perf}
+        self.speed_model = out
+
+        train_perf2 = self._perf2df(train_perf)
+        train_perf2['split'] = 'train'
+        test_perf2 = self._perf2df(test_perf)
+        test_perf2['split'] = 'test'
+
+        perf = pd.concat((train_perf2, test_perf2))
+        perf['model'] = 'speed'
+
+        self.all_models = pd.concat((self.all_models, perf))
+
+        return out
+
+    def get_hd_model(self):
+        if self.data_type == 'fr':
+            coeffs, train_perf, test_perf = get_angle_encoding_model(self.hd, self.fr, self.ang_bin_edges_,
+                                                                     speed=self.speed, min_speed=self.min_speed_thr,
+                                                                     max_speed=self.max_speed_thr,
+                                                                     data_type='fr', n_xval=self.n_xval)
+        elif self.data_type == 'spikes':
+            coeffs, train_perf, test_perf = get_angle_encoding_model(self.hd, self.spikes, self.ang_bin_edges_,
+                                                                     speed=self.speed, min_speed=self.min_speed_thr,
+                                                                     max_speed=self.max_speed_thr,
+                                                                     data_type='spikes', n_xval=self.n_xval)
+        else:
+            return np.nan
+
+        out = {'coeffs': coeffs, 'train_perf': train_perf, 'test_perf': test_perf}
+        self.hd_model = out
+
+        train_perf2 = self._perf2df(train_perf)
+        train_perf2['split'] = 'train'
+        test_perf2 = self._perf2df(test_perf)
+        test_perf2['split'] = 'test'
+
+        perf = pd.concat((train_perf2, test_perf2))
+        perf['model'] = 'hd'
+
+        self.all_models = pd.concat((self.all_models, perf))
+
+        return out
+
+    def get_ha_model(self):
+        if self.data_type == 'fr':
+            coeffs, train_perf, test_perf = get_angle_encoding_model(self.ha, self.fr, self.ang_bin_edges_,
+                                                                     speed=self.speed, min_speed=self.min_speed_thr,
+                                                                     max_speed=self.max_speed_thr,
+                                                                     data_type='fr', n_xval=self.n_xval)
+        elif self.data_type == 'spikes':
+            coeffs, train_perf, test_perf = get_angle_encoding_model(self.ha, self.spikes, self.ang_bin_edges_,
+                                                                     speed=self.speed, min_speed=self.min_speed_thr,
+                                                                     max_speed=self.max_speed_thr,
+                                                                     data_type='spikes', n_xval=self.n_xval)
+        else:
+            return np.nan
+
+        out = {'coeffs': coeffs, 'train_perf': train_perf, 'test_perf': test_perf}
+        self.ha_model = out
+
+        train_perf2 = self._perf2df(train_perf)
+        train_perf2['split'] = 'train'
+        test_perf2 = self._perf2df(test_perf)
+        test_perf2['split'] = 'test'
+
+        perf = pd.concat((train_perf2, test_perf2))
+        perf['model'] = 'ha'
+
+        self.all_models = pd.concat((self.all_models, perf))
+
+        return out
+
+    def get_border_model(self):
+        if self.data_type == 'fr':
+            coeffs, train_perf, test_perf = get_border_encoding_model(self.x, self.y, self.fr,
+                                                                      self.x_bin_edges_, self.y_bin_edges_,
+                                                                      data_type='fr', bias_term=self.bias_term,
+                                                                      n_xval=self.n_xval)
+        elif self.data_type == 'spikes':
+            coeffs, train_perf, test_perf = get_border_encoding_model(self.x, self.y, self.spikes,
+                                                                      self.x_bin_edges_, self.y_bin_edges_,
+                                                                      data_type='spikes', bias_term=self.bias_term,
+                                                                      n_xval=self.n_xval)
+        else:
+            return np.nan
+
+        out = {'coeffs': coeffs, 'train_perf': train_perf, 'test_perf': test_perf}
+        self.border_model = out
+
+        train_perf2 = self._perf2df(train_perf)
+        train_perf2['split'] = 'train'
+        test_perf2 = self._perf2df(test_perf)
+        test_perf2['split'] = 'test'
+
+        perf = pd.concat((train_perf2, test_perf2))
+        perf['model'] = 'border'
+
+        self.all_models = pd.concat((self.all_models, perf))
+
+        return out
+
+    def get_grid_model(self):
+        if self.data_type == 'fr':
+            coeffs, train_perf, test_perf = get_grid_encoding_model(self.x, self.y, self.fr,
+                                                                    self.x_bin_edges_, self.y_bin_edges_,
+                                                                    data_type='fr', bias_term=self.bias_term,
+                                                                    n_xval=self.n_xval)
+        elif self.data_type == 'spikes':
+            coeffs, train_perf, test_perf = get_grid_encoding_model(self.x, self.y, self.spikes,
+                                                                    self.x_bin_edges_, self.y_bin_edges_,
+                                                                    data_type='spikes', bias_term=self.bias_term,
+                                                                    n_xval=self.n_xval)
+        else:
+            return np.nan
+
+        out = {'coeffs': coeffs, 'train_perf': train_perf, 'test_perf': test_perf}
+        self.grid_model = out
+
+        train_perf2 = self._perf2df(train_perf)
+        train_perf2['split'] = 'train'
+        test_perf2 = self._perf2df(test_perf)
+        test_perf2['split'] = 'test'
+
+        perf = pd.concat((train_perf2, test_perf2))
+        perf['model'] = 'grid'
+
+        self.all_models = pd.concat((self.all_models, perf))
+
+        return out
+
+    def get_position_model(self, get_features=True):
+
+        kwargs = {}
+        if get_features:
+            # try to get load feature_matrix for given data.
+            feat_mat_fn = Path(f"pos_feat_design_mat_nx{self.n_x_bins}_ny{self.n_y_bins}.npy")
+            if feat_mat_fn.exists():
+                feature_design_matrix = np.load(feat_mat_fn)
+            else:
+                # generate & save locally feature mat
+                feature_design_matrix = generate_position_design_matrix(self.n_x_bins, self.n_y_bins,
+                                                                        spatial_window_size=self.spatial_window_size,
+                                                                        spatial_sigma=self.spatial_sigma)
+                np.save(feat_mat_fn, feature_design_matrix)
+            kwargs['feature_design_matrix'] = 'feature_design_matrix'
+
+            feat_obj_fn = Path(f"pos_feat_{self.pos_feat_type}_obj.pickle")
+            if feat_obj_fn.exists():
+                with open(feat_obj_fn, "rb") as f:
+                    feat_obj = pickle.load(f)
+            else:
+                if self.pos_feat_type == 'pca':
+                    _, _, feat_obj = _pca_position_features(feature_design_matrix, n_components=self.pos_feat_n_comp)
+
+                elif self.pos_feat_type == 'nmf':
+                    _, _, feat_obj = _nmf_position_features(feature_design_matrix, n_components=self.pos_feat_n_comp)
+
+                with open(feat_obj_fn, "wb") as f:
+                    pickle.dump(feat_obj, f, pickle.HIGHEST_PROTOCOL)
+
+            kwargs['feature_design_matrix'] = feature_design_matrix
+            kwargs[self.pos_feat_type] = feat_obj
+
+        kwargs['spatial_window_size'] = self.spatial_window_size
+        kwargs['spatial_sigma'] = self.spatial_sigma
+
+        if self.data_type == 'fr':
+            coeffs, train_perf, test_perf = get_position_encoding_model(self.x, self.y, self.fr,
+                                                                        self.x_bin_edges_, self.y_bin_edges_,
+                                                                        data_type='fr', n_xval=self.n_xval,
+                                                                        feat_type=self.pos_feat_type, **kwargs)
+        elif self.data_type == 'spikes':
+            coeffs, train_perf, test_perf = get_position_encoding_model(self.x, self.y, self.spikes,
+                                                                        self.x_bin_edges_, self.y_bin_edges_,
+                                                                        data_type='spikes', n_xval=self.n_xval,
+                                                                        feat_type=self.pos_feat_type, **kwargs)
+        else:
+            return np.nan
+
+        out = {'coeffs': coeffs, 'train_perf': train_perf, 'test_perf': test_perf}
+        self.pos_model = out
+
+        train_perf2 = self._perf2df(train_perf)
+        train_perf2['split'] = 'train'
+        test_perf2 = self._perf2df(test_perf)
+        test_perf2['split'] = 'test'
+
+        perf = pd.concat((train_perf2, test_perf2))
+        perf['model'] = 'pos'
+
+        self.all_models = pd.concat((self.all_models, perf))
+
+        return out
+
+    def _perf2df(self, perf):
+        metrics = list(perf.keys())
+        n_units = perf[metrics[0]].shape[1]
+
+        out = pd.DataFrame(columns=['unit_id', 'metric', 'value'])
+        cnt = 0
+        for metric in metrics:
+            vals = perf[metric].mean(axis=0)   # means across folds
+            for unit in range(n_units):
+                out.at[cnt, 'metric'] = metric
+                out.at[cnt, 'unit_id'] = unit
+                out.at[cnt, 'value'] = vals[unit]
+                cnt += 1
+        return out
+
+
+class Points2D:
+    def __init__(self, x, y, polar=False):
+
+        if not isinstance(x, np.ndarray):
+            x = np.array([x]).flatten()
+        if not isinstance(y, np.ndarray):
+            y = np.array([y]).flatten()
+
+        assert len(x) == len(y), 'different lengths'
+
+        self.n = len(x)
+        if not polar:
+            self.x = np.array(x)
+            self.y = np.array(y)
+            self.xy = np.column_stack((self.x, self.y))
+            self.r, self.ang = self.polar()
+        else:
+            self.r = x
+            self.ang = np.mod(y, 2 * np.pi)
+            self.x, self.y = self.eu()
+            self.xy = np.column_stack((self.x, self.y))
+
+    def polar(self):
+        r = np.sqrt(self.x ** 2 + self.y ** 2)
+        ang = np.zeros(self.n)
+
+        for ii in range(self.n):
+            ang[ii] = np.math.atan2(self.y[ii], self.x[ii])
+        ang = np.mod(ang, 2 * np.pi)
+        return r, ang
+
+    def eu(self):
+        x = self.r * np.cos(self.ang)
+        y = self.r * np.sin(self.ang)
+        return x, y
+
+    def __add__(self, b):
+        return Points2D(self.x + b.x, self.y + b.y)
+
+    def __sub__(self, b):
+        if isinstance(b, (int, float)):
+            return Points2D(self.x - b, self.y - b)
+
+        if isinstance(b, (PointsOF, Points2D)):
+            return Points2D(self.x - b.x, self.y - b.y)
+        else:
+            raise NotImplementedError
+
+    def __rsub__(self, b):
+        if isinstance(b, (int, float)):
+            return Points2D(b - self.x, b - self.y)
+
+        if isinstance(b, (PointsOF, Points2D)):
+            return Points2D(b.x - self.x, b.y - self.y)
+        else:
+            raise NotImplementedError
+
+    def __mul__(self, b):
+        if isinstance(b, (int, float, np.float, np.int)):
+            return Points2D(b * self.x, b * self.y)
+
+        if isinstance(b, (PointsOF, Points2D)):
+            return b.x @ self.x + b.y @ self.y
+        else:
+            raise NotImplementedError
+
+    def __rmul__(self, b):
+        if isinstance(b, (int, float, np.float, np.int)):
+            return Points2D(b * self.x, b * self.y)
+        elif isinstance(b, (PointsOF, Points2D)):
+            if self.n == b.n:
+                return Points2D(b.x * self.x, b.y @ self.y)
+            if self.n == 1 or b.n == 1:
+                return
+        else:
+            raise NotImplementedError
+
+    def __getitem__(self, i):
+        if isinstance(i, (int, np.int, np.ndarray)):
+            return Points2D(self.x[i], self.y[i])
+        else:
+            raise NotImplementedError
+
+    def __len__(self):
+        return self.n
+
+    def __str__(self):
+        print((self.x, self.y))
+        return ''
+
+
+# open field 2d points
+class PointsOF:
+    def __init__(self, x, y, height=47, width=42, polar=False):
+
+        if not isinstance(x, np.ndarray):
+            x = np.array([x]).flatten()
+        if not isinstance(y, np.ndarray):
+            y = np.array([y]).flatten()
+
+        assert len(x) == len(y), 'different lengths'
+
+        self.n = len(x)
+        self.width = width
+        self.height = height
+
+        if not polar:
+            self.x = np.round(np.mod(x, self.width))
+            self.y = np.round(np.mod(y, self.height))
+            self.xy = np.column_stack((x, y))
+            self.r, self.ang = self.polar()
+        else:
+            self.r = x
+            self.ang = np.mod(y, 2 * np.pi)
+            self.x, self.y = self.eu()
+            self.xy = np.column_stack((x, y))
+
+    def polar(self):
+        r = np.sqrt(self.x ** 2 + self.y ** 2)
+        ang = np.zeros(self.n)
+
+        for ii in range(self.n):
+            ang[ii] = np.math.atan2(self.y[ii], self.x[ii])
+        ang = np.mod(ang, 2 * np.pi)
+        return r, ang
+
+    def eu(self):
+        x = np.round(self.r * np.cos(self.ang))
+        y = np.round(self.r * np.sin(self.ang))
+        return x, y
+
+    def __add__(self, b):
+        return PointsOF(self.x + b.x, self.y + b.y)
+
+    def __sub__(self, b):
+        return PointsOF(self.x - b.x, self.y - b.y)
+
+    def __getitem__(self, i):
+        if isinstance(i, (int, np.int, np.ndarray)):
+            return Points2D(self.x[i], self.y[i])
+        else:
+            raise NotImplementedError
+
+    def __str__(self):
+        print((self.x, self.y))
+        return ''
+
+    def __len__(self):
+        return self.n
+
+
+# ------------------------------------------------- Spatial Functions --------------------------------------------------
+
 def smooth_2d_map(bin_map, n_bins=5, sigma=2):
     """
     :param bin_map: map to be smooth.
@@ -63,19 +680,20 @@ def firing_rate_2_rate_map(fr, x, y, x_bin_edges, y_bin_edges, occ_num_thr=3, sp
 
     fr_avg_pos = np.zeros_like(fr_sum_2d)
     fr_avg_pos[pos_counts_map > occ_num_thr] = fr_sum_2d[pos_counts_map > occ_num_thr] \
-                                            / pos_counts_map[pos_counts_map > occ_num_thr]
+                                               / pos_counts_map[pos_counts_map > occ_num_thr]
 
     sm_fr_map = smooth_2d_map(fr_avg_pos, n_bins=spatial_window_size, sigma=spatial_sigma)
     return sm_fr_map
 
 
-def spikes_2_rate_map(spikes, x, y, x_bin_edges, y_bin_edges, time_step=0.02, occ_time_thr=0.06, spatial_window_size=5, spatial_sigma=2):
+def spikes_2_rate_map(spikes, x, y, x_bin_edges, y_bin_edges, time_step=0.02, occ_time_thr=0.06, spatial_window_size=5,
+                      spatial_sigma=2):
     spk_sum_2d = w_histogram_2d(x, y, spikes, x_bin_edges, y_bin_edges)
-    pos_sec_map = histogram_2d(x, y, x_bin_edges, y_bin_edges)*time_step
+    pos_sec_map = histogram_2d(x, y, x_bin_edges, y_bin_edges) * time_step
 
     fr_avg_pos = np.zeros_like(spk_sum_2d)
     fr_avg_pos[pos_sec_map > occ_time_thr] = spk_sum_2d[pos_sec_map > occ_time_thr] \
-                                            / pos_sec_map[pos_sec_map > occ_time_thr]
+                                             / pos_sec_map[pos_sec_map > occ_time_thr]
 
     sm_fr_map = smooth_2d_map(fr_avg_pos, n_bins=spatial_window_size, sigma=spatial_sigma)
     return sm_fr_map
@@ -135,7 +753,32 @@ def get_angle_xy(x, y):
     return angle
 
 
-# spike-space functions
+def sigmoid(x, center, slope):
+    """
+    Sigmoid function
+    :param x: array of values
+    :param center: center, value at which sigmoid is 0.5
+    :param slope: rate of change of the sigmoid
+    :return: array of same length as x
+    """
+    return 1. / (1 + np.exp(-slope * (x - center)))
+
+
+def gaussian_2d(x=0, y=0, mx=0, my=0, sx=1, sy=1):
+    """
+    two dimensional gaussian function
+    :param x: 2dim ndarray of x values for each y value [as returned by meshgrid]
+    :param y: 2dim ndarray of y values for each x value [as returned by meshgrid]
+    :param mx: x position of gaussian center
+    :param my: y position of gaussian center
+    :param sx: std [spread] in x direcation
+    :param sy: std [spread] in y direcation
+    :return: gaussian 2d array of same dimensions of x and y
+    """
+    return 1. / (2. * np.pi * sx * sy) * np.exp(-((x - mx) ** 2. / (2. * sx ** 2.) + (y - my) ** 2. / (2. * sy ** 2.)))
+
+
+# ------------------------------------------------- SPIKE-SPACE FUNCS --------------------------------------------------
 def get_bin_spikes_xy(bin_spikes, x, y):
     """
     :param np.array bin_spikes: spike counts by time bin
@@ -207,8 +850,444 @@ def get_fr_map(spike_map, pos_map_secs):
     return fr_map
 
 
-# speed scores
-def speed_score_traditional(speed, fr, min_speed=2, max_speed=80, sig_alpha=0.02, n_perm=100):
+# ---------------------------------------- SPATIAL-STABILITY METRICS ---------------------------------------------------
+def permutation_test_spatial_stability(fr, x, y, x_bin_edges, y_bin_edges, sig_alpha=0.02, n_perm=200, occ_num_thr=3,
+                                       spatial_window_size=5, spatial_sigma=2, n_jobs=8):
+    n_samps = len(x)
+    if fr.ndim == 1:
+        n_units = 1
+        fr = fr[np.newaxis,]
+    else:
+        n_units, _ = fr.shape
+    assert n_samps == fr.shape[1], 'Mismatch lengths between samples and fr.'
+
+    # helper function to get slit correlation
+    def get_map_split_corr(_fr):
+
+        data = {'x': x, 'y': y, 'neural_data': _fr}
+        data_split = rs.split_timeseries_data(data=data, n_splits=2)
+
+        x1 = data_split['x'][0]
+        x2 = data_split['x'][1]
+
+        y1 = data_split['y'][0]
+        y2 = data_split['y'][1]
+
+        fr1 = data_split['neural_data'][0]
+        fr2 = data_split['neural_data'][1]
+
+        fr_map_corr = np.zeros(n_units)
+
+        for _unit in range(n_units):
+            fr_map1 = firing_rate_2_rate_map(fr1[_unit], x1, y1,
+                                             x_bin_edges=x_bin_edges,
+                                             y_bin_edges=y_bin_edges,
+                                             occ_num_thr=occ_num_thr,
+                                             spatial_window_size=spatial_window_size,
+                                             spatial_sigma=spatial_sigma)
+            fr_map2 = firing_rate_2_rate_map(fr2[_unit], x2, y2,
+                                             x_bin_edges=x_bin_edges,
+                                             y_bin_edges=y_bin_edges,
+                                             occ_num_thr=occ_num_thr,
+                                             spatial_window_size=spatial_window_size,
+                                             spatial_sigma=spatial_sigma)
+            fr_map_corr[_unit] = rs.pearson(fr_map1.flatten(), fr_map2.flatten())
+
+        return fr_map_corr
+
+    # compute true split half correlation
+    true_split_corr = get_map_split_corr(fr)
+
+    # helper function to permute the firing rates
+    def p_worker():
+        """ helper function for parallelization. Computes a single shuffled border score per unit."""
+
+        perm_fr = np.zeros_like(fr)
+        for _unit in range(n_units):
+            perm_fr[_unit] = np.roll(fr[_unit], np.random.randint(n_samps))
+
+        split_corr = get_map_split_corr(perm_fr)
+        return split_corr
+
+    with Parallel(n_jobs=n_jobs) as parallel:
+        perm_split_corr = parallel(delayed(p_worker)() for _ in range(n_perm))
+    perm_split_corr = np.array(perm_split_corr)
+
+    sig = np.zeros(n_units, dtype=bool)
+    for unit in range(n_units):
+        # find location of true corr
+        loc = np.array(perm_split_corr[:, unit] >= true_split_corr[unit]).mean()
+        # determine if outside distribution @ alpha level
+        sig[unit] = np.logical_or(loc <= sig_alpha / 2, loc >= 1 - sig_alpha / 2)
+
+    return true_split_corr, sig
+
+
+def get_position_encoding_model(x, y, neural_data, x_bin_edges, y_bin_edges, data_type='fr', n_xval=5, **kwargs):
+    """
+    Discretizes x y positions into binned features to predict firing rate or spikes.
+    :param x: array of x positions [n_samps length]
+    :param y: array of y positions [n_smaps length]
+    :param x_bin_edges: edges of x array
+    :param y_bin_edges: edges of y array
+    :param neural_data: array floats firing rate n_units x n_samps, also works for one unit
+    :param data_type: string ['spikes', 'neural_data'], indicating if the data is firing rate or spike rate.
+    :param n_xval: number of x validation folds
+    :param feat_type: string. options are ['pca', 'nmf', 'full', 'sparse']
+        pca -> pca features
+        nmf -> non negative factorization features
+        full -> un compressed features, still applies gaussian smoothing around position of the animal
+        sparse- > uncompressed feautures, does NOT apply gaussian smoothing around position, results in sparse one hot
+                feature for each sample
+
+    ---------kwargs----
+     kwargs arguments, need to be input as key=val
+     ---- feature params----
+    :param feature_design_matrix: n_bins x n_bins array. maps from bin idx to feature array
+    :param spatial_window_size: int, spatial extent of smoothing for features [default = 5]
+    :param spatial_sigma: float, spatial std. for gaussian smoothing [default = 2]
+    :param n_components: number of components to use, if feat_type is pca can be a float [0,1) for var. exp.
+            default for pca = 0.95, default for nmf = 100.
+    :param pca: object instance of PCA. previously fit PCA instance (saves time); ignored if feat_type != pca.
+    :param nmf: object instance of NMF. previously fit NMF instance (saves time); ignored if feat_type != nmf
+    --- fitting params ---
+    :param regression_penalty: float. alpha parameter for linear models penalty. default = 0.15
+    :param bias_term: bool. adds a column of 1s to the features [default = 1]
+    :param l1_ratio: float. l1/l2 ratio for elastic net. default 0.15
+
+    :returns:
+        model_coef: array n_xval x n_units x n_position_featurs
+        train_perf: array n_xval x n_units x 3 [r2, err, map_corr]
+        test_perf: array n_xval x n_units x 3
+    """
+
+    n_samps = len(x)
+
+    if neural_data.ndim == 1:
+        n_units = 1
+        neural_data = neural_data[np.newaxis, ]
+    else:
+        n_units, _ = neural_data.shape
+    assert n_samps == neural_data.shape[1], 'Mismatch lengths between speed and neural_data.'
+
+    # split data into folds
+    xval_samp_ids = rs.split_timeseries(n_samps=n_samps, samps_per_split=1000, n_data_splits=n_xval)
+
+    # get feature parameters
+    feat_type = kwargs['feat_type'] if ('feat_type' in kwargs.keys()) else 'pca'
+    feature_params = {
+        'feature_design_matrix': kwargs['feature_design_matrix'] if ('feature_design_matrix' in kwargs.keys()) else None,
+        'nmf': kwargs['nmf'] if ('nmf' in kwargs.keys()) else None,
+        'pca': kwargs['pca'] if ('pca' in kwargs.keys()) else None,
+        }
+
+    if 'spatial_window_size' in kwargs.keys():
+        if (kwargs['spatial_window_size'] is not None) & (kwargs['spatial_window_size'] > 0):
+            spatial_window_size = kwargs['spatial_window_size']
+            feature_params['spatial_window_size'] = kwargs['spatial_window_size']
+
+    if 'spatial_sigma' in kwargs.keys():
+        if (kwargs['spatial_sigma'] is not None) & (kwargs['spatial_sigma'] > 0):
+            spatial_sigma = kwargs['spatial_sigma']
+            feature_params['spatial_sigma'] = kwargs['spatial_sigma']
+
+    if 'n_components' in kwargs.keys():
+        if kwargs['n_components'] is not None:
+            feature_params['n_components'] = kwargs['n_components']
+
+    features, inverse = get_position_encoding_features(x, y, x_bin_edges, y_bin_edges,
+                                                       feat_type=feat_type,
+                                                       **feature_params)
+
+    n_features = features.shape[1]
+    n_pos_bins = (len(x_bin_edges) - 1) * (len(y_bin_edges) - 1)
+
+    # get regression params
+    if 'alpha' in kwargs.keys():
+        alpha = kwargs['alpha'] if (kwargs['alpha'] is not None) else 0.15
+    else:
+        alpha = 0.15
+
+    if 'bias_term' in kwargs.keys():
+        bias_term = kwargs['bias_term'] if (kwargs['bias_term'] is not None) else True
+    else:
+        bias_term = True
+
+    # obtain relevant functions for data type
+    if data_type == 'spikes':
+        def spatial_map_function(_spikes, _x, _y):
+            out_map = spikes_2_rate_map(_spikes, _x, _y,
+                                        x_bin_edges=x_bin_edges, y_bin_edges=y_bin_edges,
+                                        spatial_window_size=spatial_window_size, spatial_sigma=spatial_sigma)
+            return out_map
+
+        model_function = lm.PoissonRegressor(alpha=0.1, fit_intercept=bias_term, max_iter=50)
+        reg_type = 'poisson'
+    elif data_type == 'fr':
+        def spatial_map_function(_fr, _x, _y):
+            out_map = firing_rate_2_rate_map(_fr, _x, _y,
+                                             x_bin_edges=x_bin_edges, y_bin_edges=y_bin_edges,
+                                             spatial_window_size=spatial_window_size, spatial_sigma=spatial_sigma)
+            return out_map
+
+        l1_ratio = kwargs['l1_ratio'] if ('l1_ratio' in kwargs.keys()) else 0.15
+        model_function = lm.ElasticNet(alpha=alpha, l1_ratio=l1_ratio, fit_intercept=bias_term)
+
+        reg_type = 'linear'
+    else:
+        raise NotImplementedError
+
+    # pre-allocate performance metrics
+    perf_metrics = ['r2', 'ar2', 'err', 'n_err', 'map_r']
+    train_perf = {}
+    test_perf = {}
+    for mm in perf_metrics:
+        train_perf[mm] = np.zeros((n_xval, n_units)) * np.nan
+        test_perf[mm] = np.zeros((n_xval, n_units)) * np.nan
+    model_coef = np.zeros((n_xval, n_units, n_pos_bins))
+
+    # iterate over x validation folds
+    for fold in range(n_xval):
+        # test set
+        x_test = x[xval_samp_ids == fold]
+        y_test = y[xval_samp_ids == fold]
+        features_test = features[xval_samp_ids == fold, :]
+
+        # train set
+        x_train = x[xval_samp_ids != fold]
+        y_train = y[xval_samp_ids != fold]
+        features_train = features[xval_samp_ids != fold, :]
+
+        for unit in range(n_units):
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings('ignore')
+                    # get responses
+                    response_test = neural_data[unit, xval_samp_ids == fold]
+                    response_train = neural_data[unit, xval_samp_ids != fold]
+
+                    # train model
+                    model = model_function.fit(features_train, response_train)
+                    if feat_type in ['pca', 'nmf', 'kpca']:
+                        model_coef[fold, unit] = inverse(model.coef_)
+                    else:
+                        model_coef[fold, unit] = model.coef_
+
+                    # get predicted responses
+                    response_train_hat = model.predict(features_train)
+                    response_test_hat = model.predict(features_test)
+
+                    # get true spatial for this fold maps
+                    train_map = spatial_map_function(response_train, x_train, y_train)
+                    test_map = spatial_map_function(response_test, x_test, y_test)
+
+                    # get predicted maps
+                    train_map_hat = spatial_map_function(response_train_hat, x_train, y_train)
+                    test_map_hat = spatial_map_function(response_test_hat, x_test, y_test)
+
+                    # train performance
+                    temp1 = rs.get_regression_metrics(response_train, response_train_hat, reg_type=reg_type,
+                                                      n_params=n_features)
+
+                    train_perf['map_r'][fold, unit] = rs.pearson(train_map.flatten(), train_map_hat.flatten())
+
+                    # test performance
+                    temp2 = rs.get_regression_metrics(response_test, response_test_hat, reg_type=reg_type,
+                                                      n_params=n_features)
+                    test_perf['map_r'][fold, unit] = rs.pearson(test_map.flatten(), test_map_hat.flatten())
+
+                    for metric in ['r2', 'ar2', 'err', 'n_err']:
+                        train_perf[metric][fold, unit] = temp1[metric]
+                        test_perf[metric][fold, unit] = temp2[metric]
+
+            finally:
+                pass
+
+    return model_coef, train_perf, test_perf
+
+
+def get_position_encoding_features(x, y, x_bin_edges, y_bin_edges, feature_design_matrix=None, feat_type='pca',
+                                   spatial_window_size=5, spatial_sigma=2, n_components=0.95, pca=None, nmf=None):
+    """
+    for each sample, creates a 1d feature array that is smoothed around the position of the animal
+    :param x: array of x positions [n_samps length]
+    :param y: array of y positions [n_smaps length]
+    :param x_bin_edges: edges of x array
+    :param y_bin_edges: edges of y array
+    :param feature_design_matrix: n_bins x n_bins array. maps from bin idx to feature array
+    :param feat_type: string. options are ['pca', 'nmf', 'full', 'sparse']
+        pca -> pca features
+        nmf -> non negative factorization features
+        full -> un compressed features, still applies gaussian smoothing around position of the animal
+        sparse- > uncompressed feautures, does NOT apply gaussian smoothing around position, results in sparse one hot
+                feature for each sample
+    ----
+    kwargs arguments, need to be input as key=val
+    :param spatial_window_size: int, spatial extent of smoothing for features [default = 5]
+    :param spatial_sigma: float, spatial std. for gaussian smoothing [default = 2]
+    :param n_components: number of components to use, if feat_type is pca can be a float [0,1) for var. exp.
+            default for pca = 0.95, default for nmf = 100.
+    :param pca: object instance of PCA. previously fit PCA instance (saves time); ignored if feat_type != pca.
+    :param nmf: object instance of NMF. previously fit NMF instance (saves time); ignored if feat_type != nmf
+    :return: array [n_samps x n_feautures].
+        n features is the product of x and y bins
+    """
+
+    n_samps = len(x)
+
+    n_x_bins = len(x_bin_edges) - 1
+    n_y_bins = len(y_bin_edges) - 1
+    n_spatial_bins = n_x_bins * n_y_bins
+
+    # get feature design matrix
+    if feat_type in ['nmf', 'pca', 'spline']:
+        if feature_design_matrix is None:
+            feature_design_matrix = generate_position_design_matrix(n_x_bins, n_y_bins,
+                                                                    spatial_window_size=spatial_window_size,
+                                                                    spatial_sigma=spatial_sigma)
+        else:
+            assert feature_design_matrix.shape[0] == n_spatial_bins, 'Feature Matrix does not match given inputs.'
+
+    # get x y bin idx
+    x_bin = np.digitize(x, x_bin_edges) - 1
+    y_bin = np.digitize(y, y_bin_edges) - 1
+
+    # for each sample get the linear bin idx of the xy bins
+    yx_bin = np.ravel_multi_index(np.array((y_bin, x_bin)), (n_y_bins, n_x_bins))
+
+    # get features
+    if feat_type == 'pca':
+        transform_func, inverse_func, _ = _pca_position_features(feature_design_matrix, n_components, pca)
+        features = transform_func(yx_bin)
+
+        return features, inverse_func
+
+    elif feat_type == 'nmf':
+        n_components = 100 if n_components < 1 else n_components
+
+        transform_func, inverse_func, _ = _nmf_position_features(feature_design_matrix, n_components, nmf)
+        features = transform_func(yx_bin)
+
+        return features, inverse_func
+
+    elif feat_type == 'full':
+        features = feature_design_matrix[yx_bin]
+        return features, None
+
+    elif feat_type == 'sparse':
+        features = np.zeros((n_samps, n_spatial_bins))
+        features[:, yx_bin] = 1
+        return features, None
+
+    elif feat_type == 'splines':
+        raise NotImplementedError
+
+    else:
+        raise NotImplementedError
+
+
+def generate_position_design_matrix(n_x_bins, n_y_bins, spatial_window_size=5, spatial_sigma=2):
+    """
+    for a given geomtry generates an n_bins x n_bins F matrix, in which F[kk] is the kth row corresponding to a
+    jj, ii position and applying a gaussian around that jj, ii position.
+    :param n_x_bins: edges of x array
+    :param n_y_bins: edges of y array
+    :param spatial_window_size: int, spatial extent of smoothing for features
+    :param spatial_sigma: float, spatial std. for gaussian smoothing
+    :return: array [n_features x n_feautures].
+        n features is the product of x and y bins
+    """
+
+    n_spatial_bins = n_x_bins * n_y_bins
+
+    # get smoothing gaussian kernel. this is applied to each spatial position
+    gaussian_coords = np.array((np.arange(-spatial_window_size, spatial_window_size + 1),
+                                np.arange(-spatial_window_size, spatial_window_size + 1)))
+    xx, yy = np.meshgrid(*gaussian_coords)
+    gaussian_vals = gaussian_2d(x=xx, y=yy, sx=spatial_sigma, sy=spatial_sigma)
+    gaussian_vals /= gaussian_vals.max()
+    gaussian_vals = gaussian_vals.flatten()
+
+    feature_matrix = np.zeros((n_spatial_bins, n_spatial_bins))
+    for jj in range(n_y_bins):
+        for ii in range(n_x_bins):
+            # find where position is in the 1d feature dimension
+            linear_jjii = np.ravel_multi_index(np.array((jj, ii)), (n_y_bins, n_x_bins))
+
+            # positions around jj, ii
+            jjii_coords = np.array((np.arange(jj - spatial_window_size, jj + spatial_window_size + 1),
+                                    np.arange(ii - spatial_window_size, ii + spatial_window_size + 1)))
+
+            jjii_mesh = np.meshgrid(*jjii_coords)
+            # get valid coords.
+            valid_coords = ((jjii_mesh[0] >= 0) & (jjii_mesh[0] < n_y_bins)) & (
+                        (jjii_mesh[1] >= 0) & (jjii_mesh[1] < n_x_bins))
+            valid_coords = valid_coords.flatten()
+
+            # convert those position to 1d feature dimension
+            feature_idx = np.ravel_multi_index(jjii_mesh, (n_y_bins, n_x_bins), mode='clip').flatten()
+
+            feature_matrix[linear_jjii, feature_idx[valid_coords]] = gaussian_vals[valid_coords]
+
+    return feature_matrix
+
+
+def _pca_position_features(feature_matrix, n_components=0.95, pca=None):
+    """
+    Utility function to be used in generating position encoding features. It provides three outputs that are tied to the
+    feature design matrix input. See below for details.
+    :param feature_matrix: output from generate_position_design_matrix
+    :param n_components: argument for sklearn.decomposition.PCA function
+        if float in [0,1), it interepreted as to get the # of components such that there's at least that
+        % varianced explained. if an int, uses that many components.
+    :param pca: previous instantiation of this function, simply uses that instance to make the transformation functions.
+    :return:
+        transform: function, maps: feature index -> pca feature components
+        inverse_transfrom: function, maps: feature components (in pca space) -> original feature space
+        pca -> isntance of pca.
+    """
+    if pca is None:
+        pca = PCA(n_components=n_components)
+        pca.fit(feature_matrix)
+
+    def transform(feature_linear_idx):
+        # linear feature idx to component_space features
+        return pca.transform(feature_matrix[feature_linear_idx])
+
+    def inverse_transform(component_features):
+        # component_space features to original space
+        return pca.inverse_transform(component_features)
+
+    return transform, inverse_transform, pca
+
+
+def _nmf_position_features(feature_matrix, n_components=100, nmf=None):
+    """
+    :param feature_matrix:
+    :param n_components:
+    :param nmf:
+    :return:
+        transform: function, maps: feature index -> nmf feature components
+        inverse_transfrom: function, maps: feature components (in nmf space) -> original feature space
+        nmf -> isntance of nmf.
+    """
+    if nmf is None:
+        nmf = NMF(n_components=n_components, alpha=0.01, init='nndsvda', max_iter=500)
+        nmf.fit(feature_matrix)
+
+    def transform(feature_linear_idx):
+        # linear feature idx to component_space features
+        return nmf.transform(feature_matrix[feature_linear_idx])
+
+    def inverse_transform(component_features):
+        # component_space features to original space
+        return nmf.inverse_transform(component_features)
+
+    return transform, inverse_transform, nmf
+
+
+# ------------------------------------------------- SPEED METRICS ------------------------------------------------------
+def speed_score_traditional(speed, fr, min_speed=2, max_speed=80, sig_alpha=0.02, n_perm=100, n_jobs=-1):
     """
     Traditional method of computing speed score. simple correlation of speed & firing rate
     :param speed: array floats vector of speed n_samps
@@ -217,6 +1296,7 @@ def speed_score_traditional(speed, fr, min_speed=2, max_speed=80, sig_alpha=0.02
     :param min_speed: float
     :param sig_alpha: float, significant level to evaluate the permutation test
     :param n_perm: int, number of permutations to perform.
+    :param n_jobs: int, number of cpus to use
     :returns: score: speed score per unit
               sig: if the speed score reached significance after permutation test
     """
@@ -227,7 +1307,7 @@ def speed_score_traditional(speed, fr, min_speed=2, max_speed=80, sig_alpha=0.02
         fr = fr.reshape(1, -1)
     else:
         n_units, _ = fr.shape
-    assert n_samps == fr.shape[1], 'Mismatch lengths between speed and fr.'
+    assert n_samps == fr.shape[1], 'Mismatch lengths between speed and neural_data.'
 
     # get valid samples and assign new variables for fitting
     valid_samps = np.logical_and(speed >= min_speed, speed <= max_speed)
@@ -240,12 +1320,12 @@ def speed_score_traditional(speed, fr, min_speed=2, max_speed=80, sig_alpha=0.02
     for unit in range(n_units):
         score[unit] = rs.spearman(speed_valid, fr_valid[unit])
         sig[unit], _ = rs.permutation_test(function=rs.pearson, x=speed_valid, y=fr_valid[unit],
-                                           n_perm=n_perm, alpha=sig_alpha)
+                                           n_perm=n_perm, alpha=sig_alpha, n_jobs=n_jobs)
 
     return score, sig
 
 
-def get_speed_encoding_model(speed, fr, speed_bin_edges, compute_sp_score=True, sig_alpha=0.02, n_perm=100):
+def get_speed_encoding_model_old(speed, fr, speed_bin_edges, compute_sp_score=True, sig_alpha=0.02, n_perm=100):
     """
     Discretizes the speed into the speed_bin_edges to predict firing rate. Essentially an OLS, implemented by taking the
     mean per speed bin.
@@ -267,12 +1347,12 @@ def get_speed_encoding_model(speed, fr, speed_bin_edges, compute_sp_score=True, 
     model = lm.LinearRegression(fit_intercept=False).fit(design_matrix, fr_valid.T)
     model_coef = model.coef_
 
-    [2] mean fr per speed bin: (could use trim mean, median, or other robust methods here);
+    [2] mean neural_data per speed bin: (could use trim mean, median, or other robust methods here);
     - equivalency with ols is only true for mean
     implemented below. this method allows to get standard errors per bin easily and fast
 
     [3] weighted histogram:
-    fr weighted speed histogram then normalization by speed bin occupancy.
+    neural_data weighted speed histogram then normalization by speed bin occupancy.
     -needs to be performed by unit
     sp_occ,_ = np.histogram(speed, sp_bins)
     model_coef[unit],_ = np.histogram(speed_valid, sp_bins, weights=fr_valid[unit])
@@ -295,7 +1375,7 @@ def get_speed_encoding_model(speed, fr, speed_bin_edges, compute_sp_score=True, 
         fr = fr.reshape(1, -1)
     else:
         n_units, _ = fr.shape
-    assert n_samps == fr.shape[1], 'Mismatch lengths between speed and fr.'
+    assert n_samps == fr.shape[1], 'Mismatch lengths between speed and neural_data.'
 
     # discretize speed / get features
     sp_design_matrix, sp_bin_idx, valid_samps = get_speed_encoding_features(speed, speed_bin_edges)
@@ -333,6 +1413,100 @@ def get_speed_encoding_model(speed, fr, speed_bin_edges, compute_sp_score=True, 
     return scores, model_coef, model_coef_s, valid_samps
 
 
+def get_speed_encoding_model(speed, neural_data, speed_bin_edges, data_type='spikes', n_xval=5):
+    """
+    Discretizes the speed into the speed_bin_edges to predict firing rate.
+    :param speed: array floats vector of speed n_samps
+    :param neural_data: array floats firing rate n_units x n_samps, also works for one unit
+    :param speed_bin_edges: edges to bin the speed
+    :param data_type: string ['spikes', 'neural_data'], indicating if the data is firing rate or spike rate.
+    :param n_xval: number of x validation folds
+    :returns:
+        model_coef: array n_xval x n_units x n_bins of model coefficients.
+        train_perf: dict of metrics ['r2', 'err', 'map_r'], each an array of array n_xval x n_units
+        test_perf**: ['r2', 'err', 'map_r'], each an array of array n_xval x n_units
+        ** NOTE that map_r for train and test are the same as it is the correlation between speed bins and
+        training model coefficients
+    """
+
+    n_samps = len(speed)
+
+    if neural_data.ndim == 1:
+        n_units = 1
+        neural_data = neural_data[np.newaxis,]
+    else:
+        n_units, _ = neural_data.shape
+    assert n_samps == neural_data.shape[1], 'Mismatch lengths between speed and neural_data.'
+
+    # discretize speed / get features
+    features, sp_bin_idx, valid_samps = get_speed_encoding_features(speed, speed_bin_edges)
+    neural_data = neural_data[:, valid_samps]
+    n_valid_samps = int(valid_samps.sum())
+
+    n_features = features.shape[1]
+
+    # split data into folds
+    xval_samp_ids = rs.split_timeseries(n_samps=n_valid_samps, samps_per_split=1000, n_data_splits=n_xval)
+
+    # pre-allocate performance metrics
+    perf_metrics = ['r2', 'ar2', 'err', 'n_err', 'map_r']
+    train_perf = {}
+    test_perf = {}
+    for mm in perf_metrics:
+        train_perf[mm] = np.zeros((n_xval, n_units)) * np.nan
+        test_perf[mm] = np.zeros((n_xval, n_units)) * np.nan
+    model_coef = np.zeros((n_xval, n_units, n_features)) * np.nan
+
+    # obtain relevant functions for data type
+    if data_type == 'spikes':
+        model_function = lm.PoissonRegressor(alpha=0, fit_intercept=False)
+        reg_type = 'poisson'
+    elif data_type == 'fr':
+        model_function = lm.LinearRegression(fit_intercept=False)
+        reg_type = 'linear'
+    else:
+        raise NotImplementedError
+
+    for fold in range(n_xval):
+        # test set
+        features_test = features[xval_samp_ids == fold, :]
+        # train set
+        features_train = features[xval_samp_ids != fold, :]
+
+        for unit in range(n_units):
+            try:
+                # get responses
+                response_test = neural_data[unit, xval_samp_ids == fold]
+                response_train = neural_data[unit, xval_samp_ids != fold]
+
+                # train model
+                model = model_function.fit(features_train, response_train)
+                model_coef[fold, unit] = model.coef_
+
+                # get predicted responses
+                response_train_hat = model.predict(features_train)
+                response_test_hat = model.predict(features_test)
+
+                # train performance
+                temp1 = rs.get_regression_metrics(response_train, response_train_hat, reg_type=reg_type,
+                                                  n_params=n_features)
+                train_perf['map_r'][fold, unit] = rs.pearson(speed_bin_edges[1:], model.coef_)
+
+                # test performance
+                temp2 = rs.get_regression_metrics(response_test, response_test_hat, reg_type=reg_type,
+                                                  n_params=n_features)
+                test_perf['map_r'][fold, unit] = rs.pearson(speed_bin_edges[1:], model.coef_)
+
+                for metric in ['r2', 'ar2', 'err', 'n_err']:
+                    train_perf[metric][fold, unit] = temp1[metric]
+                    test_perf[metric][fold, unit] = temp2[metric]
+
+            finally:
+                pass
+
+    return model_coef, train_perf, test_perf
+
+
 def get_speed_encoding_features(speed, speed_bin_edges):
     """
     Obtains the features for speed encoding model. A wrapper for the robust stats get_discrete_data_mat function,
@@ -355,13 +1529,13 @@ def get_speed_encoding_features(speed, speed_bin_edges):
     return sp_design_matrix, sp_bin_idx, valid_samps
 
 
-# angle scores
+# ------------------------------------------------- ANGLE METRICS ------------------------------------------------------
 def get_angle_stats(theta, step, weights=None):
     """
     Computes several circular statistics based on the histogram of the data.
     expects radians. Then uses the Rayleigh test for
     :param theta: original theta vector [radians]
-    :param weights: weights for the each angle observation (e.g. spikes/ fr)
+    :param weights: weights for the each angle observation (e.g. spikes/ neural_data)
     :param step: angular bin size [radians]
     :return: dictionary with descriptive stats:
             {
@@ -397,7 +1571,8 @@ def get_angle_stats(theta, step, weights=None):
     return out_dir, w_counts, bin_centers, bin_edges
 
 
-def angle_score_traditional(theta, fr, speed=None, min_speed=None, max_speed=None, sig_alpha=0.02):
+def angle_score_traditional(theta, fr, speed=None, min_speed=None, max_speed=None, sig_alpha=0.02, n_perm=200,
+                            n_jobs=8):
     """"
     computes angle by firing rate without binning
     :param theta: array n_samps of angles in radians
@@ -405,6 +1580,8 @@ def angle_score_traditional(theta, fr, speed=None, min_speed=None, max_speed=Non
     :param speed: array of n_samps of speed to threshold the computations
     :param min_speed: minimum speed threshold
     :param max_speed: max speed threshold
+    :param n_jobs: int number of cpus to use for permutation
+    :param n_perm: int number of permutations
     :param sig_alpha: parametric alpha for significance of Rayleigh test.
     :return:  scores: pd.Dataframe n_units x columns
                 ['vec_len', 'mean_ang', 'p_val', 'sig', 'rayleigh', 'var_ang', 'std_ang']
@@ -416,7 +1593,7 @@ def angle_score_traditional(theta, fr, speed=None, min_speed=None, max_speed=Non
         fr = fr.reshape(1, -1)
     else:
         n_units, _ = fr.shape
-    assert n_samps == fr.shape[1], 'Mismatch lengths between speed and fr.'
+    assert n_samps == fr.shape[1], 'Mismatch lengths between speed and neural_data.'
 
     if (speed is not None) and (min_speed is not None) and (max_speed is not None):
         valid_samps = np.logical_and(speed >= min_speed, speed <= max_speed)
@@ -426,20 +1603,32 @@ def angle_score_traditional(theta, fr, speed=None, min_speed=None, max_speed=Non
     scores = pd.DataFrame(index=range(n_units),
                           columns=['vec_len', 'mean_ang', 'p_val', 'sig', 'rayleigh', 'var_ang', 'std_ang'])
 
-    for unit in range(n_units):
-        vec_len, mean_ang, var_ang, std_ang, = rs.resultant_vector_length(alpha=theta, w=fr[unit])
-        p_val, rayleigh = rs.rayleigh(alpha=theta, w=fr[unit])
-        out_dir = {'vec_len': vec_len, 'mean_ang': np.mod(mean_ang, 2 * np.pi), 'rayleigh': rayleigh, 'p_val': p_val,
-                   'sig': p_val < sig_alpha, 'var_ang': var_ang,
-                   'std_ang': std_ang}
+    def p_worker(_unit):
+        p_fr = np.random.permutation(fr[unit])
+        p_vec_len, _, _, _ = rs.resultant_vector_length(alpha=theta, w=p_fr)
+        return p_vec_len
 
-        for key, val in out_dir.items():
-            scores.loc[unit, key] = val
+    with Parallel(n_jobs=n_jobs) as parallel:
+        for unit in range(n_units):
+            vec_len, mean_ang, var_ang, std_ang, = rs.resultant_vector_length(alpha=theta, w=fr[unit])
+            p_val, rayleigh = rs.rayleigh(alpha=theta, w=fr[unit])
+
+            # permutation
+            perm_vec_len = parallel(delayed(p_worker)(unit) for _ in range(n_perm))
+            loc = np.array(perm_vec_len >= vec_len).mean()
+            # determine if outside distribution @ alpha level
+            sig = np.logical_or(loc <= sig_alpha / 2, loc >= 1 - sig_alpha / 2)
+
+            out_dir = {'vec_len': vec_len, 'mean_ang': np.mod(mean_ang, 2 * np.pi), 'rayleigh': rayleigh,
+                       'rayleigh_p_val': p_val, 'sig': sig, 'var_ang': var_ang, 'std_ang': std_ang}
+
+            for key, val in out_dir.items():
+                scores.loc[unit, key] = val
 
     return scores
 
 
-def get_angle_encoding_model(theta, fr, ang_bin_edges, speed=None, min_speed=None, max_speed=None, sig_alpha=0.02):
+def get_angle_encoding_model_old(theta, fr, ang_bin_edges, speed=None, min_speed=None, max_speed=None, sig_alpha=0.02):
     """
     :param theta: array n_samps of angles in radians
     :param fr: array n_units x n_samps of firing rates
@@ -460,7 +1649,7 @@ def get_angle_encoding_model(theta, fr, ang_bin_edges, speed=None, min_speed=Non
         fr = fr.reshape(1, -1)
     else:
         n_units, _ = fr.shape
-    assert n_samps == fr.shape[1], 'Mismatch lengths between speed and fr.'
+    assert n_samps == fr.shape[1], 'Mismatch lengths between speed and neural_data.'
 
     # binning of the angle
     ang_bin_spacing = ang_bin_edges[1] - ang_bin_edges[0]
@@ -472,7 +1661,7 @@ def get_angle_encoding_model(theta, fr, ang_bin_edges, speed=None, min_speed=Non
         get_angle_encoding_features(theta, ang_bin_edges, speed=speed, min_speed=min_speed, max_speed=max_speed)
     fr = fr[:, valid_samps]
 
-    # get model coefficients (mean fr per bin) and se of the mean
+    # get model coefficients (mean neural_data per bin) and se of the mean
     model_coef = np.zeros((n_units, n_ang_bins))
     model_coef_s = np.zeros((n_units, n_ang_bins))
     for i in range(n_ang_bins):
@@ -507,6 +1696,102 @@ def get_angle_encoding_model(theta, fr, ang_bin_edges, speed=None, min_speed=Non
     return scores, model_coef, model_coef_s
 
 
+def get_angle_encoding_model(theta, neural_data, ang_bin_edges, speed=None, min_speed=None, max_speed=None,
+                             data_type='spikes', n_xval=5):
+    """
+    :param theta: array n_samps of angles in radians
+    :param neural_data: array n_units x n_samps of firing rates
+    :param ang_bin_edges: bin edges in radians
+    :param speed: array of n_samps of speed to threshold the computations
+    :param min_speed: minimum speed threshold
+    :param max_speed: max speed threshold
+    :param data_type: string ['spikes', 'neural_data'], indicating if the data is firing rate or spike rate.
+    :param n_xval: int number of xvalidation folds
+    :returns:
+        model_coef: array n_xval x n_units x n_bins of model coefficients.
+        train_perf: dict of metrics ['r2', 'err', 'map_r'], each an array of array n_xval x n_units
+        test_perf**: ['r2', 'err', 'map_r'], each an array of array n_xval x n_units
+        ** NOTE that map_r for train and test are the same as it is the correlation between speed bins and
+        training model coefficients
+    """
+
+    n_samps = len(speed)
+    if neural_data.ndim == 1:
+        n_units = 1
+        neural_data = neural_data.reshape(1, -1)
+    else:
+        n_units, _ = neural_data.shape
+    assert n_samps == neural_data.shape[1], 'Mismatch lengths between speed and neural_data.'
+
+    # get discrete design matrix and valid samples
+    features, ang_bin_idx, valid_samps = \
+        get_angle_encoding_features(theta, ang_bin_edges, speed=speed, min_speed=min_speed, max_speed=max_speed)
+    neural_data = neural_data[:, valid_samps]
+    n_valid_samps = int(valid_samps.sum())
+    n_features = len(ang_bin_edges) - 1
+
+    # split data into folds
+    xval_samp_ids = rs.split_timeseries(n_samps=n_valid_samps, samps_per_split=1000, n_data_splits=n_xval)
+
+    # pre-allocate performance metrics
+    perf_metrics = ['r2', 'ar2', 'err', 'n_err', 'map_r']
+    train_perf = {}
+    test_perf = {}
+    for mm in perf_metrics:
+        train_perf[mm] = np.zeros((n_xval, n_units))*np.nan
+        test_perf[mm] = np.zeros((n_xval, n_units))*np.nan
+    model_coef = np.zeros((n_xval, n_units, n_features)) * np.nan
+
+    # obtain relevant functions for data type
+    if data_type == 'spikes':
+        model_function = lm.PoissonRegressor(alpha=0, fit_intercept=False)
+        reg_type = 'poisson'
+    elif data_type == 'fr':
+        model_function = lm.LinearRegression(fit_intercept=False)
+        reg_type = 'linear'
+    else:
+        raise NotImplementedError
+
+    for fold in range(n_xval):
+        # test set
+        features_test = features[xval_samp_ids == fold, :]
+        # train set
+        features_train = features[xval_samp_ids != fold, :]
+
+        for unit in range(n_units):
+            try:
+                # get responses
+                response_test = neural_data[unit, xval_samp_ids == fold]
+                response_train = neural_data[unit, xval_samp_ids != fold]
+
+                # train model
+                model = model_function.fit(features_train, response_train)
+                model_coef[fold, unit] = model.coef_
+
+                # get predicted responses
+                response_train_hat = model.predict(features_train)
+                response_test_hat = model.predict(features_test)
+
+                # train performance
+                temp1 = rs.get_regression_metrics(response_train, response_train_hat, reg_type=reg_type,
+                                                  n_params=n_features)
+                train_perf['map_r'][fold, unit] = rs.circ_corrcl(ang_bin_edges[1:], model.coef_.flatten())
+
+                # test performance
+                temp2 = rs.get_regression_metrics(response_test, response_test_hat, reg_type=reg_type,
+                                                  n_params=n_features)
+                test_perf['map_r'][fold, unit] = rs.circ_corrcl(ang_bin_edges[1:], model.coef_.flatten())
+
+                for metric in ['r2', 'ar2', 'err', 'n_err']:
+                    train_perf[metric][fold, unit] = temp1[metric]
+                    test_perf[metric][fold, unit] = temp2[metric]
+
+            finally:
+                pass
+
+    return model_coef, train_perf, test_perf
+
+
 def get_angle_encoding_features(theta, ang_bin_edges, speed=None, min_speed=None, max_speed=None):
     # get valid samples and overwrite for fitting
     if (speed is not None) and (min_speed is not None) and (max_speed is not None):
@@ -521,78 +1806,134 @@ def get_angle_encoding_features(theta, ang_bin_edges, speed=None, min_speed=None
     return ang_design_matrix, ang_bin_idx, valid_samps
 
 
-# border scores
-def get_border_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges,
-                              compute_solstad=True, border_fr_thr=0.3, min_field_size_bins=20, border_width_bins=3,
-                              sig_alpha=0.02, n_perm=100, feat_type='sigmoid', reg_type='linear', **kwargs):
+# ------------------------------------------------- BORDER METRICS -----------------------------------------------------
+def get_border_encoding_model(x, y, neural_data, x_bin_edges, y_bin_edges, feat_type='sigmoid', data_type='spikes',
+                              bias_term=True, spatial_window_size=3, spatial_sigma=2, n_xval=5):
     """
     Obtains the solstad border score and creates an encoding model based on proximity to the borders.
     :param x: array n_samps of x positions of the animal
     :param y: array n_samps of y positions of the animal
-    :param fr: ndarray n_units x n_samps of firing rate,
-    :param fr_maps: ndarray n_units x height x width of smoothed firing rate position maps
+    :param neural_data: ndarray n_units x n_samps of firing rate,
     :param x_bin_edges: x bin edges
     :param y_bin_edges: y bin edges
-    :param sig_alpha: significance alpha for permutation test
-    :param n_perm: number of permutations
-    :param border_fr_thr: firing rate threshold for border score
-    :param min_field_size_bins: minimum field size threshold for border score
-    :param border_width_bins: size of the border in bins
-    :param compute_solstad: bool. compute Solstad border score.
     :param feat_type: str ['linear', 'sigmoid']. linear or sigmoid proximity features for encoding model
-    :param reg_type: str ['linear', 'poission']. regression type. if fr use linear, if fr is binned spikes use poission
-    :return: scores: pd.Dataframe with columns ['score', 'sig', 'aR2', 'rmse', 'nrmse'], rows are n_units
-          model_coef: array n_units x 6 of encoding coefficients [bias, east, north, west, south, center]
-          model_coef_sem: array n_units x 4 sem for the coeffieicents
+    :param data_type: string ['spikes', 'neural_data'], indicating if the data is firing rate or spike rate.
+    :param bias_term: bool. if True, includes a bias term in the encoding features (recommended).
+    :param spatial_window_size: int, spatial extent of smoothing for features
+    :param spatial_sigma: float, spatial std. for gaussian smoothing
+    :param n_xval: int. number of crovalidation folds.
+    :return:
+        model_coef: array n_xval x n_units x n_bins mean firing rate at each bin
+        train_perf: array n_xval x n_units x n_metrics [metrics = r2, err, map_corr]
+        test_perf: array n_xval x n_units x n_metrics [metrics = r2, err, map_corr]
     """
     n_samps = len(x)
-    if fr.ndim == 1:
+    if neural_data.ndim == 1:
         n_units = 1
-        fr = fr.reshape(1, -1)
+        neural_data = neural_data.reshape(1, -1)
     else:
-        n_units, _ = fr.shape
-    assert n_samps == fr.shape[1], 'Mismatch lengths between speed and fr.'
+        n_units, _ = neural_data.shape
+    assert n_samps == neural_data.shape[1], 'Mismatch lengths between speed and neural_data.'
 
-    # get solstad border score
-    if compute_solstad:
-        border_score_solstad_params = {'border_fr_thr': border_fr_thr,
-                                       'min_field_size_bins': min_field_size_bins,
-                                       'border_width_bins': border_width_bins}
-        border_score = compute_border_score_solstad(fr_maps, **border_score_solstad_params)
-        score_sig = permutation_test_border_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges,
-                                                  n_perm=n_perm, alpha=sig_alpha, true_bs=border_score, n_jobs=8,
-                                                  **border_score_solstad_params)
+    # split data into folds
+    xval_samp_ids = rs.split_timeseries(n_samps=n_samps, samps_per_split=1000, n_data_splits=n_xval)
+
+    # pre-allocate data
+    features = get_border_encoding_features(x, y, x_bin_edges, y_bin_edges, feat_type=feat_type)
+    if bias_term:
+        features = np.append(np.ones((n_samps, 1), dtype=features.dtype), features, axis=1)
+    n_features = features.shape[1]  # number of columns
+
+    # obtain relevant functions for data type
+    if data_type == 'spikes':
+        def spatial_map_function(_spikes, _x, _y):
+            out_map = spikes_2_rate_map(_spikes, _x, _y,
+                                        x_bin_edges=x_bin_edges, y_bin_edges=y_bin_edges,
+                                        spatial_window_size=spatial_window_size, spatial_sigma=spatial_sigma)
+            return out_map
+
+        model_function = lm.PoissonRegressor(alpha=0, fit_intercept=False)
+        reg_type = 'poisson'
+    elif data_type == 'fr':
+        def spatial_map_function(_fr, _x, _y):
+            out_map = firing_rate_2_rate_map(_fr, _x, _y,
+                                             x_bin_edges=x_bin_edges, y_bin_edges=y_bin_edges,
+                                             spatial_window_size=spatial_window_size, spatial_sigma=spatial_sigma)
+            return out_map
+
+        model_function = lm.LinearRegression(fit_intercept=False)
+        reg_type = 'linear'
     else:
-        border_score = np.zeros(n_units) * np.nan
-        score_sig = np.zeros(n_units) * np.nan
+        raise NotImplementedError
 
-    # border encoding model
-    # get proximity vectors
-    X = get_border_encoding_features(x, y, x_bin_edges, y_bin_edges, feat_type=feat_type)
-    #X = sm.add_constant(X)
+    # pre-allocate performance metrics
+    perf_metrics = ['r2', 'ar2', 'err', 'n_err', 'map_r']
+    train_perf = {}
+    test_perf = {}
+    for mm in perf_metrics:
+        train_perf[mm] = np.zeros((n_xval, n_units)) * np.nan
+        test_perf[mm] = np.zeros((n_xval, n_units)) * np.nan
+    model_coef = np.zeros((n_xval, n_units), dtype=object)  # variable number of features per fold/unit depending on fit
 
-    # pre-allocate
-    n_predictors = X.shape[1]  # number of columns
-    model_coef = np.zeros((n_units, n_predictors))
-    model_coef_s = np.zeros((n_units, n_predictors))
-    fr_hat = np.zeros_like(fr)
+    for fold in range(n_xval):
+        # train set
+        train_idx = xval_samp_ids != fold
+        x_train = x[train_idx]
+        y_train = y[train_idx]
 
-    # obtain model for each unit and extract coefficients.
-    for unit in range(n_units):
-        model = sm.OLS(fr[unit], X).fit()
-        fr_hat[unit] = model.predict(X)
-        model_coef[unit] = model.summary2().tables[1]['Coef.'].values
-        model_coef_s[unit] = model.summary2().tables[1]['Std.Err.'].values
+        # test set
+        test_idx = xval_samp_ids == fold
+        x_test = x[test_idx]
+        y_test = y[test_idx]
 
-    # get performance scores
-    scores = pd.DataFrame(index=range(n_units), columns=['score', 'sig', 'r2', 'rmse', 'nrmse'])
-    scores['score'] = border_score
-    scores['sig'] = score_sig
-    scores['r2'] = rs.get_ar2(fr, fr_hat, n_predictors)  # minus bias term
-    scores['rmse'] = rs.get_rmse(fr, fr_hat)
-    scores['nrmse'] = rs.get_nrmse(fr, fr_hat)
+        # get features
+        features_train = get_border_encoding_features(x_train, y_train, x_bin_edges, y_bin_edges,
+                                                      feat_type=feat_type)
+        features_test = get_border_encoding_features(x_test, y_test, x_bin_edges, y_bin_edges,
+                                                     feat_type=feat_type)
+        if bias_term:
+            features_train = np.append(np.ones((train_idx.sum(), 1), dtype=features_train.dtype),
+                                       features_train, axis=1)
+            features_test = np.append(np.ones((test_idx.sum(), 1), dtype=features_test.dtype),
+                                      features_test, axis=1)
 
-    return scores, model_coef, model_coef_s
+        for unit in range(n_units):
+            # get responses
+            response_train = neural_data[unit, train_idx]
+            response_test = neural_data[unit, test_idx]
+
+            # train model
+            model = model_function.fit(features_train, response_train)
+            model_coef[fold, unit] = model.coef_
+
+            # get predicted responses
+            response_train_hat = model.predict(features_train)
+            response_test_hat = model.predict(features_test)
+
+            # get true spatial for this fold maps
+            train_map = spatial_map_function(response_train, x_train, y_train)
+            test_map = spatial_map_function(response_test, x_test, y_test)
+
+            # get predicted maps
+            train_map_hat = spatial_map_function(response_train_hat, x_train, y_train)
+            test_map_hat = spatial_map_function(response_test_hat, x_test, y_test)
+
+            # train performance
+            temp1 = rs.get_regression_metrics(response_train, response_train_hat, reg_type=reg_type,
+                                              n_params=n_features)
+
+            train_perf['map_r'][fold, unit] = rs.pearson(train_map.flatten(), train_map_hat.flatten())
+
+            # test performance
+            temp2 = rs.get_regression_metrics(response_test, response_test_hat, reg_type=reg_type,
+                                              n_params=n_features)
+            test_perf['map_r'][fold, unit] = rs.pearson(test_map.flatten(), test_map_hat.flatten())
+
+            for metric in ['r2', 'ar2', 'err', 'n_err']:
+                train_perf[metric][fold, unit] = temp1[metric]
+                test_perf[metric][fold, unit] = temp2[metric]
+
+    return model_coef, train_perf, test_perf
 
 
 def get_border_encoding_features(x, y, x_bin_edges, y_bin_edges, feat_type='linear', **non_linear_params):
@@ -632,22 +1973,22 @@ def compute_border_score_solstad(fr_maps, fr_thr=0.3, min_field_size_bins=20, wi
                     under this threshold are discarded
     :param width_bins: wall width by which the coverage is determined.
     :param return_all: bool, if False only returns the border_score
-    :return: border score, max coverage, distanced weighted fr for each unit in maps.
+    :return: border score, max coverage, distanced weighted neural_data for each unit in maps.
 
     -> code based of the description on Solstad et al, Science 2008
     """
     n_walls = 4
     # add a singleton dimension in case of only one map to find fields.
     if fr_maps.ndim == 2:
-        fr_maps = fr_maps[np.newaxis, ]
+        fr_maps = fr_maps[np.newaxis,]
     n_units, map_height, map_width = fr_maps.shape
 
     # get fields
     field_maps, n_fields = get_map_fields(fr_maps, thr=fr_thr, min_field_size=min_field_size_bins)
 
     if field_maps.ndim == 2:
-        field_maps = field_maps[np.newaxis, ]
-        n_fields = n_fields[np.newaxis, ]
+        field_maps = field_maps[np.newaxis,]
+        n_fields = n_fields[np.newaxis,]
 
     # get border distance matrix
     distance_mat = get_center_border_distance_mat(map_height, map_width)  # linear distance to closest wall [bins]
@@ -706,11 +2047,11 @@ def permutation_test_border_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges, n
     n_samps = len(x)
     if fr.ndim == 1:
         n_units = 1
-        fr = fr[np.newaxis, ]
-        fr_maps = fr_maps[np.newaxis, ]
+        fr = fr[np.newaxis,]
+        fr_maps = fr_maps[np.newaxis,]
     else:
         n_units, _ = fr.shape
-    assert n_samps == fr.shape[1], 'Mismatch lengths between samples and fr.'
+    assert n_samps == fr.shape[1], 'Mismatch lengths between samples and neural_data.'
 
     if true_bs is None:
         true_bs = compute_border_score_solstad(fr_maps, **border_score_params)
@@ -726,7 +2067,7 @@ def permutation_test_border_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges, n
         p_bs = compute_border_score_solstad(p_fr_map, **border_score_params)
         return p_bs
 
-    sig = np.zeros(n_units)
+    sig = np.zeros(n_units, dtype=bool)
     with Parallel(n_jobs=n_jobs) as parallel:
         for unit in range(n_units):
             if not np.isnan(true_bs[unit]):
@@ -740,79 +2081,7 @@ def permutation_test_border_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges, n
     return true_bs, sig
 
 
-def permutation_test_spatial_stability(fr, x, y, x_bin_edges, y_bin_edges, sig_alpha=0.02, n_perm=200, occ_num_thr=3,
-                                       spatial_window_size=5, spatial_sigma=2, n_jobs=8):
-    n_samps = len(x)
-    if fr.ndim == 1:
-        n_units = 1
-        fr = fr[np.newaxis, ]
-    else:
-        n_units, _ = fr.shape
-    assert n_samps == fr.shape[1], 'Mismatch lengths between samples and fr.'
-
-    # helper function to get slit correlation
-    def get_map_split_corr(_fr):
-
-        data = {'x': x, 'y': y, 'fr': _fr}
-        data_split = rs.split_timeseries_data(data=data, n_splits=2)
-
-        x1 = data_split['x'][0]
-        x2 = data_split['x'][1]
-
-        y1 = data_split['y'][0]
-        y2 = data_split['y'][1]
-
-        fr1 = data_split['fr'][0]
-        fr2 = data_split['fr'][1]
-
-        fr_map_corr = np.zeros(n_units)
-
-        for _unit in range(n_units):
-            fr_map1 = firing_rate_2_rate_map(fr1[_unit], x1, y1,
-                                             x_bin_edges=x_bin_edges,
-                                             y_bin_edges=y_bin_edges,
-                                             occ_num_thr=occ_num_thr,
-                                             spatial_window_size=spatial_window_size,
-                                             spatial_sigma=spatial_sigma)
-            fr_map2 = firing_rate_2_rate_map(fr2[_unit], x2, y2,
-                                             x_bin_edges=x_bin_edges,
-                                             y_bin_edges=y_bin_edges,
-                                             occ_num_thr=occ_num_thr,
-                                             spatial_window_size=spatial_window_size,
-                                             spatial_sigma=spatial_sigma)
-            fr_map_corr[_unit] = rs.pearson(fr_map1.flatten(), fr_map2.flatten())
-
-        return fr_map_corr
-
-    # compute true split half correlation
-    true_split_corr = get_map_split_corr(fr)
-
-    # helper function to permute the firing rates
-    def p_worker():
-        """ helper function for parallelization. Computes a single shuffled border score per unit."""
-
-        perm_fr = np.zeros_like(fr)
-        for _unit in range(n_units):
-            perm_fr[_unit] = np.roll(fr[_unit], np.random.randint(n_samps))
-
-        split_corr = get_map_split_corr(perm_fr)
-        return split_corr
-
-    with Parallel(n_jobs=n_jobs) as parallel:
-        perm_split_corr = parallel(delayed(p_worker)() for _ in range(n_perm))
-    perm_split_corr=np.array(perm_split_corr)
-
-    sig = np.zeros(n_units)
-    for unit in range(n_units):
-        # find location of true corr
-        loc = np.array(perm_split_corr[:, unit] >= true_split_corr[unit]).mean()
-        # determine if outside distribution @ alpha level
-        sig[unit] = np.logical_or(loc <= sig_alpha / 2, loc >= 1 - sig_alpha / 2)
-
-    return true_split_corr, sig
-
-
-# border score auxiliary functions
+# -border aux
 def get_center_border_distance_mat(h, w):
     """
     creates a pyramid like matrix of distances to border walls.
@@ -1021,8 +2290,9 @@ def get_sigmoid_border_proximity_mats(width, height, border_width_bins=3,
     return prox_mats
 
 
-# grid scoring:
-def get_grid_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, grid_fit='auto_corr', reg_type='linear', compute_gs_sig=False, sig_alpha=0.02, n_perm=200, verbose=False, **kwargs):
+# ------------------------------------------------- GRID METRICS -----------------------------------------------------
+def get_grid_encoding_model_old(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, grid_fit='auto_corr', reg_type='linear',
+                                compute_gs_sig=False, sig_alpha=0.02, n_perm=200, verbose=False, **kwargs):
     """
     Grid encoding model. Also obtains grid score.
     :param x: array n_samps of x positions of the animal
@@ -1051,7 +2321,7 @@ def get_grid_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, grid_fi
         fr = fr.reshape(1, -1)
     else:
         n_units, _ = fr.shape
-    assert n_samps == fr.shape[1], 'Mismatch lengths between speed and fr.'
+    assert n_samps == fr.shape[1], 'Mismatch lengths between speed and neural_data.'
 
     n_units2, height, width = fr_maps.shape
     assert n_units2 == n_units, 'inconsistent number of units'
@@ -1110,6 +2380,189 @@ def get_grid_encoding_model(x, y, fr, fr_maps, x_bin_edges, y_bin_edges, grid_fi
     return scores, coefs, coefs_sem
 
 
+def get_grid_encoding_model(x, y, neural_data, x_bin_edges, y_bin_edges, data_type='spikes', bias_term=True, n_xval=5,
+                            spatial_window_size=3, spatial_sigma=2, **kwargs):
+    """
+    Grid encoding model. Also obtains grid score.
+    :param x: array n_samps of x positions of the animal
+    :param y: array n_samps of y positions of the animal
+    :param neural_data: ndarray n_units x n_samps of firing rate,
+    :param x_bin_edges: x bin edges
+    :param y_bin_edges: y bin edges
+    :param bias_term: bool. if true adds a column of ones to features.
+    :param data_type: string ['spikes', 'neural_data'], indicating if the data is firing rate or spike rate.
+    :param n_xval: int. number of x validation
+    :param spatial_window_size: int, spatial extent of smoothing for features
+    :param spatial_sigma: float, spatial std. for gaussian smoothing
+    :param kwargs: grid_score parameters
+    :return:
+        model_coef: array n_xval x n_units x n_bins mean firing rate at each bin
+        train_perf: array n_xval x n_units x n_metrics [metrics = r2, err, map_corr]
+        test_perf: array n_xval x n_units x n_metrics [metrics = r2, err, map_corr]
+    """
+
+    # get analyses constants and make sure they are consistent
+    n_samps = len(x)
+    if neural_data.ndim == 1:
+        n_units = 1
+        neural_data = neural_data.reshape(1, -1)
+    else:
+        n_units, _ = neural_data.shape
+    assert n_samps == neural_data.shape[1], 'Mismatch lengths between speed and neural_data.'
+
+    grid_encoding_features_params = {}
+    grid_encoding_features_params_list = ['thr', 'min_field_size', 'sigmoid_center', 'sigmoid_slope']
+    for k, v in kwargs:
+        if k in grid_encoding_features_params_list:
+            grid_encoding_features_params[k] = v
+
+    # split data into folds
+    xval_samp_ids = rs.split_timeseries(n_samps=n_samps, samps_per_split=1000, n_data_splits=n_xval)
+
+    # obtain relevant functions for data type
+    if data_type == 'spikes':
+        def spatial_map_function(_spikes, _x, _y):
+            out_map = spikes_2_rate_map(_spikes, _x, _y,
+                                        x_bin_edges=x_bin_edges, y_bin_edges=y_bin_edges,
+                                        spatial_window_size=spatial_window_size, spatial_sigma=spatial_sigma)
+            return out_map
+
+        model_function = lm.PoissonRegressor(alpha=0, fit_intercept=False)
+        reg_type = 'poisson'
+    elif data_type == 'fr':
+        def spatial_map_function(_fr, _x, _y):
+            out_map = firing_rate_2_rate_map(_fr, _x, _y,
+                                             x_bin_edges=x_bin_edges, y_bin_edges=y_bin_edges,
+                                             spatial_window_size=spatial_window_size, spatial_sigma=spatial_sigma)
+            return out_map
+
+        model_function = lm.LinearRegression(fit_intercept=False)
+        reg_type = 'linear'
+    else:
+        raise NotImplementedError
+
+    # pre-allocate performance metrics
+    perf_metrics = ['r2', 'ar2', 'err', 'n_err', 'map_r']
+    train_perf = {}
+    test_perf = {}
+    for mm in perf_metrics:
+        train_perf[mm] = np.zeros((n_xval, n_units)) * np.nan
+        test_perf[mm] = np.zeros((n_xval, n_units)) * np.nan
+    model_coef = np.zeros((n_xval, n_units), dtype=object)  # variable number of features per fold/unit depending on fit
+
+    for fold in range(n_xval):
+        # test set
+        test_idx = xval_samp_ids == fold
+        x_test = x[test_idx]
+        y_test = y[test_idx]
+
+        # train set
+        train_idx = xval_samp_ids != fold
+        x_train = x[train_idx]
+        y_train = y[train_idx]
+
+        for unit in range(n_units):
+            try:
+                # train response
+                response_train = neural_data[unit, train_idx]
+
+                # get grid fields
+                fields_train = get_grid_fields(response_train, x_train, y_train, x_bin_edges, y_bin_edges,
+                                               **grid_encoding_features_params)
+
+                # can only create model if fields enough are found.
+                if ~np.any(np.isnan(fields_train)):
+                    # test response
+                    response_test = neural_data[unit, test_idx]
+
+                    # convert to fields to features
+                    features_train = get_grid_encodign_features(fields_train, x_train, y_train,
+                                                                x_bin_edges, y_bin_edges)
+                    features_test = get_grid_encodign_features(fields_train, x_test, y_test,
+                                                               x_bin_edges, y_bin_edges)
+
+                    if bias_term:
+                        features_train = np.append(np.ones((train_idx.sum(), 1), dtype=features_train.dtype),
+                                                   features_train, axis=1)
+                        features_test = np.append(np.ones((test_idx.sum(), 1), dtype=features_test.dtype),
+                                                  features_test, axis=1)
+
+                    # train model
+                    model = model_function.fit(features_train, response_train)
+                    model_coef[fold, unit] = model.coef_
+
+                    # note that # of features changes depending on grid fit
+                    n_features = len(model.coef_)
+
+                    # get predicted responses
+                    response_train_hat = model.predict(features_train)
+                    response_test_hat = model.predict(features_test)
+
+                    # get true spatial for this fold maps
+                    train_map = spatial_map_function(response_train, x_train, y_train)
+                    test_map = spatial_map_function(response_test, x_test, y_test)
+
+                    # get predicted maps
+                    train_map_hat = spatial_map_function(response_train_hat, x_train, y_train)
+                    test_map_hat = spatial_map_function(response_test_hat, x_test, y_test)
+
+                    # train performance
+                    temp1 = rs.get_regression_metrics(response_train, response_train_hat, reg_type=reg_type,
+                                                      n_params=n_features)
+
+                    train_perf['map_r'][fold, unit] = rs.pearson(train_map.flatten(), train_map_hat.flatten())
+
+                    # test performance
+                    temp2 = rs.get_regression_metrics(response_test, response_test_hat, reg_type=reg_type,
+                                                      n_params=n_features)
+                    test_perf['map_r'][fold, unit] = rs.pearson(test_map.flatten(), test_map_hat.flatten())
+
+                    for metric in ['r2', 'ar2', 'err', 'n_err']:
+                        train_perf[metric][fold, unit] = temp1[metric]
+                        test_perf[metric][fold, unit] = temp2[metric]
+            finally:
+                pass
+
+    return model_coef, train_perf, test_perf
+
+
+def get_grid_encodign_features(fields, x, y, x_bin_edges, y_bin_edges):
+    x_bin_idx, y_bin_idx = get_xy_samps_pos_bins(x, y, x_bin_edges, y_bin_edges)
+    return fields[:, y_bin_idx, x_bin_idx].T
+
+
+def get_grid_fields(fr, x, y, x_bin_edges, y_bin_edges, thr=0.1, min_field_size=10,
+                    sigmoid_center=0.5, sigmoid_slope=10):
+    height = len(y_bin_edges) - 1
+    width = len(x_bin_edges) - 1
+
+    fr_map = firing_rate_2_rate_map(fr, x, y, x_bin_edges, y_bin_edges)
+    nl_fr_map = sigmoid(fr_map / fr_map.max(), center=sigmoid_center, slope=sigmoid_slope)
+    fields_map, n_fields = get_map_fields(nl_fr_map, thr=thr, min_field_size=min_field_size)
+    thr_fr_map = (fields_map >= 0) * nl_fr_map
+
+    # if sufficient fields for gs computation:
+    if n_fields >= 3:
+        _, scale, phase, _ = compute_grid_score(thr_fr_map)
+        if np.isnan(scale):  # if auto correlation finding of scale/phase fails, fit moire grid
+            temp = fit_moire_grid(thr_fr_map)
+            moire_fit = temp[2]
+        else:
+            max_field_loc = np.unravel_index(np.argmax(thr_fr_map), fr_map.shape)
+            moire_fit = generate_moire_grid(width, height, [max_field_loc[1], max_field_loc[0]],
+                                            scale=scale, theta=phase)
+
+        fields, n_fields = get_map_fields(moire_fit)
+
+        field_maps = np.zeros((n_fields, height, width))
+        for field_id in range(n_fields):
+            field_maps[field_id] = fields == field_id
+
+        return field_maps
+    else:
+        return np.nan
+
+
 def get_encoding_map_fit(fr, maps, x, y, x_bin_edges, y_bin_edges, reg_type='linear', bias_term=False):
     """
     From spikes, an amplitude matrix map corresponding to locations, and the locations of the animals obtain encoding
@@ -1127,14 +2580,14 @@ def get_encoding_map_fit(fr, maps, x, y, x_bin_edges, y_bin_edges, reg_type='lin
     n_samps = len(x)
     if fr.ndim == 1:
         n_units = 1
-        fr = fr[np.newaxis, ]
+        fr = fr[np.newaxis,]
     else:
         n_units, _ = fr.shape
-    assert n_samps == fr.shape[1], 'Mismatch lengths between samples and fr.'
+    assert n_samps == fr.shape[1], 'Mismatch lengths between samples and neural_data.'
 
     # if only one map, add a singleton axis
     if maps.ndim == 2:
-        maps = maps[np.newaxis, ]
+        maps = maps[np.newaxis,]
 
     # fit model
     _, x_bin_idx = rs.get_discrete_data_mat(x, bin_edges=x_bin_edges)
@@ -1154,10 +2607,10 @@ def get_encoding_map_fit(fr, maps, x, y, x_bin_edges, y_bin_edges, reg_type='lin
 
     # get model and fit
     if reg_type == 'poisson':
-        coef = np.zeros((n_units, n_maps+bias))
+        coef = np.zeros((n_units, n_maps + bias))
         fr_hat = np.zeros_like(fr)
         for unit in range(n_units):
-            model = lm.PoissonRegressor(alpha=0, fit_intercept=False).fit(X, fr[unit])
+            model = lm.PoissonRegressor(alpha=0, fit_intercept=False, max_iter=5000).fit(X, fr[unit])
             coef[unit] = model.coef_
             fr_hat[unit] = model.predict(X)
     elif reg_type == 'linear':
@@ -1167,7 +2620,6 @@ def get_encoding_map_fit(fr, maps, x, y, x_bin_edges, y_bin_edges, reg_type='lin
     else:
         print(f'method {reg_type} not implemented.')
         raise NotImplementedError
-
 
     # get_scores
     if reg_type == 'poisson':
@@ -1188,7 +2640,7 @@ def get_encoding_map_fit(fr, maps, x, y, x_bin_edges, y_bin_edges, reg_type='lin
 def get_encoding_map_predictions(fr, maps, coefs, x, y, x_bin_edges, y_bin_edges, reg_type='linear', bias_term=False):
     """
     Test for 2d map models. Given a set of coefficients and data, obtain predicted firing rate or spikes, along with
-    metrics of performance. Note that the given fr, x, y should be from a held out test set.
+    metrics of performance. Note that the given neural_data, x, y should be from a held out test set.
     :param fr: n_units x n_samps array of firing rate or binned spikes
     :param maps: n_maps x height x width representing the amplitude of the map to be tested
     :param coefs: n_units x n_coefs,  coefficients of the model. type of coefficients most match regression type
@@ -1204,14 +2656,14 @@ def get_encoding_map_predictions(fr, maps, coefs, x, y, x_bin_edges, y_bin_edges
     n_samps = len(x)
     if fr.ndim == 1:
         n_units = 1
-        fr = fr[np.newaxis, ]
+        fr = fr[np.newaxis,]
     else:
         n_units, _ = fr.shape
-    assert n_samps == fr.shape[1], 'Mismatch lengths between samples and fr.'
+    assert n_samps == fr.shape[1], 'Mismatch lengths between samples and neural_data.'
 
     # if only one map, add a singleton axis
     if maps.ndim == 2:
-        maps = maps[np.newaxis, ]
+        maps = maps[np.newaxis,]
 
     # prepare data
     _, x_bin_idx = rs.get_discrete_data_mat(x, bin_edges=x_bin_edges)
@@ -1297,7 +2749,7 @@ def compute_grid_score(rate_map, ac_thr=0.1, radix_range=None,
         found_three_fields_flag = False
         thr_factor = 1
         while (not found_three_fields_flag) and (while_counter <= 4):
-            fields_map, n_fields = get_map_fields(n_rate_map, thr=mean_rate*thr_factor)
+            fields_map, n_fields = get_map_fields(n_rate_map, thr=mean_rate * thr_factor)
             if n_fields >= 3:
                 found_three_fields_flag = True
                 break
@@ -1395,7 +2847,7 @@ def permutation_test_grid_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges,
         fr_maps = fr_maps[np.newaxis,]
     else:
         n_units, _ = fr.shape
-    assert n_samps == fr.shape[1], 'Mismatch lengths between samples and fr.'
+    assert n_samps == fr.shape[1], 'Mismatch lengths between samples and neural_data.'
 
     true_gs = np.zeros(n_units) * np.nan
     true_scale = np.zeros(n_units) * np.nan
@@ -1414,7 +2866,7 @@ def permutation_test_grid_score(fr, fr_maps, x, y, x_bin_edges, y_bin_edges,
         p_gs, _, _, _ = compute_grid_score(p_fr_map, **grid_score_params)
         return p_gs
 
-    sig = np.zeros(n_units)
+    sig = np.zeros(n_units, dtype=bool)
     with Parallel(n_jobs=n_jobs) as parallel:
         for unit in range(n_units):
             if not np.isnan(true_gs[unit]):
@@ -1439,31 +2891,6 @@ def _get_optimum_sigmoid_slope(border_width, center, sigmoid_slope_thr=0.1):
     slopes = np.linspace(0, 50, 1000)
     z = sigmoid(border_width, center / 2, slopes)
     return slopes[np.argmin((z - sigmoid_slope_thr) ** 2)]
-
-
-def sigmoid(x, center, slope):
-    """
-    Sigmoid function
-    :param x: array of values
-    :param center: center, value at which sigmoid is 0.5
-    :param slope: rate of change of the sigmoid
-    :return: array of same length as x
-    """
-    return 1. / (1 + np.exp(-slope * (x - center)))
-
-
-def gaussian_2d(x=0, y=0, mx=0, my=0, sx=1, sy=1):
-    """
-    two dimensional gaussian function
-    :param x: 2dim ndarray of x values for each y value [as returned by meshgrid]
-    :param y: 2dim ndarray of y values for each x value [as returned by meshgrid]
-    :param mx: x position of gaussian center
-    :param my: y position of gaussian center
-    :param sx: std [spread] in x direcation
-    :param sy: std [spread] in y direcation
-    :return: gaussian 2d array of same dimensions of x and y
-    """
-    return 1. / (2. * np.pi * sx * sy) * np.exp(-((x - mx) ** 2. / (2. * sx ** 2.) + (y - my) ** 2. / (2. * sy ** 2.)))
 
 
 def generate_moire_grid(width, height, center, scale=30, theta=0, a=1):
@@ -1529,7 +2956,6 @@ def moire_grid_fit_params(**kwargs):
 
 
 def fit_moire_grid(fr_map, **kwargs):
-
     n_jobs = 6
     fit_params = moire_grid_fit_params(**kwargs)
 
@@ -1557,7 +2983,6 @@ def fit_moire_grid(fr_map, **kwargs):
     # score_mat = np.zeros((len(ls), len(thetas)))
     #
 
-
     #     for ii, l in enumerate(ls):
     #         for jj, th in enumerate(thetas):
     #             moire_grid = generate_moire_grid(width, height, center=c, scale=l, theta=th, a=gain)
@@ -1574,360 +2999,9 @@ def fit_moire_grid(fr_map, **kwargs):
     return fit_l, fit_theta, moire_grid, score_mat
 
 
-class SpatialMetrics:
-
-    def __init__(self, x, y, speed, ha, hd, fr, spikes, n_jobs=-1, **params):
-        self.x = x
-        self.y = y
-        self.speed = speed
-        self.ha = ha
-        self.hd = hd
-        self.fr = fr
-        self.spikes = spikes
-
-        self.n_jobs = -1
-        self.n_units = spikes.shape[0]
-        self.n_samples = len(x)
-
-        if len(params) > 0:
-            for key, val in params.items():
-                setattr(self, key, val)
-
-        default_params = default_OF_params()
-        for key, val in default_params.items():
-            if not hasattr(self, key):
-                setattr(self, key, val)
-
-        self.fr_maps = self.get_fr_maps()
-
-        _scores = ['speed_score', 'hd_score', 'ha_score', 'border_score',
-                   'grid_score', 'spatial_stability', 'all_scores']
-        for s in _scores:
-            setattr(self, s, [])
-
-    def get_fr_maps(self):
-        fr_maps = np.zeros((self.n_units, self.height, self.width))
-        for unit in range(self.n_units):
-
-            fr_maps[unit] = firing_rate_2_rate_map(self.fr[unit], self.x, self.y,
-                                                   x_bin_edges=self.x_bin_edges_, y_bin_edges=self.y_bin_edges_,
-                                                   occ_num_thr=self.occ_num_thr,
-                                                   spatial_window_size=self.spatial_window_size,
-                                                   spatial_sigma=self.spatial_sigma)
-        return fr_maps
-
-    def get_speed_score(self):
-        score, sig = speed_score_traditional(speed=self.speed, fr=self.fr,
-                                             min_speed=self.min_speed_thr,
-                                             max_speed=self.max_speed_thr,
-                                             n_perm=self.n_perm, sig_alpha=self.sig_alpha)
-
-        out = pd.DataFrame(columns=['speed_score', 'speed_sig'])
-        out['speed_score'] = score
-        out['speed_sig'] = sig
-
-        self.speed_score = out
-        return out
-
-    def get_hd_score(self):
-        scores = angle_score_traditional(theta=self.hd, fr=self.fr, speed=self.speed,
-                                         min_speed=self.min_speed_thr,
-                                         max_speed=self.max_speed_thr,
-                                         sig_alpha=self.sig_alpha)
-
-        out = scores[['vec_len', 'mean_ang', 'sig']]
-        out = out.rename(columns={'sig': 'hd_sig', 'vec_len': 'hd_score', 'mean_ang': 'hd_ang'})
-
-        self.hd_score = out
-        return out
-
-    def get_ha_score(self):
-        scores = angle_score_traditional(theta=self.ha, fr=self.fr, speed=self.speed,
-                                         min_speed=self.min_speed_thr,
-                                         max_speed=self.max_speed_thr,
-                                         sig_alpha=self.sig_alpha)
-
-        out = scores[['vec_len', 'mean_ang', 'sig']]
-        out = out.rename(columns={'sig': 'ha_sig', 'vec_len': 'ha_score', 'mean_ang': 'ha_ang'})
-
-        self.ha_score = out
-
-        return out
-
-    def get_border_score(self):
-
-        score, sig = permutation_test_border_score(self.fr, self.fr_maps, self.x, self.y,
-                                                   x_bin_edges=self.x_bin_edges_, y_bin_edges=self.y_bin_edges_,
-                                                   n_perm=self.n_perm, sig_alpha=self.sig_alpha,
-                                                   n_jobs=self.n_jobs,
-                                                   **self.border_score_params__)
-
-        out = pd.DataFrame(columns=['border_score', 'border_sig'])
-        out['border_score'] = score
-        out['border_sig'] = sig
-
-        self.border_score = out
-
-        return out
-
-    def get_grid_score(self):
-        """
-        Computes grid score.
-        :return:
-        """
-
-        score, sig, scale, phase = permutation_test_grid_score(self.fr, self.fr_maps, self.x, self.y,
-                                                               x_bin_edges=self.x_bin_edges_,
-                                                               y_bin_edges=self.y_bin_edges_,
-                                                               n_perm=self.n_perm, sig_alpha=self.sig_alpha,
-                                                               n_jobs=self.n_jobs,
-                                                               **self.grid_score_params__)
-
-        out = pd.DataFrame(columns=['grid_score', 'grid_sig', 'grid_scale', 'grid_phase'])
-        out['grid_score'] = score
-        out['grid_sig'] = sig
-        out['grid_scale'] = scale
-        out['grid_phase'] = phase
-
-        self.grid_score = out
-
-        return out
-
-    def get_spatial_stability(self):
-
-        stability_corr, stability_sig = \
-            permutation_test_spatial_stability(self.fr, self.x, self.y,
-                                               x_bin_edges=self.x_bin_edges_, y_bin_edges=self.y_bin_edges_,
-                                               sig_alpha=self.sig_alpha, n_perm=self.n_perm,
-                                               occ_num_thr=self.occ_num_thr, spatial_window_size=self.spatial_window_size,
-                                               spatial_sigma=self.spatial_sigma,
-                                               n_jobs=self.n_jobs)
-
-        out = pd.DataFrame(columns=['stability_corr', 'stability_sig'])
-        out['stability_corr'] = stability_corr
-        out['stability_sig'] = stability_sig
-
-        self.spatial_stability = out
-
-        return out
-
-    def get_all_metrics(self):
-
-        t0 = time.time()
-        speed = self.get_speed_score()
-        t1 = time.time()
-        print(f'Speed Score Completed: {t1-t0:0.2f}')
-
-        hd = self.get_hd_score()
-        t2 = time.time()
-        print(f'Head Dir Score Completed: {t2 - t1:0.2f}')
-
-        ha = self.get_ha_score()
-        t3 = time.time()
-        print(f'Head Ang Score Completed: {t3 - t2:0.2f}')
-
-        border = self.get_border_score()
-        t4 = time.time()
-        print(f'Border Score Completed: {t4 - t3:0.2f}')
-
-        grid = self.get_grid_score()
-        t5 = time.time()
-        print(f'Grid Score Completed: {t5 - t4:0.2f}')
-
-        spatial_stability = self.get_spatial_stability()
-        t6 = time.time()
-        print(f'Spatial Stability Score Completed: {t6 - t5:0.2f}')
-
-        scores = speed + hd + ha + border + grid + spatial_stability
-
-        self.all_scores = scores
-        return scores
-
-
-class SpatialEncodingModels:
-
-    def __init__(self, x, y, speed, ha, hd, neural, **params):
-        self.x = x
-        self.y = y
-        self.speed = speed
-        self.ha = ha
-        self.hd = hd
-        self.neural = neural
-
-        self.n_neurons = neural.shape[0]
-        self.n_samples = len(x)
-
-        if len(params) > 0:
-            for key, val in params.items():
-                setattr(self, key, val)
-
-        default_params = default_OF_params()
-        for key, val in default_params.items():
-            if not hasattr(self, key):
-                setattr(self, key, val)
-
-    def get_speed_model(self):
-        return
-    def get_hd_model(self):
-        return
-    def get_ha_model(self):
-        return
-    def get_grid_model(self):
-        return
-    def get_border_model(self):
-        return
-
-class Points2D:
-    def __init__(self, x, y, polar=False):
-
-        if not isinstance(x, np.ndarray):
-            x = np.array([x]).flatten()
-        if not isinstance(y, np.ndarray):
-            y = np.array([y]).flatten()
-
-        assert len(x) == len(y), 'different lengths'
-
-        self.n = len(x)
-        if not polar:
-            self.x = np.array(x)
-            self.y = np.array(y)
-            self.xy = np.column_stack((self.x, self.y))
-            self.r, self.ang = self.polar()
-        else:
-            self.r = x
-            self.ang = np.mod(y, 2 * np.pi)
-            self.x, self.y = self.eu()
-            self.xy = np.column_stack((self.x, self.y))
-
-    def polar(self):
-        r = np.sqrt(self.x ** 2 + self.y ** 2)
-        ang = np.zeros(self.n)
-
-        for ii in range(self.n):
-            ang[ii] = np.math.atan2(self.y[ii], self.x[ii])
-        ang = np.mod(ang, 2 * np.pi)
-        return r, ang
-
-    def eu(self):
-        x = self.r * np.cos(self.ang)
-        y = self.r * np.sin(self.ang)
-        return x, y
-
-    def __add__(self, b):
-        return Points2D(self.x + b.x, self.y + b.y)
-
-    def __sub__(self, b):
-        if isinstance(b, (int, float)):
-            return Points2D(self.x - b, self.y - b)
-
-        if isinstance(b, (PointsOF, Points2D)):
-            return Points2D(self.x - b.x, self.y - b.y)
-        else:
-            raise NotImplementedError
-
-    def __rsub__(self, b):
-        if isinstance(b, (int, float)):
-            return Points2D(b - self.x, b - self.y)
-
-        if isinstance(b, (PointsOF, Points2D)):
-            return Points2D(b.x - self.x, b.y - self.y)
-        else:
-            raise NotImplementedError
-
-    def __mul__(self, b):
-        if isinstance(b, (int, float, np.float, np.int)):
-            return Points2D(b * self.x, b * self.y)
-
-        if isinstance(b, (PointsOF, Points2D)):
-            return b.x @ self.x + b.y @ self.y
-        else:
-            raise NotImplementedError
-
-    def __rmul__(self, b):
-        if isinstance(b, (int, float, np.float, np.int)):
-            return Points2D(b * self.x, b * self.y)
-        elif isinstance(b, (PointsOF, Points2D)):
-            if self.n == b.n:
-                return Points2D(b.x * self.x, b.y @ self.y)
-            if self.n == 1 or b.n == 1:
-                return
-        else:
-            raise NotImplementedError
-
-    def __getitem__(self, i):
-        if isinstance(i, (int, np.int, np.ndarray)):
-            return Points2D(self.x[i], self.y[i])
-        else:
-            raise NotImplementedError
-
-    def __len__(self):
-        return self.n
-
-    def __str__(self):
-        print((self.x, self.y))
-        return ''
-
-
-# open field 2d points
-class PointsOF:
-    def __init__(self, x, y, height=47, width=42, polar=False):
-
-        if not isinstance(x, np.ndarray):
-            x = np.array([x]).flatten()
-        if not isinstance(y, np.ndarray):
-            y = np.array([y]).flatten()
-
-        assert len(x) == len(y), 'different lengths'
-
-        self.n = len(x)
-        self.width = width
-        self.height = height
-
-        if not polar:
-            self.x = np.round(np.mod(x, self.width))
-            self.y = np.round(np.mod(y, self.height))
-            self.xy = np.column_stack((x, y))
-            self.r, self.ang = self.polar()
-        else:
-            self.r = x
-            self.ang = np.mod(y, 2 * np.pi)
-            self.x, self.y = self.eu()
-            self.xy = np.column_stack((x, y))
-
-    def polar(self):
-        r = np.sqrt(self.x ** 2 + self.y ** 2)
-        ang = np.zeros(self.n)
-
-        for ii in range(self.n):
-            ang[ii] = np.math.atan2(self.y[ii], self.x[ii])
-        ang = np.mod(ang, 2 * np.pi)
-        return r, ang
-
-    def eu(self):
-        x = np.round(self.r * np.cos(self.ang))
-        y = np.round(self.r * np.sin(self.ang))
-        return x, y
-
-    def __add__(self, b):
-        return PointsOF(self.x + b.x, self.y + b.y)
-
-    def __sub__(self, b):
-        return PointsOF(self.x - b.x, self.y - b.y)
-
-    def __getitem__(self, i):
-        if isinstance(i, (int, np.int, np.ndarray)):
-            return Points2D(self.x[i], self.y[i])
-        else:
-            raise NotImplementedError
-
-    def __str__(self):
-        print((self.x, self.y))
-        return ''
-
-    def __len__(self):
-        return self.n
-
-
+########################################################################################################################
+################################### utils ################################################
+########################################################################################################################
 def default_OF_params():
     params = {
         'time_step': 0.02,  # time step
@@ -1992,18 +3066,20 @@ def default_OF_params():
 
         # grid encoding model
         'grid_fit_type': 'auto_corr',  # ['auto_corr', 'moire'], how to find parameters for grid
+        'pos_feat_type': 'pca',  # feature type for position encoding model
+        'pos_feat_n_comp': 0.95,  # variance explaiend for pca in position feautrues
     }
 
     # derived parameters
     # -- filter coefficients --
     params['filter_coef_'] = signal.get_window(params['temporal_window_type'],
-                                                    params['temporal_window_size'],
-                                                    fftbins=False)
+                                               params['temporal_window_size'],
+                                               fftbins=False)
     params['filter_coef_'] /= params['filter_coef_'].sum()
 
     params['filter_coef_angle_'] = signal.get_window(params['temporal_window_type'],
-                                                          params['temporal_angle_window_size'],
-                                                          fftbins=False)
+                                                     params['temporal_angle_window_size'],
+                                                     fftbins=False)
     params['filter_coef_angle_'] /= params['filter_coef_angle_'].sum()
 
     # -- bins --
@@ -2012,30 +3088,31 @@ def default_OF_params():
     params['n_ang_bins'] = len(params['ang_bin_centers_'])
 
     params['sp_bin_edges_'] = np.arange(params['min_speed_thr'],
-                                             params['max_speed_thr'] + params['speed_bin'],
-                                             params['speed_bin'])
+                                        params['max_speed_thr'] + params['speed_bin'],
+                                        params['speed_bin'])
     params['sp_bin_centers_'] = params['sp_bin_edges_'][:-1] + params['speed_bin'] / 2
     params['n_sp_bins'] = len(params['sp_bin_centers_'])
 
     params['x_bin_edges_'] = np.arange(params['x_cm_lims'][0],
-                                            params['x_cm_lims'][1] + params['cm_bin'],
-                                            params['cm_bin'])
+                                       params['x_cm_lims'][1] + params['cm_bin'],
+                                       params['cm_bin'])
     params['x_bin_centers_'] = params['x_bin_edges_'][:-1] + params['cm_bin'] / 2
     params['n_x_bins'] = len(params['x_bin_centers_'])
     params['n_width_bins'] = params['n_x_bins']
     params['width'] = params['n_x_bins']
 
     params['y_bin_edges_'] = np.arange(params['y_cm_lims'][0],
-                                            params['y_cm_lims'][1] + params['cm_bin'],
-                                            params['cm_bin'])
+                                       params['y_cm_lims'][1] + params['cm_bin'],
+                                       params['cm_bin'])
     params['y_bin_centers_'] = params['y_bin_edges_'][:-1] + params['cm_bin'] / 2
     params['n_y_bins'] = len(params['y_bin_centers_'])
     params['n_height_bins'] = params['n_y_bins']
     params['height'] = params['n_y_bins']
 
-
     return params
 
+# def xval_encoder_linear(features, response, n_xval):
+#     n_samps
 
 # def _shuffle_fields(field_map, fr_map):
 #     """
@@ -2057,7 +3134,7 @@ def default_OF_params():
 #         shift_fields[:, 0] = np.mod(shift_fields[:, 0], height)
 #         shift_fields[:, 1] = np.mod(shift_fields[:, 1], width)
 #
-#         # get shuffled field map and fr map
+#         # get shuffled field map and neural_data map
 #         shuffled_field_map[shift_fields[:, 0], shift_fields[:, 1]] = field
 #         shufflued_fr_map[shift_fields[:, 0], shift_fields[:, 1]] = fr_map[fields_idx[:, 0], fields_idx[:, 1]]
 #     return shuffled_field_map, shufflued_fr_map
