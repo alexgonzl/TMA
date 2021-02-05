@@ -411,7 +411,7 @@ class SpatialEncodingModels:
                 np.save(feat_mat_fn, feature_design_matrix)
             kwargs['feature_design_matrix'] = 'feature_design_matrix'
 
-            feat_obj_fn = Path(f"pos_feat_{self.pos_feat_type}_obj.pickle")
+            feat_obj_fn = Path(f"pos_feat_{self.pos_feat_type}_nx{self.n_x_bins}_ny{self.n_y_bins}.pickle")
             if feat_obj_fn.exists():
                 with open(feat_obj_fn, "rb") as f:
                     feat_obj = pickle.load(f)

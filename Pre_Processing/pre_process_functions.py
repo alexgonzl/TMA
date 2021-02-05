@@ -136,7 +136,11 @@ def post_process_channel_table(subject_id, task_table):
     # sort sessions by date
     session_dates = pd.DataFrame()
     for session in session_list:
-        session_dates.at[session, 'date'] = datetime.strptime(session.split('_')[2], '%m%d%y')
+        try:
+            session_dates.at[session, 'date'] = datetime.strptime(session.split('_')[2], '%m%d%y')
+        except:
+            pass
+
     sorted_sessions = list(session_dates.sort_values(by='date').index)
 
     channel_table = pd.DataFrame(columns=range(1, 17))

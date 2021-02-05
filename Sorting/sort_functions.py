@@ -1,6 +1,7 @@
 import sys
 import os
 import time
+import warnings
 
 import traceback
 import signal as sg
@@ -27,7 +28,6 @@ sns.set(style='whitegrid', palette='muted')
 
 icPath = '/home/alexgonzalez/Documents/MATLAB/ironclust/matlab/'
 ks2Path = '/home/alexgonzalez/Documents/MATLAB/Kilosort2/'
-
 
 class timeout:
     def __init__(self, seconds=1, error_message='Timeout'):
@@ -86,11 +86,12 @@ def sort_main(task, overwrite_flag=0):
                                                 max_channels_per_template=4)
 
                 # get cluster stats
-                cluster_stats = get_cluster_stats(sort, spk_data_masked.get_traces(), data_info)
+                spk_times_list = sort.get_units_spike_train()
+                cluster_stats = get_cluster_stats(spk_times_list, spk_data_masked.get_traces(), data_info)
                 cluster_stats_file_path = Path(save_path, 'cluster_stats.csv')
                 cluster_stats.to_csv(cluster_stats_file_path)
 
-                print('Successful sort.')
+                print('downSuccessful sort.')
             else:
                 print('Uncesseful sort.')
 
@@ -261,45 +262,50 @@ def get_sorter_cluster_snr(sorter, hp_signals, sig_mad=None, mask=None):
     return cl_snrs, cl_amp_mad
 
 
-def get_cluster_stats(sort_results, spk_signals, data_info, sorter_id='KS2', save_path=None, snr_thr=5,
-                      fr_low_thr=0.25, fr_high_thr=90, isi_thr=0.001):
+def get_cluster_stats(spike_times_dict, hp_data, data_info, sorter_id='KS2',
+                      save_path=None, snr_thr=5, fr_low_thr=0.25, fr_high_thr=90, isi_thr=0.001):
     cluster_stats = pd.DataFrame()
     cluster_num = 0
 
-    units = sort_results.get_unit_ids()
-    if len(units) > 0:
-        for unit in units:
-            key = sorter_id + '_' + str(unit)
-            cluster_stats.at[key, 'cl_num'] = int(cluster_num)
-            cluster_stats.at[key, 'sorter'] = sorter_id
+    #units = sort_results.get_unit_ids()
+    units = list(spike_times_dict.keys())
 
-            unit_spk_train = sort_results.get_unit_spike_train(unit)
-            n_spikes = len(unit_spk_train)
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore')
+        if len(units) > 0:
+            for unit in units:
+                key = sorter_id + '_' + str(unit)
+                cluster_stats.at[key, 'cl_num'] = int(cluster_num)
+                cluster_stats.at[key, 'sorter'] = sorter_id
 
-            cluster_stats.at[key, 'fr'] = n_spikes / data_info['n_samps'] * data_info['fs']
+                # sort_results.get_unit_spike_train(unit)
+                unit_spk_train = spike_times_dict[unit]
+                n_spikes = len(unit_spk_train)
 
-            dur = data_info['n_samps'] / data_info['fs']
-            isi_viol_rate, n_isi_viol = isi_violations(unit_spk_train / data_info['fs'], dur, isi_thr)
+                cluster_stats.at[key, 'fr'] = n_spikes / data_info['n_samps'] * data_info['fs']
 
-            cluster_stats.at[key, 'isi_viol_rate'] = isi_viol_rate
-            cluster_stats.at[key, 'n_spikes'] = n_spikes
-            cluster_stats.at[key, 'n_isi_viol'] = n_isi_viol
+                dur = data_info['n_samps'] / data_info['fs']
+                isi_viol_rate, n_isi_viol = isi_violations(unit_spk_train / data_info['fs'], dur, isi_thr)
 
-            cluster_stats.at[key, 'snr'], cluster_stats.at[key, 'amp_ch'], cluster_stats.at[key, 'amp_med_ch'], \
-            cluster_stats.at[key, 'amp_mad_ch'] = \
-                get_cluster_snr(unit_spk_train, spk_signals, sig_mad=data_info['Spk']['mad'])
+                cluster_stats.at[key, 'isi_viol_rate'] = isi_viol_rate
+                cluster_stats.at[key, 'n_spikes'] = n_spikes
+                cluster_stats.at[key, 'n_isi_viol'] = n_isi_viol
 
-            cluster_num += 1
+                cluster_stats.at[key, 'snr'], cluster_stats.at[key, 'amp_ch'], cluster_stats.at[key, 'amp_med_ch'], \
+                cluster_stats.at[key, 'amp_mad_ch'] = \
+                    get_cluster_snr(unit_spk_train, hp_data, sig_mad=data_info['Spk']['mad'])
 
-    valid_cluster_flag = cluster_stats['fr'] >= fr_low_thr
-    valid_cluster_flag &= cluster_stats['fr'] <= fr_high_thr
-    valid_cluster_flag &= cluster_stats['snr'] >= snr_thr
-    cluster_stats['valid'] = valid_cluster_flag
-    cluster_stats['tt_num'] = data_info['tt_num']
+                cluster_num += 1
 
-    if save_path is not None:
-        cluster_stats_file_path = Path(save_path, 'cluster_stats.csv')
-        cluster_stats.to_csv(cluster_stats_file_path)
+        valid_cluster_flag = cluster_stats['fr'] >= fr_low_thr
+        valid_cluster_flag &= cluster_stats['fr'] <= fr_high_thr
+        valid_cluster_flag &= cluster_stats['snr'] >= snr_thr
+        cluster_stats['valid'] = valid_cluster_flag
+        cluster_stats['tt_num'] = data_info['tt_num']
+
+        if save_path is not None:
+            cluster_stats_file_path = Path(save_path, 'cluster_stats.csv')
+            cluster_stats.to_csv(cluster_stats_file_path)
 
     return cluster_stats
 
@@ -326,6 +332,19 @@ def get_waveforms(spk_train, hp_data, wf_lims=None, n_wf=1000):
     mwf /= n_wf
 
     return mwf
+
+
+def load_hp_binary_data(file_name, n_channels=4, data_type=np.float16):
+    """
+    function to load high pass binary data (usually from KS temporary output recording.dat)
+    :param file_name: string or posix path
+    :param n_channels: numbe r
+    :param data_type: dtype for loading data, default np.float16
+    :return: n
+    """
+    data = np.fromfile(file_name, dtype=data_type)
+    data = data.reshape(-1, n_channels).T
+    return data
 
 
 def plot_isi_dist(spk_train, fs=32000, dt=2, ax=None):

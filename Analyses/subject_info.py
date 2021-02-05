@@ -8,10 +8,10 @@ import sys
 import traceback
 import Analyses.spike_functions as spike_funcs
 import Analyses.open_field_functions as of_funcs
+import Pre_Processing.pre_process_functions as pp_funcs
+import Sorting.sort_functions as sort_funcs
 
 import scipy.signal as signal
-
-# TO DO!!! GET cluster stats for merged clusters #############
 
 """
 Classes in this file will have several retrieval processes to acquire the required information for each
@@ -36,19 +36,24 @@ subject and session.
 
 class SubjectInfo:
     def __init__(self, subject, sorter='KS2', data_root='BigPC', overwrite=False, time_step=0.02,
-                 samp_rate=32000, n_tetrodes=16, fr_temporal_smoothing=0.125, spk_outlier_thr=None):
+                 samp_rate=32000, n_tetrodes=16, fr_temporal_smoothing=0.125, spk_outlier_thr=None,
+                 overwrite_cluster_stats=False):
 
         self.subject = subject
         self.sorter = sorter
         self.params = {'time_step': time_step, 'samp_rate': samp_rate, 'n_tetrodes': n_tetrodes,
                        'fr_temporal_smoothing': fr_temporal_smoothing, 'spk_outlier_thr': spk_outlier_thr,
                        'spk_recording_buffer': 3}
+        self.tetrodes = np.arange(n_tetrodes)+1
 
         if data_root == 'BigPC':
             if subject in ['Li', 'Ne']:
                 self.root_path = Path('/mnt/Data1_SSD2T/Data')
             elif subject in ['Cl']:
                 self.root_path = Path('/mnt/Data2_SSD2T/Data')
+            elif subject in ['Ca', 'Mi', 'Al']:
+                self.root_path = Path('/mnt/Data3_SSD2T/Data')
+
             self.raw_path = Path('/mnt/RawData/Data', subject)
 
         elif data_root == 'oak':
@@ -71,52 +76,98 @@ class SubjectInfo:
         else:
             # get channel table
             self._channel_table_file = self.preprocessed_path / ('chan_table_{}.csv'.format(subject))
-            if self._channel_table_file.exists():
-                self.channel_table = pd.read_csv(self._channel_table_file, index_col=0)
-                self.sessions = list(self.channel_table.index)
-                self.n_sessions = len(self.sessions)
+            if not self._channel_table_file.exists():
+                _task_fn = self.preprocessed_path / 'TasksDir' / f"pp_table_{self.subject}.json"
+                if _task_fn.exists():
+                    with _task_fn.open(mode='r') as f:
+                        _task_table = json.load(f)
+                    pp_funcs.post_process_channel_table(self.subject, _task_table)
+                else:
+                    sys.exit(f"Error. Task table for pre-processing does not exists: {_task_fn}")
 
-                self.session_paths = {}
-                for session in self.sessions:
-                    self.session_paths[session] = self._get_session_paths(session)
+            self.channel_table = pd.read_csv(self._channel_table_file, index_col=0)
+
+            # get sessions from channel table information
+            self.sessions = list(self.channel_table.index)
+            self.n_sessions = len(self.sessions)
+
+            self.session_paths = {}
+            for session in self.sessions:
+                self.session_paths[session] = self._session_paths(session)
 
             # get cluster information
             try:
-                self._clusters_file = self.sorted_path / ('clusters_{}_{}.json'.format(sorter, subject))
-                if self._clusters_file.exists() and not overwrite:  # load
-                    with self._clusters_file.open(mode='r') as f:
-                        self.clusters = json.load(f)
-                else:  # create
-                    self.session_clusters = {}
-                    for session in self.sessions:
-                        self.session_clusters[session] = self._get_session_clusters(session)
-                    with self._clusters_file.open(mode='w') as f:
-                        json.dump(self.session_clusters, f, indent=4)
+                if overwrite_cluster_stats:
+                    # overwrite cluster stats & clusters tables
+                    self.update_clusters()
+                else:
+                    # load tables
+                    self.session_clusters = self.get_session_clusters(overwrite=overwrite)
+                    self.sort_tables = self.get_sort_tables(overwrite=overwrite)
             except:
-                print("Error with Clusters.")
+                print("Error obtaining clusters.")
                 print(sys.exc_info()[0], sys.exc_info()[1], sys.exc_info()[2].tb_lineno)
                 traceback.print_exc(file=sys.stdout)
 
-            # get sorting tables
-            try:
-                self._sort_table_ids = ['tt', 'valid', 'curated', 'summary']
-                self._sort_table_files = {ii: Path(self.sorted_path, 'sort_{}_{}_{}'.format(ii, sorter, subject)) for ii
-                                          in
-                                          self._sort_table_ids}
-                if self._sort_table_files['summary'].exists() and not overwrite:
-                    self.sort_tables = {ii: [] for ii in self._sort_table_ids}
-                    for ii in self._sort_table_ids:
-                        self.sort_tables[ii] = pd.read_csv(self._sort_table_files[ii], index_col=0)
-                else:
-                    self.sort_tables = self._get_sort_tables()
-                    for ii in self._sort_table_ids:
-                        self.sort_tables[ii].to_csv(self._sort_table_files[ii])
-            except:
-                print('Error with Tables')
-                print(sys.exc_info()[0], sys.exc_info()[1], sys.exc_info()[2].tb_lineno)
-                traceback.print_exc(file=sys.stdout)
+            # get tetrode depths & match sessions
+            self.sessions_tt_positions = self.get_sessions_tt_position()
+            self.tt_depth_match = self.get_tetrode_depth_match()
 
             self.save_subject_info()
+
+    def update_clusters(self, verbose=False):
+        for session in self. sessions:
+            self._cluster_stats(session)
+            if verbose:
+                print('.', end='')
+        self.get_session_clusters(overwrite=True)
+        self.get_sort_tables(overwrite=True)
+        self.save_subject_info()
+
+    def get_sessions_tt_position(self):
+        p = Path(self.results_path.parent / f"{self.subject}_tetrodes.csv")
+
+        if p.exists():
+            tt_pos = pd.read_csv(p)
+            tt_pos['Date'] = pd.to_datetime(tt_pos['Date']).dt.strftime('%m%d%y')
+            tt_pos = tt_pos.set_index('Date')
+            tt_pos = tt_pos[['TT' + str(tt) + '_overall' for tt in self.tetrodes]]
+
+            session_dates = {session: session.split('_')[2] for session in self.sessions}
+            sessions_tt_pos = pd.DataFrame(index=self.sessions, columns=['tt_' + str(tt) for tt in self.tetrodes])
+
+            for session in self.sessions:
+                date = session_dates[session]
+                # below if is to correct for incorrect session dates for Cl
+                if (date in ['010218', '010318', '010418']) & (self.subject == 'Cl'):
+                    date = date[:5] + '9'
+                sessions_tt_pos.loc[session] = tt_pos.loc[date].values
+            return sessions_tt_pos
+        else:
+            print(f"Tetrode depth table not found at '{str(p)}'")
+            return None
+
+    def get_depth_wf(self):
+        raise NotImplementedError
+
+    def get_tetrode_depth_match(self):
+
+        tt_pos = self.sessions_tt_positions
+
+        try:
+            tt_depth_matchs = {tt: {} for tt in self.tetrodes}
+            for tt in self.tetrodes:
+                tt_str = 'tt_' + str(tt)
+                tt_depths = tt_pos[tt_str].unique()
+                for depth in tt_depths:
+                    tt_depth_matchs[tt][depth] = list(tt_pos[tt_pos[tt_str] == depth].index)
+            return tt_depth_matchs
+
+        except:
+            print("Error Matching Sessions based on tetrode depth")
+            print(sys.exc_info()[0], sys.exc_info()[1], sys.exc_info()[2].tb_lineno)
+            traceback.print_exc(file=sys.stdout)
+        return None
 
     def load_subject_info(self):
         with self.subject_info_file.open(mode='rb') as f:
@@ -128,8 +179,36 @@ class SubjectInfo:
         with self.subject_info_file.open(mode='wb') as f:
             pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
 
+    def get_session_clusters(self, overwrite=False):
+        _clusters_file = self.sorted_path / ('clusters_{}_{}.json'.format(self.sorter, self.subject))
+        if _clusters_file.exists() and not overwrite:  # load
+            with _clusters_file.open(mode='r') as f:
+                session_clusters = json.load(f)
+        else:  # create
+            session_clusters = {}
+            for session in self.sessions:
+                self._cluster_stats(session)
+                session_clusters[session] = self._session_clusters(session)
+            with _clusters_file.open(mode='w') as f:
+                json.dump(session_clusters, f, indent=4)
+        return session_clusters
+
+    def get_sort_tables(self, overwrite=False):
+        _sort_table_ids = ['tt', 'valid', 'curated', 'summary']
+        _sort_table_files = {ii: Path(self.sorted_path, 'sort_{}_{}_{}'.format(ii, self.sorter, self.subject))
+                                  for ii in _sort_table_ids}
+        if _sort_table_files['summary'].exists() and not overwrite:
+            sort_tables = {ii: [] for ii in _sort_table_ids}
+            for ii in _sort_table_ids:
+                sort_tables[ii] = pd.read_csv(_sort_table_files[ii], index_col=0)
+        else:
+            sort_tables = self._sort_tables()
+            for ii in _sort_table_ids:
+                sort_tables[ii].to_csv(_sort_table_files[ii])
+        return sort_tables
+
     # private methods
-    def _get_session_paths(self, session):
+    def _session_paths(self, session):
         time_step = self.params['time_step']
         samp_rate = self.params['samp_rate']
 
@@ -202,25 +281,99 @@ class SubjectInfo:
 
         return paths
 
-    def _get_session_clusters(self, session):
+    def _cluster_stats(self, session):
+        sort_path = self.session_paths[session]['Sorted']
+
+        for tt in self.tetrodes:
+            tt_str = 'tt_' + str(tt)
+            _cluster_spike_time_fn = Path(sort_path, tt_str, self.sorter, 'spike_times.npy')
+            _cluster_spike_ids_fn = Path(sort_path, tt_str, self.sorter, 'spike_clusters.npy')
+            _cluster_groups_fn = Path(sort_path, ('tt_' + str(tt)), self.sorter, 'cluster_group.tsv')
+            _hp_data_fn = Path(sort_path, tt_str, self.sorter, 'recording.dat')
+            _hp_data_info_fn = Path(sort_path, tt_str, tt_str+'_info.pickle')
+            _cluster_stats_file_path = Path(sort_path, tt_str, self.sorter, 'cluster_stats_curated.csv')
+
+            try:
+                spike_times = np.load(_cluster_spike_time_fn)
+                spike_ids = np.load(_cluster_spike_ids_fn)
+                cluster_groups = pd.read_csv(_cluster_groups_fn, sep='\t')
+                units = np.unique(spike_ids)
+
+                valid_units_idx = cluster_groups.group.isin(['good', 'mua'])
+                valid_units = cluster_groups.cluster_id[valid_units_idx].values
+
+                spike_times_dict = {unit: spike_times[spike_ids == unit].flatten() for unit in valid_units}
+                #print(spike_times_dict[0])
+                hp_data = sort_funcs.load_hp_binary_data(_hp_data_fn)
+
+                with _hp_data_info_fn.open(mode='rb') as f:
+                    hp_data_info = pickle.load(f)
+
+                cluster_stats = sort_funcs.get_cluster_stats(spike_times_dict, hp_data, hp_data_info)
+                cluster_stats.to_csv(_cluster_stats_file_path)
+            except:
+                pass
+
+    def get_session_tt_wf(self, session, tt, cluster_ids=None, wf_lims=None, n_wf=200):
+
+        if wf_lims is None:
+            wf_lims = [-12, 20]
+        tt_str = 'tt_' + str(tt)
+        _sort_path = Path(self.session_paths[session]['Sorted'],  tt_str, self.sorter)
+
+        _cluster_spike_time_fn = _sort_path / 'spike_times.npy'
+        _cluster_spike_ids_fn = _sort_path / 'spike_clusters.npy'
+        _hp_data_fn = _sort_path / 'recording.dat'
+
+        spike_times = np.load(_cluster_spike_time_fn)
+        spike_ids = np.load(_cluster_spike_ids_fn)
+        hp_data = sort_funcs.load_hp_binary_data(_hp_data_fn)
+
+        wf_samps = np.arange(wf_lims[0], wf_lims[1])
+        if cluster_ids is None:
+            cluster_ids = np.unique(spike_ids)
+
+        n_clusters = len(cluster_ids)
+        out = np.zeros( (n_clusters, n_wf, len(wf_samps)*4), dtype=np.float16)
+
+        for cl_idx, cluster in enumerate(cluster_ids):
+            cl_spk_times = spike_times[spike_ids == cluster]
+            n_cl_spks = len(cl_spk_times)
+            if n_wf == 'all':
+                sampled_spikes = cl_spk_times
+            elif n_wf > n_cl_spks:
+                # Note that if number of spikes < n_wf, spikes will be repeated such that sampled_spikes has n_wf
+                sampled_spikes = cl_spk_times[np.random.randint(n_cl_spks, size=n_wf)]
+            else:  # sample from spikes
+                sampled_spikes = cl_spk_times[np.random.choice(np.arange(n_cl_spks), size=n_wf, replace=False)]
+
+            for wf_idx, samp_spk in enumerate(sampled_spikes):
+                out[cl_idx, wf_idx] = hp_data[:, wf_samps + samp_spk].flatten()
+
+        return out
+
+    def _session_clusters(self, session):
         table = {'session': session, 'path': str(self.session_paths[session]['Sorted']),
                  'n_cell': 0, 'n_mua': 0, 'n_noise': 0, 'n_unsorted': 0, 'sorted_TTs': [], 'curated_TTs': [],
                  'cell_IDs': {}, 'mua_IDs': {}, 'noise_IDs': {}, 'unsorted_IDs': {}, 'clusters_snr': {},
                  'clusters_fr': {}, 'clusters_valid': {}, 'clusters_isi_viol_rate': {}}
 
         sort_paths = table['path']
-
-        n_tetrodes = self.params['n_tetrodes']
-        _cluster_stats = ['fr', 'snr', 'isi_viol_rate', 'valid']
-        tetrodes = np.arange(1, n_tetrodes + 1)
-        for tt in tetrodes:
+        _cluster_stats_names = ['fr', 'snr', 'isi_viol_rate', 'valid']
+        for tt in self.tetrodes:
             _cluster_groups_file = Path(sort_paths, ('tt_' + str(tt)), self.sorter, 'cluster_group.tsv')
-            _cl_stat_file = Path(sort_paths, ('tt_' + str(tt)), self.sorter, 'cluster_stats.csv')
+
+            # check what stats file to load
+            if Path(sort_paths, ('tt_' + str(tt)), self.sorter, 'cluster_stats_curated.csv').exists():
+                _cl_stat_file = Path(sort_paths, ('tt_' + str(tt)), self.sorter, 'cluster_stats_curated.csv')
+            else:
+                _cl_stat_file = Path(sort_paths, ('tt_' + str(tt)), self.sorter, 'cluster_stats.csv')
+
             if _cl_stat_file.exists():
                 table['sorted_TTs'].append(int(tt))
                 d = pd.read_csv(_cl_stat_file, index_col=0)
                 n_clusters = d.shape[0]
-                for st in _cluster_stats:
+                for st in _cluster_stats_names:
                     table['clusters_' + st][int(tt)] = {}
                     for cl in range(n_clusters):
                         if st == 'valid':
@@ -245,27 +398,41 @@ class SubjectInfo:
 
         return table
 
-    def _get_sort_tables(self):
+    def _sort_tables(self):
         n_tetrodes = self.params['n_tetrodes']
 
         sort_tables = {ii: pd.DataFrame(index=self.sessions,
-                                        columns=range(1, n_tetrodes + 1)) for ii in ['tt', 'curated', 'valid']}
+                                        columns=self.tetrodes) for ii in ['tt', 'curated', 'valid']}
 
         sort_tables['summary'] = pd.DataFrame(index=self.sessions,
                                               columns=['n_tt', 'n_tt_sorted', 'n_tt_curated',
                                                        'n_valid_clusters', 'n_cell', 'n_mua',
                                                        'n_noise', 'n_unsorted'])
+        _unit_types = ['cell', 'mua', 'noise', 'unsorted']
+        _sort_table_ids = ['tt', 'valid', 'curated', 'summary']
+
         #
         # for tbl in self._sort_table_ids:
         #     sort_tables[tbl] = sort_tables[tbl].fillna(-1)
 
         for session in self.sessions:
             _clusters_info = self.session_clusters[session]
-            for tbl in self._sort_table_ids:
+            for tbl in _sort_table_ids:
                 if tbl == 'tt':
                     sort_tables[tbl].at[session, _clusters_info['sorted_TTs']] = 1
                 if tbl == 'curated':
-                    sort_tables[tbl].at[session, _clusters_info['curated_TTs']] = 1
+                    n_cells = np.zeros(n_tetrodes)
+                    n_mua = np.zeros(n_tetrodes)
+
+                    tt_cell_clusters = _clusters_info['cell_IDs']
+                    for tt, clusters in tt_cell_clusters.items():
+                        n_cells[tt-1] = len(clusters)
+
+                    tt_mua_clusters = _clusters_info['mua_IDs']
+                    for tt, clusters in tt_mua_clusters.items():
+                        n_mua[tt - 1] = len(clusters)
+
+                    sort_tables[tbl].loc[session] = n_cells+n_mua
                 if tbl == 'valid':
                     _valid_cls = _clusters_info['clusters_valid']
                     for tt, cls in _valid_cls.items():
@@ -274,7 +441,7 @@ class SubjectInfo:
             sort_tables['summary'].at[session, 'n_tt'] = n_tetrodes
             sort_tables['summary'].at[session, 'n_tt_sorted'] = len(_clusters_info['sorted_TTs'])
             sort_tables['summary'].at[session, 'n_tt_curated'] = len(_clusters_info['curated_TTs'])
-            _unit_types = ['cell', 'mua', 'noise', 'unsorted']
+
             for ut in _unit_types:
                 sort_tables['summary'].at[session, 'n_' + ut] = _clusters_info['n_' + ut]
 
@@ -301,7 +468,7 @@ class SubjectSessionInfo(SubjectInfo):
 
         self.task_params = get_task_params(self)
         self.n_units = self.clusters['n_cell'] + self.clusters['n_mua']
-        print('number of units in session {}'.format(self.clusters['n_cell'] + self.clusters['n_mua']))
+        #print('number of units in session {}'.format(self.clusters['n_cell'] + self.clusters['n_mua']))
         if self.paths['cluster_spikes_ids'].exists():
             with self.paths['cluster_spikes_ids'].open('r') as f:
                 self.cluster_ids = json.load(f)
@@ -640,7 +807,7 @@ class SubjectSessionInfo(SubjectInfo):
                 # with self.paths['cluster_OF_metrics'].open(mode='wb') as f:
                 #     pickle.dump(scores, f, protocol=pickle.HIGHEST_PROTOCOL)
             else:
-                scores = pd.read_csv(self.paths['cluster_OF_metrics'].open(mode='rb'), index_col=0)
+                scores = pd.read_csv(self.paths['cluster_OF_metrics'], index_col=0)
                 # with self.paths['cluster_OF_metrics'].open(mode='rb') as f:
                 #     scores = pickle.load(f)
         else:
@@ -667,7 +834,7 @@ class SubjectSessionInfo(SubjectInfo):
                 # with self.paths['cluster_OF_metrics'].open(mode='wb') as f:
                 #     pickle.dump(scores, f, protocol=pickle.HIGHEST_PROTOCOL)
             else:
-                scores = pd.read_csv(self.paths['cluster_OF_encoding_models'].open(mode='rb'), index_col=0)
+                scores = pd.read_csv(self.paths['cluster_OF_encoding_models'], index_col=0)
                 # with self.paths['cluster_OF_metrics'].open(mode='rb') as f:
                 #     scores = pickle.load(f)
         else:
@@ -688,12 +855,10 @@ def get_task_params(session_info):
     subject = session_info.subject
     time_step = session_info.params['time_step']
 
-    task_params = {}
+    task_params = {'time_step': time_step}
     if task == 'OF':
-        if subject in ['Li', 'Ne', 'Cl']:
-            task_params = {
-                'time_step': time_step,     # time step
-
+        if subject in ['Li', 'Ne', 'Cl', 'Ca', 'Al']:
+            conv_params = {
                 # pixel params
                 'x_pix_lims': [100, 650],  # camera field of view x limits [pixels]
                 'y_pix_lims': [100, 500],  # camera field of view y limits [pixels]
@@ -711,92 +876,121 @@ def get_task_params(session_info):
                 'y_mm_lims': [-60, 1350],  # limits on the y axis of the maze [mm]
                 'x_cm_lims': [-63, 63],  # limits on the x axis of the maze [cm]
                 'y_cm_lims': [-6, 135],  # limits on the y axis of the maze [cm]
-
-                # binning parameters
-                'mm_bin': 30,  # millimeters per bin [mm]
-                'cm_bin': 3,  # cm per bin [cm]
-                'max_speed_thr': 80,  # max speed threshold for allowing valid movement [cm/s]
-                'min_speed_thr': 2,  # min speed threshold for allowing valid movement [cm/s]
-                'rad_bin': np.deg2rad(10),  # angle radians per bin [rad]
-                'occ_num_thr': 3,           # number of occupation times threshold [bins
-                'occ_time_thr': time_step * 3,  # time occupation threshold [sec]
-                'speed_bin': 2,                # speed bin size [cm/s]
-
-                # filtering parameters
-                'spatial_sigma': 2,  # spatial smoothing sigma factor [au]
-                'spatial_window_size': 5,  # number of spatial position bins to smooth [bins]
-                'temporal_window_size': 11,  # smoothing temporal window for filtering [bins]
-                'temporal_angle_window_size': 11,  # smoothing temporal window for angles [bins]
-                'temporal_window_type': 'hann',  # window type for temporal window smoothing
-
-                # statistical tests parameters:
-                'sig_alpha': 0.02,  # double sided alpha level for significance testing
-                'n_perm': 200,  # number of permutations
-
-                # type of encoding model. see spatial_funcs.get_border_encoding_features
-                'reg_type': 'poisson',
-                # these are ignoed if border_enc_model_type is linear.
-                'border_enc_model_feature_params__': {'center_gaussian_spread': 0.2,  # as % of environment
-                                                      'sigmoid_slope_thr': 0.15,  # value of sigmoid at border width
-                                                     },
-
-                'border_score_params__': {'fr_thr': 0.25,  # firing rate threshold
-                                          'width_bins': 3,  # distance from border to consider it a border cell [bins]
-                                          'min_field_size_bins': 10},  # minimum area for fields in # of bins
-
-                'grid_score_params__': {'ac_thr': 0.1,  # autocorrelation threshold for finding fields
-                                          'radix_range': [0.5, 2.0],  # range of radii for grid score in the autocorr
-                                          'apply_sigmoid': True,  # apply sigmoid to rate maps
-                                          'sigmoid_center': 0.5,  # center for sigmoid
-                                          'sigmoid_slope': 10,   # slope for sigmoid
-                                          'find_fields': True},  # mask fields before autocorrelation
-
-                # grid encoding model
-                'grid_fit_type': 'auto_corr',  # ['auto_corr', 'moire'], how to find parameters for grid
-                'pos_feat_type': 'pca',  # feature type for position encoding model
-                'pos_feat_n_comp': 0.95,  # variance explaiend for pca in position feautrues
-
             }
+        elif subject in ['Mi']:
+            conv_params = {
 
-            # derived parameters
-            # -- filter coefficients --
-            task_params['filter_coef_'] = signal.get_window(task_params['temporal_window_type'],
-                                                            task_params['temporal_window_size'],
-                                                            fftbins=False)
-            task_params['filter_coef_'] /= task_params['filter_coef_'].sum()
+                # pixel params
+                'x_pix_lims': [200, 600],  # camera field of view x limits [pixels]
+                'y_pix_lims': [100, 450],  # camera field of view y limits [pixels]
+                'x_pix_bias': -390,  # factor for centering the x pixel position
+                'y_pix_bias': -265,  # factor for centering the y pixel position
+                'vt_rate': 1.0 / 60.0,  # video acquisition frame rate
+                'xy_pix_rot_rad': np.pi / 2,  # rotation of original xy pix camera to experimenter xy
 
-            task_params['filter_coef_angle_'] = signal.get_window(task_params['temporal_window_type'],
-                                                                  task_params['temporal_angle_window_size'],
-                                                                  fftbins=False)
-            task_params['filter_coef_angle_'] /= task_params['filter_coef_angle_'].sum()
-
-            # -- bins --
-            task_params['ang_bin_edges_'] = np.arange(0, 2*np.pi+task_params['rad_bin'], task_params['rad_bin'])
-            task_params['ang_bin_centers_'] = task_params['ang_bin_edges_'][:-1] + task_params['rad_bin']/2
-            task_params['n_ang_bins'] = len(task_params['ang_bin_centers_'])
-
-            task_params['sp_bin_edges_'] = np.arange(task_params['min_speed_thr'],
-                                                     task_params['max_speed_thr'] + task_params['speed_bin'],
-                                                     task_params['speed_bin'])
-            task_params['sp_bin_centers_'] = task_params['sp_bin_edges_'][:-1]+task_params['speed_bin']/2
-            task_params['n_sp_bins'] = len(task_params['sp_bin_centers_'])
-
-            task_params['x_bin_edges_'] = np.arange(task_params['x_cm_lims'][0],
-                                                    task_params['x_cm_lims'][1]+task_params['cm_bin'],
-                                                    task_params['cm_bin'])
-            task_params['x_bin_centers_'] = task_params['x_bin_edges_'][:-1] + task_params['cm_bin']/2
-            task_params['n_x_bins'] = len(task_params['x_bin_centers_'])
-            task_params['n_width_bins'] = task_params['n_x_bins']
-
-            task_params['y_bin_edges_'] = np.arange(task_params['y_cm_lims'][0],
-                                                    task_params['y_cm_lims'][1] + task_params['cm_bin'],
-                                                    task_params['cm_bin'])
-            task_params['y_bin_centers_'] = task_params['y_bin_edges_'][:-1] + task_params['cm_bin']/2
-            task_params['n_y_bins'] = len(task_params['y_bin_centers_'])
-            task_params['n_height_bins'] = task_params['n_y_bins']
-
-        else:
+                # conversion params
+                'x_pix_mm': 1300.0 / 290.0,  # pixels to mm for the x axis [pix/mm]
+                'y_pix_mm': 1450.0 / 370.0,  # pixels to mm for the y axis [pix/mm]
+                'x_mm_bias': 0,  # factor for centering the x mm position
+                'y_mm_bias': 750,  # factor for centering the y mm position
+                'x_mm_lims': [-630, 630],  # limits on the x axis of the maze [mm]
+                'y_mm_lims': [0, 1450],  # limits on the y axis of the maze [mm]
+                'x_cm_lims': [-63, 63],  # limits on the x axis of the maze [cm]
+                'y_cm_lims': [0, 145],  # limits on the y axis of the maze [cm]
+            }
             pass
+        else:
+            conv_params = {}
+        default_task_params = {
+            # binning parameters
+            'mm_bin': 30,  # millimeters per bin [mm]
+            'cm_bin': 3,  # cm per bin [cm]
+            'max_speed_thr': 80,  # max speed threshold for allowing valid movement [cm/s]
+            'min_speed_thr': 2,  # min speed threshold for allowing valid movement [cm/s]
+            'rad_bin': np.deg2rad(10),  # angle radians per bin [rad]
+            'occ_num_thr': 3,           # number of occupation times threshold [bins
+            'occ_time_thr': time_step * 3,  # time occupation threshold [sec]
+            'speed_bin': 2,                # speed bin size [cm/s]
+
+            # filtering parameters
+            'spatial_sigma': 2,  # spatial smoothing sigma factor [au]
+            'spatial_window_size': 5,  # number of spatial position bins to smooth [bins]
+            'temporal_window_size': 11,  # smoothing temporal window for filtering [bins]
+            'temporal_angle_window_size': 11,  # smoothing temporal window for angles [bins]
+            'temporal_window_type': 'hann',  # window type for temporal window smoothing
+
+            # statistical tests parameters:
+            'sig_alpha': 0.02,  # double sided alpha level for significance testing
+            'n_perm': 200,  # number of permutations
+
+            # type of encoding model. see spatial_funcs.get_border_encoding_features
+            'reg_type': 'poisson',
+            # these are ignoed if border_enc_model_type is linear.
+            'border_enc_model_feature_params__': {'center_gaussian_spread': 0.2,  # as % of environment
+                                                  'sigmoid_slope_thr': 0.15,  # value of sigmoid at border width
+                                                 },
+
+            'border_score_params__': {'fr_thr': 0.25,  # firing rate threshold
+                                      'width_bins': 3,  # distance from border to consider it a border cell [bins]
+                                      'min_field_size_bins': 10},  # minimum area for fields in # of bins
+
+            'grid_score_params__': {'ac_thr': 0.1,  # autocorrelation threshold for finding fields
+                                      'radix_range': [0.5, 2.0],  # range of radii for grid score in the autocorr
+                                      'apply_sigmoid': True,  # apply sigmoid to rate maps
+                                      'sigmoid_center': 0.5,  # center for sigmoid
+                                      'sigmoid_slope': 10,   # slope for sigmoid
+                                      'find_fields': True},  # mask fields before autocorrelation
+
+            # grid encoding model
+            'grid_fit_type': 'auto_corr',  # ['auto_corr', 'moire'], how to find parameters for grid
+            'pos_feat_type': 'pca',  # feature type for position encoding model
+            'pos_feat_n_comp': 0.95,  # variance explaiend for pca in position feautrues
+
+        }
+
+        task_params.update(conv_params)
+        task_params.update(default_task_params)
+
+        # derived parameters
+
+        # -- filter coefficients --
+        task_params['filter_coef_'] = signal.get_window(task_params['temporal_window_type'],
+                                                        task_params['temporal_window_size'],
+                                                        fftbins=False)
+        task_params['filter_coef_'] /= task_params['filter_coef_'].sum()
+
+        task_params['filter_coef_angle_'] = signal.get_window(task_params['temporal_window_type'],
+                                                              task_params['temporal_angle_window_size'],
+                                                              fftbins=False)
+        task_params['filter_coef_angle_'] /= task_params['filter_coef_angle_'].sum()
+
+        # -- bins --
+        task_params['ang_bin_edges_'] = np.arange(0, 2*np.pi+task_params['rad_bin'], task_params['rad_bin'])
+        task_params['ang_bin_centers_'] = task_params['ang_bin_edges_'][:-1] + task_params['rad_bin']/2
+        task_params['n_ang_bins'] = len(task_params['ang_bin_centers_'])
+
+        task_params['sp_bin_edges_'] = np.arange(task_params['min_speed_thr'],
+                                                 task_params['max_speed_thr'] + task_params['speed_bin'],
+                                                 task_params['speed_bin'])
+        task_params['sp_bin_centers_'] = task_params['sp_bin_edges_'][:-1]+task_params['speed_bin']/2
+        task_params['n_sp_bins'] = len(task_params['sp_bin_centers_'])
+
+        task_params['x_bin_edges_'] = np.arange(task_params['x_cm_lims'][0],
+                                                task_params['x_cm_lims'][1]+task_params['cm_bin'],
+                                                task_params['cm_bin'])
+        task_params['x_bin_centers_'] = task_params['x_bin_edges_'][:-1] + task_params['cm_bin']/2
+        task_params['n_x_bins'] = len(task_params['x_bin_centers_'])
+        task_params['n_width_bins'] = task_params['n_x_bins']
+        task_params['width'] = task_params['n_x_bins']
+
+        task_params['y_bin_edges_'] = np.arange(task_params['y_cm_lims'][0],
+                                                task_params['y_cm_lims'][1] + task_params['cm_bin'],
+                                                task_params['cm_bin'])
+        task_params['y_bin_centers_'] = task_params['y_bin_edges_'][:-1] + task_params['cm_bin']/2
+        task_params['n_y_bins'] = len(task_params['y_bin_centers_'])
+        task_params['n_height_bins'] = task_params['n_y_bins']
+        task_params['height'] = task_params['n_y_bins']
+
     elif task[:2] == 'T3':
         pass
 
