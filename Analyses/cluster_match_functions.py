@@ -436,16 +436,24 @@ def get_clusters_all_dists(clusters_loc, clusters_cov, data=None, labels=None,
     return dists_mats
 
 
-def plot_2d_cluster_ellipsoids(clusters_loc, clusters_cov, data=None, labels=None,
-                               ax=None, legend=False, cl_names=None):
+def plot_2d_cluster_ellipsoids(clusters_loc, clusters_cov, data=None, std_levels=[1, 2],
+                               labels=None, ax=None, legend=False, cl_names=None, cl_colors=None):
 
-    cluster_ellipsoids_2md = []
-    cluster_ellipsoids_1md = []
-    n_clusters = clusters_loc.shape[0]
+    n_levels = len(std_levels)
+    if isinstance(clusters_loc, list):
+        n_clusters = len(clusters_loc)
+    else:  # not supper robust here
+        n_clusters = cl
+    cluster_ellipsoids = np.zeros((n_clusters, n_levels), dtype=object)
 
     for cl in range(n_clusters):
-        cluster_ellipsoids_2md.append(get_2d_confidence_ellipse(mu=clusters_loc[cl], cov=clusters_cov[cl], n_std=2))
-        cluster_ellipsoids_1md.append(get_2d_confidence_ellipse(mu=clusters_loc[cl], cov=clusters_cov[cl], n_std=1))
+        for jj, level in enumerate(std_levels):
+            cluster_ellipsoids[cl, jj] = \
+                get_2d_confidence_ellipse(mu=clusters_loc[cl], cov=clusters_cov[cl], n_std=level)
+
+    if cl_colors is None:
+        cl_colors = colors
+    n_colors = len(cl_colors)
 
     if ax is None:
         f, ax = plt.subplots()
@@ -455,19 +463,17 @@ def plot_2d_cluster_ellipsoids(clusters_loc, clusters_cov, data=None, labels=Non
         ax.scatter(data[:, 0], data[:, 1], c=np.array(colors)[labels], alpha=0.2)
         facecolors = ['grey'] * n_clusters
     else:
-        facecolors = colors
+        facecolors = cl_colors
 
     if cl_names is None:
         cl_names = ['cl' + str(cl) for cl in range(n_clusters)]
 
     for cl in range(n_clusters):
-        patch = PolygonPatch(cluster_ellipsoids_2md[cl], facecolor=facecolors[cl], alpha=0.3)
-        ax.add_patch(patch)
+        for jj, level in enumerate(std_levels):
+            patch = PolygonPatch(cluster_ellipsoids[cl, jj], facecolor=facecolors[np.mod(cl, n_colors)], alpha=0.3)
+            ax.add_patch(patch)
 
-        patch = PolygonPatch(cluster_ellipsoids_1md[cl], facecolor=facecolors[cl], alpha=0.5)
-        ax.add_patch(patch)
-
-        label_patch.append(mpatches.Patch(color=colors[cl], label=cl_names[cl], alpha=0.7))
+        label_patch.append(mpatches.Patch(color=facecolors[np.mod(cl, n_colors)], label=cl_names[cl], alpha=0.7))
 
     if legend:
         ax.legend(handles=label_patch, frameon=False, loc=(1.05, 0))
@@ -497,8 +503,7 @@ def find_all_cluster_matches(distance_mat, thr):
     return matches
 
 
-def find_unique_session_cl_matches(distance_mat, thr, exclude_more_than_thr=True,
-                                   exclude_multi_matched=True, session_cl_sep='_'):
+def find_session_cl_matches(distance_mat, thr, select_lower=True, exclude_multi_matched=True, session_cl_sep='_'):
     """
     For a given labeled distance matrix data frame, obtain cluster matches in order of distance score.
 
@@ -507,7 +512,7 @@ def find_unique_session_cl_matches(distance_mat, thr, exclude_more_than_thr=True
             where the important part is that sessions and clusters within that session are separtated
             by an underscore "_"
         - thr [float]: number indicating the thr for inclusion in matches
-        - include_less_than_thr [bool]: if True (default) matches with <thr are included,
+        - select_lower [bool]: if True (default) matches with <thr are included,
             otherwise matches>thr are included
         - exclude_multi_matched [bool]: if True (default) cl matches that repeat won't be rematched
             with another cluster.
@@ -526,7 +531,7 @@ def find_unique_session_cl_matches(distance_mat, thr, exclude_more_than_thr=True
 
     # mask over threshold values & diagonal down [assumes symmetry]
     Y = np.array(distance_mat.to_numpy())
-    if exclude_more_than_thr:
+    if select_lower:
         Y[Y > thr] = np.nan
     else:
         Y[Y <= thr] = np.nan
@@ -610,27 +615,22 @@ def find_unique_session_cl_matches(distance_mat, thr, exclude_more_than_thr=True
     return matches
 
 
-def matches_dict_to_unique_sets(matches):
+def matches_dict_to_unique_sets(matches, distance_mat,
+                                select_lower=True, require_subsets=True):
     """
     Run after find_unique_session_cl_matches. This returns the unique sets given a unique matches dictionary.
     :param matches: output of find_unique_session_cl_matches
+    :param distance_mat: distance matrix to be used for tie-breakers
+    :param select_lower: bool, if true selects lowest score for tie-breaker.
+        score is determine by the product of all submatches
+        *note dm will be normalize such that max(dm) =1 for select_lower True
+        if select_lower is False, dm will be normalize such that min(dm)=1
+    :param require_subsets: bool, if true, a bigger set can only be included if the subsets are present **convservative
     :return:
         list of unique cluster sets
+
+    -- bug found. repeated elements across sets is possible.
     """
-
-    # change matches to sets & including subsets
-    all_matches_sets = []
-    for cl, cl_matches in matches.items():
-        all_matches_sets.append(set([cl] + cl_matches))
-        if len(cl_matches) > 1:
-            for clx in cl_matches:
-                all_matches_sets.append(set([cl] + [clx]))
-
-    # take out repeated sets
-    cl_sets = []
-    for cl_set in all_matches_sets:
-        if cl_set not in cl_sets:
-            cl_sets.append(cl_set)
 
     # subfunction to get all combinations
     def _get_subsets(big_set):
@@ -654,10 +654,72 @@ def matches_dict_to_unique_sets(matches):
                 valid &= _recursive_valid_sets(all_sets, set_i)
             return valid
 
-    valid_cl_sets = []
-    for cl_set1 in cl_sets:
-        if _recursive_valid_sets(cl_sets, cl_set1):
-            valid_cl_sets.append(cl_set1)
+    def _set2dict(cl_sets):
+        cl_sets_dict = {}
+        for cl_set in cl_sets:
+            for cl in cl_set:
+                if cl not in cl_sets_dict.keys():
+                    cl_sets_dict[cl] = [cl_set - {cl}]
+                else:
+                    cl_sets_dict[cl].append(cl_set - {cl})
+        return cl_sets_dict
 
-    return valid_cl_sets
+    ## main ##
+    if select_lower: # normalize max to 1
+        distance_mat = distance_mat/np.abs(distance_mat.values.max())
+    else: # normalize min to 1
+        distance_mat = 2 - distance_mat / distance_mat.values.max()
+
+    # change matches to sets & including subsets
+    all_matches_sets = []
+    for cl, cl_matches in matches.items():
+        all_matches_sets.append(set([cl] + cl_matches))
+        if len(cl_matches) > 1:
+            for clx in cl_matches:
+                all_matches_sets.append(set([cl] + [clx]))
+
+    # take out repeated sets
+    cl_sets = []
+    for cl_set in all_matches_sets:
+        if cl_set not in cl_sets:
+            cl_sets.append(cl_set)
+
+    # verifies that larger sets contain the respective subsets
+    # this is a conservative approach
+    if require_subsets:
+        valid_cl_sets = []
+        for cl_set1 in cl_sets:
+            if _recursive_valid_sets(cl_sets, cl_set1):
+                valid_cl_sets.append(cl_set1)
+        cl_sets = valid_cl_sets
+
+    # change sets to a dict to verify there are no duplicate clusters
+    cl_sets_dict = _set2dict(cl_sets)
+
+    # iterate to get final set list
+    valid_cl_sets = []
+    for cl, clm in cl_sets_dict.items():
+        n_matches = len(clm)
+        if n_matches == 1:  # unique match
+            cl_set = {cl} | clm[0]
+        else:  # match with best scoring set
+            match_vals = np.zeros(n_matches)
+            for ii, clm_i in enumerate(clm):  # takes product of the set matches
+                match_vals[ii] = distance_mat.loc[cl, [clx for clx in clm_i]].values.prod()
+
+            if select_lower:
+                ii = np.argmin(match_vals)
+            else:
+                ii = np.argmax(match_vals)
+
+            # best scoring set
+            cl_set = {cl} | clm[ii]
+
+        # make sure it is not already on the list
+        if cl_set not in valid_cl_sets:
+            valid_cl_sets.append(cl_set)
+
+    valid_cl_sets_dict = _set2dict(valid_cl_sets)
+
+    return valid_cl_sets, valid_cl_sets_dict
 

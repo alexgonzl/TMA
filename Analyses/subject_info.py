@@ -46,7 +46,7 @@ class SubjectInfo:
         self.params = {'time_step': time_step, 'samp_rate': samp_rate, 'n_tetrodes': n_tetrodes,
                        'fr_temporal_smoothing': fr_temporal_smoothing, 'spk_outlier_thr': spk_outlier_thr,
                        'spk_recording_buffer': 3}
-        self.tetrodes = np.arange(n_tetrodes)+1
+        self.tetrodes = np.arange(n_tetrodes, dtype=int) + 1
 
         if data_root == 'BigPC':
             if subject in ['Li', 'Ne']:
@@ -117,13 +117,9 @@ class SubjectInfo:
 
             self.save_subject_info()
 
-    def update_clusters(self, verbose=False):
-        for session in self. sessions:
-            self._cluster_stats(session)
-            if verbose:
-                print('.', end='')
-        self.get_session_clusters(overwrite=True)
-        self.get_sort_tables(overwrite=True)
+    def update_clusters(self):
+        self.session_clusters = self.get_session_clusters(overwrite=True)
+        self.sort_tables = self.get_sort_tables(overwrite=True)
         self.save_subject_info()
 
     def get_sessions_tt_position(self):
@@ -191,14 +187,18 @@ class SubjectInfo:
             for session in self.sessions:
                 self._cluster_stats(session)
                 session_clusters[session] = self._session_clusters(session)
-            with _clusters_file.open(mode='w') as f:
-                json.dump(session_clusters, f, indent=4)
+
+            try:
+                with _clusters_file.open(mode='w') as f:
+                    json.dump(session_clusters, f, indent=4)
+            except TypeError:
+                print(session)
         return session_clusters
 
     def get_sort_tables(self, overwrite=False):
         _sort_table_ids = ['tt', 'valid', 'curated', 'summary']
         _sort_table_files = {ii: Path(self.sorted_path, 'sort_{}_{}_{}'.format(ii, self.sorter, self.subject))
-                                  for ii in _sort_table_ids}
+                             for ii in _sort_table_ids}
         if _sort_table_files['summary'].exists() and not overwrite:
             sort_tables = {ii: [] for ii in _sort_table_ids}
             for ii in _sort_table_ids:
@@ -291,29 +291,54 @@ class SubjectInfo:
             _cluster_spike_time_fn = Path(sort_path, tt_str, self.sorter, 'spike_times.npy')
             _cluster_spike_ids_fn = Path(sort_path, tt_str, self.sorter, 'spike_clusters.npy')
             _cluster_groups_fn = Path(sort_path, ('tt_' + str(tt)), self.sorter, 'cluster_group.tsv')
+            _cluster_stats_fn = Path(sort_path, ('tt_' + str(tt)), self.sorter, 'cluster_stats.csv')
+
             _hp_data_fn = Path(sort_path, tt_str, self.sorter, 'recording.dat')
-            _hp_data_info_fn = Path(sort_path, tt_str, tt_str+'_info.pickle')
-            _cluster_stats_file_path = Path(sort_path, tt_str, self.sorter, 'cluster_stats_curated.csv')
+            _hp_data_info_fn = Path(sort_path, tt_str, tt_str + '_info.pickle')
+            _cluster_stats_fn2 = Path(sort_path, tt_str, self.sorter, 'cluster_stats_curated.csv')
 
             try:
-                spike_times = np.load(_cluster_spike_time_fn)
-                spike_ids = np.load(_cluster_spike_ids_fn)
+                # load
                 cluster_groups = pd.read_csv(_cluster_groups_fn, sep='\t')
-                units = np.unique(spike_ids)
+                try:
+                    cluster_stats = pd.read_csv(_cluster_stats_fn2, index_col=0)
+                except:
+                    cluster_stats = pd.DataFrame(columns=['cl_num'])
+                #cluster_stats = pd.DataFrame(columns=['cl_num'])
 
-                valid_units_idx = cluster_groups.group.isin(['good', 'mua'])
-                valid_units = cluster_groups.cluster_id[valid_units_idx].values
+                # get units and units already with computed stats
+                valid_units = cluster_groups.cluster_id.values
+                unit_keys_with_stats = cluster_stats.index.values
+                units_with_stats = cluster_stats.cl_num.values
+                unit_overlap = np.intersect1d(valid_units, units_with_stats)
 
-                spike_times_dict = {unit: spike_times[spike_ids == unit].flatten() for unit in valid_units}
-                #print(spike_times_dict[0])
-                hp_data = sort_funcs.load_hp_binary_data(_hp_data_fn)
+                missing_units = np.setdiff1d(valid_units, units_with_stats)
 
-                with _hp_data_info_fn.open(mode='rb') as f:
-                    hp_data_info = pickle.load(f)
+                # get stats for overlapping units
+                cluster_stats2 = cluster_stats.loc[cluster_stats.cl_num.isin(valid_units)].copy()
 
-                cluster_stats = sort_funcs.get_cluster_stats(spike_times_dict, hp_data, hp_data_info)
-                cluster_stats.to_csv(_cluster_stats_file_path)
+                if len(missing_units) > 0:
+                    spike_times = np.load(_cluster_spike_time_fn)
+                    spike_ids = np.load(_cluster_spike_ids_fn)
+                    spike_times_dict = {unit: spike_times[spike_ids == unit].flatten() for unit in missing_units}
+                    # print(spike_times_dict[0])
+                    hp_data = sort_funcs.load_hp_binary_data(_hp_data_fn)
+                    with _hp_data_info_fn.open(mode='rb') as f:
+                        hp_data_info = pickle.load(f)
+                    cluster_stats_missing = sort_funcs.get_cluster_stats(spike_times_dict, hp_data, hp_data_info)
+                    #cluster_stats2 = cluster_stats_missing
+                    cluster_stats2 = cluster_stats2.append(cluster_stats_missing)
+                    cluster_stats2 = cluster_stats2.sort_values('cl_num')
+                    cluster_stats2 = cluster_stats2.drop_duplicates()
+
+                # attached curated group labels to table
+                cluster_stats2.loc[cluster_stats2.cl_num.isin(valid_units), 'group'] \
+                    = cluster_groups.loc[cluster_groups.cluster_id.isin(valid_units), 'group'].values
+                cluster_stats2.to_csv(_cluster_stats_fn2)
+            except FileNotFoundError:
+                pass
             except:
+                print(f"Error Computing Cluster Stats for {session}")
                 pass
 
     def get_session_tt_wf(self, session, tt, cluster_ids=None, wf_lims=None, n_wf=200):
@@ -321,7 +346,7 @@ class SubjectInfo:
         if wf_lims is None:
             wf_lims = [-12, 20]
         tt_str = 'tt_' + str(tt)
-        _sort_path = Path(self.session_paths[session]['Sorted'],  tt_str, self.sorter)
+        _sort_path = Path(self.session_paths[session]['Sorted'], tt_str, self.sorter)
 
         _cluster_spike_time_fn = _sort_path / 'spike_times.npy'
         _cluster_spike_ids_fn = _sort_path / 'spike_clusters.npy'
@@ -336,7 +361,7 @@ class SubjectInfo:
             cluster_ids = np.unique(spike_ids)
 
         n_clusters = len(cluster_ids)
-        out = np.zeros( (n_clusters, n_wf, len(wf_samps)*4), dtype=np.float16)
+        out = np.zeros((n_clusters, n_wf, len(wf_samps) * 4), dtype=np.float16)
 
         for cl_idx, cluster in enumerate(cluster_ids):
             cl_spk_times = spike_times[spike_ids == cluster]
@@ -374,14 +399,30 @@ class SubjectInfo:
             if _cl_stat_file.exists():
                 table['sorted_TTs'].append(int(tt))
                 d = pd.read_csv(_cl_stat_file, index_col=0)
-                n_clusters = d.shape[0]
+                d = d.astype({'cl_num': int, 'valid': bool})
+                keys = d.index.values
+
                 for st in _cluster_stats_names:
-                    table['clusters_' + st][int(tt)] = {}
-                    for cl in range(n_clusters):
-                        if st == 'valid':
-                            table['clusters_' + st][int(tt)][cl] = int(d.iloc[cl][st])
-                        else:
-                            table['clusters_' + st][int(tt)][cl] = np.around(d.iloc[cl][st], 2)
+                    if st == 'valid':
+                        table['clusters_valid'][int(tt)] = {int(d.loc[k, 'cl_num']):
+                                                            int(d.loc[k, 'valid']) for k in keys}
+                    else:
+                        try:
+                            table['clusters_' + st][int(tt)] = {int(d.loc[k, 'cl_num']):
+                                                                np.around(d.loc[k, st], 2) for k in keys}
+                        except TypeError:
+                            print(st, keys, tt, session)
+                            sys.exit()
+
+                # for st in _cluster_stats_names:
+                #     table['clusters_' + st][int(tt)] = {}
+                #
+                #     for k in keys:
+                #         cl = d.loc[k, 'cl_num'].astype(int)
+                #         if st == 'valid':
+                #             table['clusters_' + st][int(tt)][cl] = int(d.loc[k, st])
+                #         else:
+                #             table['clusters_' + st][int(tt)][cl] = np.around(d.loc[k, st], 2)
 
             if _cluster_groups_file.exists():
                 d = pd.read_csv(_cluster_groups_file, delimiter='\t')
@@ -428,13 +469,13 @@ class SubjectInfo:
 
                     tt_cell_clusters = _clusters_info['cell_IDs']
                     for tt, clusters in tt_cell_clusters.items():
-                        n_cells[tt-1] = len(clusters)
+                        n_cells[tt - 1] = len(clusters)
 
                     tt_mua_clusters = _clusters_info['mua_IDs']
                     for tt, clusters in tt_mua_clusters.items():
                         n_mua[tt - 1] = len(clusters)
 
-                    sort_tables[tbl].loc[session] = n_cells+n_mua
+                    sort_tables[tbl].loc[session] = n_cells + n_mua
                 if tbl == 'valid':
                     _valid_cls = _clusters_info['clusters_valid']
                     for tt, cls in _valid_cls.items():
@@ -454,7 +495,7 @@ class SubjectInfo:
         params.update(kwargs)
 
         cl_dists_fn = self.results_path / f"cluster_dists.pickle"
-        if cl_dists_fn.exists() and not overwrite:
+        if not cl_dists_fn.exists() or overwrite:
             # determine sessions/tt to match based on depth
             matching_analyses = []
             for tt in np.arange(1, 17):
@@ -472,16 +513,17 @@ class SubjectInfo:
                     sessions_with_cells = np.where(n_cells_session > 0)[0]
 
                     if len(sessions_with_cells) >= 2:
+                        n_units = n_cells_session[sessions_with_cells].sum()
                         matching_analyses.append((tt, tt_d, np.array(tt_d_sessions)[sessions_with_cells].tolist(),
-                                                  n_cells_session[sessions_with_cells].tolist()))
+                                                  n_units, n_cells_session[sessions_with_cells].tolist()))
 
             n_wf = params['n_wf']
             dim_reduc_method = params['dim_reduc_method']
             n_samps = 32 * 4
-            cluster_dists = {k: {} for k in np.arange(len(matching_analyses)) }
+            cluster_dists = {k: {} for k in np.arange(len(matching_analyses))}
 
             for analysis_id, analysis in enumerate(matching_analyses):
-                tt, d, sessions, n_session_units = analysis
+                tt, d, sessions, n_clusters, n_session_units = analysis
 
                 X = np.empty((0, n_wf, n_samps), dtype=np.float16)
                 for session in sessions:
@@ -490,7 +532,6 @@ class SubjectInfo:
                     X = np.concatenate((X, session_cell_wf), axis=0)
 
                 # Obtain cluster label namess
-                n_clusters = np.array(n_session_units).sum()
                 cluster_labels = np.arange(n_clusters).repeat(n_wf)
 
                 # Obtain cluster labels & mapping between labels [this part can be improved]
@@ -498,17 +539,17 @@ class SubjectInfo:
                 for session_num, session in enumerate(sessions):
                     cluster_ids = self.session_clusters[session]['cell_IDs'][tt]
                     for cl_num, cl_id in enumerate(cluster_ids):
-                        cl_name = f"{session}-cl{cl_id}"
+                        cl_name = f"{session}-tt{tt}_d{d}_cl{cl_id}"
                         cl_names.append(cl_name)
 
                 # Reduce dims
                 X_2d = cmf.dim_reduction(X.reshape(-1, X.shape[-1]), method=dim_reduc_method)
 
                 # compute covariance and location
-                clusters_mean, clusters_cov = cmf.get_clusters_moments(data=X_2d, labels=cluster_labels)
+                clusters_loc, clusters_cov = cmf.get_clusters_moments(data=X_2d, labels=cluster_labels)
 
                 # compute distance metrics
-                dist_mats = cmf.get_clusters_all_dists(clusters_mean, clusters_cov, data=X_2d, labels=cluster_labels)
+                dist_mats = cmf.get_clusters_all_dists(clusters_loc, clusters_cov, data=X_2d, labels=cluster_labels)
 
                 # create data frames with labeled cluster names
                 dists_mats_df = {}
@@ -516,8 +557,11 @@ class SubjectInfo:
                     dists_mats_df[metric] = pd.DataFrame(dist_mat, index=cl_names, columns=cl_names)
 
                 # store
-                cluster_dists[analysis_id] = {'analysis':analysis, 'cl_names':cl_names,
-                                              'clusters_loc': clusters_mean, 'clusters_cov': clusters_cov,
+                clusters_loc = {k: v for k, v in zip(cl_names, clusters_loc)}
+                clusters_cov = {k: v for k, v in zip(cl_names, clusters_cov)}
+
+                cluster_dists[analysis_id] = {'analysis': analysis, 'cl_names': cl_names,
+                                              'clusters_loc': clusters_loc, 'clusters_cov': clusters_cov,
                                               'dists_mats': dists_mats_df}
 
             with cl_dists_fn.open(mode='wb') as f:
@@ -529,29 +573,36 @@ class SubjectInfo:
         return cluster_dists
 
     def match_clusters(self, overwrite=False, **kwargs):
-        params = {'dist_metric': 'pe', 'dist_metric_thr': 0.5}
+        params = {'dist_metric': 'pe', 'dist_metric_thr': 0.5, 'select_lower': True, 'require_subsets': True }
         params.update(kwargs)
 
-        cl_match_results_fn = self.results_path / f"cluster_matches_{params['dist_metric']}.pickle"
+        dist_metric = params['dist_metric']
+        dist_metric_thr = params['dist_metric_thr']
+        select_lower = params['select_lower']
+        require_subsets = params['require_subsets']
 
-        if cl_match_results_fn.exists() and not overwrite:
-            cluster_dists = self.get_cluster_dists(overwrite=overwrite)
+        if require_subsets:  # rs -> require subsets, conservative in grouping clusters
+            cl_match_results_fn = self.results_path / f"cluster_matches_rs_{params['dist_metric']}.pickle"
+        else:  # nrs -> doesn't require subsets, results in more sessions being grouped
+            cl_match_results_fn = self.results_path / f"cluster_matches_nrs_{params['dist_metric']}.pickle"
+
+        if not cl_match_results_fn.exists() or overwrite:
+            cluster_dists = self.get_cluster_dists()
 
             matching_analyses = [cluster_dists[k]['analysis'] for k in cluster_dists.keys()]
-
-            dist_metric = params['dist_metric']
-            dist_metric_thr = params['dist_metric_thr']
             cluster_match_results = {k: {} for k in np.arange(len(matching_analyses))}
             for analysis_id, analysis in enumerate(matching_analyses):
-
                 dist_mat = cluster_dists[analysis_id]['dists_mats'][dist_metric]
 
-                unique_matches = cmf.find_unique_session_cl_matches(dist_mat, thr=dist_metric_thr, session_cl_sep="-")
-                unique_sets = cmf.matches_dict_to_unique_sets(unique_matches)
+                matches_dict = cmf.find_session_cl_matches(dist_mat, thr=dist_metric_thr,
+                                                           session_cl_sep="-", select_lower=select_lower)
+                unique_matches_sets, unique_matches_dict = \
+                    cmf.matches_dict_to_unique_sets(matches_dict, dist_mat, select_lower=select_lower,
+                                                    require_subsets=require_subsets)
 
                 cluster_match_results[analysis_id] = {'analysis': analysis,
-                                                      'unique_matches': unique_matches,
-                                                      'unique_sets': unique_sets
+                                                      'matches_dict': unique_matches_dict,
+                                                      'matches_sets': unique_matches_sets
                                                       }
 
             with cl_match_results_fn.open(mode='wb') as f:
@@ -585,7 +636,6 @@ class SubjectSessionInfo(SubjectInfo):
 
         self.task_params = get_task_params(self)
         self.n_units = self.clusters['n_cell'] + self.clusters['n_mua']
-        #print('number of units in session {}'.format(self.clusters['n_cell'] + self.clusters['n_mua']))
         if self.paths['cluster_spikes_ids'].exists():
             with self.paths['cluster_spikes_ids'].open('r') as f:
                 self.cluster_ids = json.load(f)
@@ -639,7 +689,7 @@ class SubjectSessionInfo(SubjectInfo):
         :param bool overwrite: overwrite flag.
         :return: None
         """
-        if self.n_units>0:
+        if self.n_units > 0:
             for a, m in self._analyses.items():
                 if a == 'time':
                     continue
@@ -1025,9 +1075,9 @@ def get_task_params(session_info):
             'max_speed_thr': 80,  # max speed threshold for allowing valid movement [cm/s]
             'min_speed_thr': 2,  # min speed threshold for allowing valid movement [cm/s]
             'rad_bin': np.deg2rad(10),  # angle radians per bin [rad]
-            'occ_num_thr': 3,           # number of occupation times threshold [bins
+            'occ_num_thr': 3,  # number of occupation times threshold [bins
             'occ_time_thr': time_step * 3,  # time occupation threshold [sec]
-            'speed_bin': 2,                # speed bin size [cm/s]
+            'speed_bin': 2,  # speed bin size [cm/s]
 
             # filtering parameters
             'spatial_sigma': 2,  # spatial smoothing sigma factor [au]
@@ -1045,18 +1095,18 @@ def get_task_params(session_info):
             # these are ignoed if border_enc_model_type is linear.
             'border_enc_model_feature_params__': {'center_gaussian_spread': 0.2,  # as % of environment
                                                   'sigmoid_slope_thr': 0.15,  # value of sigmoid at border width
-                                                 },
+                                                  },
 
             'border_score_params__': {'fr_thr': 0.25,  # firing rate threshold
                                       'width_bins': 3,  # distance from border to consider it a border cell [bins]
                                       'min_field_size_bins': 10},  # minimum area for fields in # of bins
 
             'grid_score_params__': {'ac_thr': 0.1,  # autocorrelation threshold for finding fields
-                                      'radix_range': [0.5, 2.0],  # range of radii for grid score in the autocorr
-                                      'apply_sigmoid': True,  # apply sigmoid to rate maps
-                                      'sigmoid_center': 0.5,  # center for sigmoid
-                                      'sigmoid_slope': 10,   # slope for sigmoid
-                                      'find_fields': True},  # mask fields before autocorrelation
+                                    'radix_range': [0.5, 2.0],  # range of radii for grid score in the autocorr
+                                    'apply_sigmoid': True,  # apply sigmoid to rate maps
+                                    'sigmoid_center': 0.5,  # center for sigmoid
+                                    'sigmoid_slope': 10,  # slope for sigmoid
+                                    'find_fields': True},  # mask fields before autocorrelation
 
             # grid encoding model
             'grid_fit_type': 'auto_corr',  # ['auto_corr', 'moire'], how to find parameters for grid
@@ -1082,20 +1132,20 @@ def get_task_params(session_info):
         task_params['filter_coef_angle_'] /= task_params['filter_coef_angle_'].sum()
 
         # -- bins --
-        task_params['ang_bin_edges_'] = np.arange(0, 2*np.pi+task_params['rad_bin'], task_params['rad_bin'])
-        task_params['ang_bin_centers_'] = task_params['ang_bin_edges_'][:-1] + task_params['rad_bin']/2
+        task_params['ang_bin_edges_'] = np.arange(0, 2 * np.pi + task_params['rad_bin'], task_params['rad_bin'])
+        task_params['ang_bin_centers_'] = task_params['ang_bin_edges_'][:-1] + task_params['rad_bin'] / 2
         task_params['n_ang_bins'] = len(task_params['ang_bin_centers_'])
 
         task_params['sp_bin_edges_'] = np.arange(task_params['min_speed_thr'],
                                                  task_params['max_speed_thr'] + task_params['speed_bin'],
                                                  task_params['speed_bin'])
-        task_params['sp_bin_centers_'] = task_params['sp_bin_edges_'][:-1]+task_params['speed_bin']/2
+        task_params['sp_bin_centers_'] = task_params['sp_bin_edges_'][:-1] + task_params['speed_bin'] / 2
         task_params['n_sp_bins'] = len(task_params['sp_bin_centers_'])
 
         task_params['x_bin_edges_'] = np.arange(task_params['x_cm_lims'][0],
-                                                task_params['x_cm_lims'][1]+task_params['cm_bin'],
+                                                task_params['x_cm_lims'][1] + task_params['cm_bin'],
                                                 task_params['cm_bin'])
-        task_params['x_bin_centers_'] = task_params['x_bin_edges_'][:-1] + task_params['cm_bin']/2
+        task_params['x_bin_centers_'] = task_params['x_bin_edges_'][:-1] + task_params['cm_bin'] / 2
         task_params['n_x_bins'] = len(task_params['x_bin_centers_'])
         task_params['n_width_bins'] = task_params['n_x_bins']
         task_params['width'] = task_params['n_x_bins']
@@ -1103,7 +1153,7 @@ def get_task_params(session_info):
         task_params['y_bin_edges_'] = np.arange(task_params['y_cm_lims'][0],
                                                 task_params['y_cm_lims'][1] + task_params['cm_bin'],
                                                 task_params['cm_bin'])
-        task_params['y_bin_centers_'] = task_params['y_bin_edges_'][:-1] + task_params['cm_bin']/2
+        task_params['y_bin_centers_'] = task_params['y_bin_edges_'][:-1] + task_params['cm_bin'] / 2
         task_params['n_y_bins'] = len(task_params['y_bin_centers_'])
         task_params['n_height_bins'] = task_params['n_y_bins']
         task_params['height'] = task_params['n_y_bins']
@@ -1112,7 +1162,6 @@ def get_task_params(session_info):
         pass
 
     return task_params
-
 
 # def save_dict_to_hdf5(dic, filename):
 #     """

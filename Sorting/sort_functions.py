@@ -275,24 +275,24 @@ def get_cluster_stats(spike_times_dict, hp_data, data_info, sorter_id='KS2',
         if len(units) > 0:
             for unit in units:
                 key = sorter_id + '_' + str(unit)
-                cluster_stats.at[key, 'cl_num'] = int(cluster_num)
-                cluster_stats.at[key, 'sorter'] = sorter_id
+                cluster_stats.loc[key, 'cl_num'] = int(unit)
+                cluster_stats.loc[key, 'sorter'] = sorter_id
 
                 # sort_results.get_unit_spike_train(unit)
                 unit_spk_train = spike_times_dict[unit]
                 n_spikes = len(unit_spk_train)
 
-                cluster_stats.at[key, 'fr'] = n_spikes / data_info['n_samps'] * data_info['fs']
+                cluster_stats.loc[key, 'fr'] = n_spikes / data_info['n_samps'] * data_info['fs']
 
                 dur = data_info['n_samps'] / data_info['fs']
                 isi_viol_rate, n_isi_viol = isi_violations(unit_spk_train / data_info['fs'], dur, isi_thr)
 
-                cluster_stats.at[key, 'isi_viol_rate'] = isi_viol_rate
-                cluster_stats.at[key, 'n_spikes'] = n_spikes
-                cluster_stats.at[key, 'n_isi_viol'] = n_isi_viol
+                cluster_stats.loc[key, 'isi_viol_rate'] = isi_viol_rate
+                cluster_stats.loc[key, 'n_spikes'] = int(n_spikes)
+                cluster_stats.loc[key, 'n_isi_viol'] = int(n_isi_viol)
 
-                cluster_stats.at[key, 'snr'], cluster_stats.at[key, 'amp_ch'], cluster_stats.at[key, 'amp_med_ch'], \
-                cluster_stats.at[key, 'amp_mad_ch'] = \
+                cluster_stats.loc[key, 'snr'], cluster_stats.at[key, 'amp_ch'], cluster_stats.at[key, 'amp_med_ch'], \
+                cluster_stats.loc[key, 'amp_mad_ch'] = \
                     get_cluster_snr(unit_spk_train, hp_data, sig_mad=data_info['Spk']['mad'])
 
                 cluster_num += 1
