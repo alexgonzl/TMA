@@ -103,7 +103,7 @@ def mov_std(x, window):
     return y
 
 
-def robust_zscore(signal):
+def robust_zscore(x, axis=None):
     """ robust_zscore
         function that uses median and median absolute deviation to standard the
         input vector
@@ -111,13 +111,21 @@ def robust_zscore(signal):
     Parameters
     ----------
     x       : input numpy array (1D)
+    axis    : axis in which to operate
 
     Returns
     -------
     z       : standarized vector with zero median and std ~1 (without outliers)
 
     """
-    return (signal - np.nanmedian(signal)) / (mad(signal) * 1.4826)
+    m = np.nanmedian(x, axis=axis)
+
+    if axis is not None:
+        m = np.expand_dims(m, axis=axis)
+
+    mad = np.nanmedian(np.abs(x - m))
+
+    return (x - m) / (mad * 1.4826)
 
 
 def zscore(signal):
@@ -128,6 +136,17 @@ def zscore(signal):
     else:
         z = signal-mu
     return z
+
+
+def rzscore(x, axis=None):
+    m = np.nanmedian(x, axis=axis)
+
+    if axis is not None:
+        m = np.expand_dims(m, axis=axis)
+
+    mad = np.nanmedian(np.abs(x - m))
+
+    return (x - m) / (mad * 1.4826)
 
 
 def sig_stats(signal):

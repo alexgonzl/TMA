@@ -12,6 +12,7 @@ import Analyses.open_field_functions as of_funcs
 import Analyses.cluster_match_functions as cmf
 import Pre_Processing.pre_process_functions as pp_funcs
 import Sorting.sort_functions as sort_funcs
+from Utils.robust_stats import robust_zscore
 
 import scipy.signal as signal
 
@@ -32,7 +33,6 @@ subject and session.
         Otherwise the contents will be loaded from existing data, as opposed to recalculation. Exception is the get_time 
         method, as this is easily regenerated on each call.
 
-- last edit: 8.6.20 -ag
 """
 
 
@@ -123,7 +123,7 @@ class SubjectInfo:
         self.save_subject_info()
 
     def get_sessions_tt_position(self):
-        p = Path(self.results_path.parent / f"{self.subject}_tetrodes.csv")
+        p = Path(self.results_path / f"{self.subject}_tetrodes.csv")
 
         if p.exists():
             tt_pos = pd.read_csv(p)
@@ -133,13 +133,21 @@ class SubjectInfo:
 
             session_dates = {session: session.split('_')[2] for session in self.sessions}
             sessions_tt_pos = pd.DataFrame(index=self.sessions, columns=['tt_' + str(tt) for tt in self.tetrodes])
-
+            tt_pos_dates = tt_pos.index
+            prev_date = tt_pos_dates[0]
             for session in self.sessions:
                 date = session_dates[session]
                 # below if is to correct for incorrect session dates for Cl
                 if (date in ['010218', '010318', '010418']) & (self.subject == 'Cl'):
                     date = date[:5] + '9'
-                sessions_tt_pos.loc[session] = tt_pos.loc[date].values
+
+                # this part accounts for missing dates by assigning it to the previous update
+                if date in tt_pos_dates:
+                    sessions_tt_pos.loc[session] = tt_pos.loc[date].values
+                    prev_date = str(date)
+                else:
+                    sessions_tt_pos.loc[session] = tt_pos.loc[prev_date].values
+
             return sessions_tt_pos
         else:
             print(f"Tetrode depth table not found at '{str(p)}'")
@@ -209,7 +217,342 @@ class SubjectInfo:
                 sort_tables[ii].to_csv(_sort_table_files[ii])
         return sort_tables
 
+    def get_session_tt_wf(self, session, tt, cluster_ids=None, wf_lims=None, n_wf=200):
+
+        if wf_lims is None:
+            wf_lims = [-12, 20]
+        tt_str = 'tt_' + str(tt)
+        _sort_path = Path(self.session_paths[session]['Sorted'], tt_str, self.sorter)
+
+        _cluster_spike_time_fn = _sort_path / 'spike_times.npy'
+        _cluster_spike_ids_fn = _sort_path / 'spike_clusters.npy'
+        _hp_data_fn = _sort_path / 'recording.dat'
+
+        if _hp_data_fn.exists():
+            hp_data = sort_funcs.load_hp_binary_data(_hp_data_fn)
+        else:  # filter data
+            hp_data = self._spk_filter_data(session, tt)
+
+        spike_times = np.load(_cluster_spike_time_fn)
+        spike_ids = np.load(_cluster_spike_ids_fn)
+
+        wf_samps = np.arange(wf_lims[0], wf_lims[1])
+        if cluster_ids is None:
+            cluster_ids = np.unique(spike_ids)
+
+        n_clusters = len(cluster_ids)
+        out = np.zeros((n_clusters, n_wf, len(wf_samps) * 4), dtype=np.float16)
+
+        for cl_idx, cluster in enumerate(cluster_ids):
+            cl_spk_times = spike_times[spike_ids == cluster]
+            n_cl_spks = len(cl_spk_times)
+            if n_wf == 'all':
+                sampled_spikes = cl_spk_times
+            elif n_wf > n_cl_spks:
+                # Note that if number of spikes < n_wf, spikes will be repeated such that sampled_spikes has n_wf
+                sampled_spikes = cl_spk_times[np.random.randint(n_cl_spks, size=n_wf)]
+            else:  # sample from spikes
+                sampled_spikes = cl_spk_times[np.random.choice(np.arange(n_cl_spks), size=n_wf, replace=False)]
+
+            for wf_idx, samp_spk in enumerate(sampled_spikes):
+                out[cl_idx, wf_idx] = hp_data[:, wf_samps + samp_spk].flatten()
+
+        return out
+
+    def get_session_match_analysis(self):
+        # # determine sessions/tt to match based on depth
+        # matching_analyses = []
+        # for tt in np.arange(1, 17):
+        #     tt_depths = list(self.tt_depth_match[tt].keys())
+        #
+        #     for tt_d in tt_depths:
+        #         tt_d_sessions = self.tt_depth_match[tt][tt_d]
+        #         # check if there are more 2 or more sessions with units
+        #         n_cells_session = np.zeros(len(tt_d_sessions), dtype=int)
+        #
+        #         for ii, session in enumerate(tt_d_sessions):
+        #             session_cell_ids = self.session_clusters[session]['cell_IDs']
+        #             if tt in session_cell_ids.keys():
+        #                 n_cells_session[ii] = len(session_cell_ids[tt])
+        #         sessions_with_cells = np.where(n_cells_session > 0)[0]
+        #
+        #         if len(sessions_with_cells) >= 2:
+        #             n_units = n_cells_session[sessions_with_cells].sum()
+        #             matching_analyses.append((tt, tt_d, np.array(tt_d_sessions)[sessions_with_cells].tolist(),
+        #                                       n_units, n_cells_session[sessions_with_cells].tolist()))
+
+        ## version as a dict ##
+        matching_analyses = {}
+        cnt = 0
+        for tt in np.arange(1, 17):
+            tt_depths = list(self.tt_depth_match[tt].keys())
+
+            for tt_d in tt_depths:
+                tt_d_sessions = self.tt_depth_match[tt][tt_d]
+                # check if there are more 2 or more sessions with units
+                n_cells_session = np.zeros(len(tt_d_sessions), dtype=int)
+
+                for ii, session in enumerate(tt_d_sessions):
+                    session_cell_ids = self.session_clusters[session]['cell_IDs']
+                    if tt in session_cell_ids.keys():
+                        n_cells_session[ii] = len(session_cell_ids[tt])
+
+                sessions_with_cells = np.where(n_cells_session > 0)[0]
+                n_units = n_cells_session[sessions_with_cells].sum()
+                if len(sessions_with_cells) >= 1:
+                    matching_analyses[cnt] = {'tt': tt, 'd': tt_d, 'n_units': n_units,
+                                              'sessions': np.array(tt_d_sessions)[sessions_with_cells].tolist(),
+                                              'n_session_units': n_cells_session[sessions_with_cells].tolist()}
+
+                    cnt += 1
+
+        return matching_analyses
+
+    def get_cluster_dists(self, overwrite=False, **kwargs):
+        params = {'dim_reduc_method': 'umap', 'n_wf': 1000, 'zscore_wf': True}
+        params.update(kwargs)
+
+        cl_dists_fn = self.results_path / f"cluster_dists.pickle"
+        if not cl_dists_fn.exists() or overwrite:
+
+            matching_analyses = self.get_session_match_analysis()
+            n_wf = params['n_wf']
+            dim_reduc_method = params['dim_reduc_method']
+            n_samps = 32 * 4
+            cluster_dists = {k: {} for k in np.arange(len(matching_analyses))}
+
+            for analysis_id, analysis in matching_analyses.items():
+                tt, d, sessions = analysis['tt'], analysis['d'], analysis['sessions']
+                n_units, n_session_units = analysis['n_units'], analysis['n_session_units']
+
+                # Obtain cluster labels & mapping between labels [this part can be improved]
+                cl_names = []
+                for session_num, session in enumerate(sessions):
+                    cluster_ids = self.session_clusters[session]['cell_IDs'][tt]
+                    for cl_num, cl_id in enumerate(cluster_ids):
+                        cl_name = f"{session}-tt{tt}_d{d}_cl{cl_id}"
+                        cl_names.append(cl_name)
+
+                # load waveforms
+                X = np.empty((0, n_wf, n_samps), dtype=np.float16)
+                for session in sessions:
+                    cluster_ids = self.session_clusters[session]['cell_IDs'][tt]
+                    session_cell_wf = self.get_session_tt_wf(session, tt, cluster_ids=cluster_ids, n_wf=n_wf)
+                    X = np.concatenate((X, session_cell_wf), axis=0)
+
+                if params['zscore_wf']:
+                    X = robust_zscore(X, axis=2)
+                X[np.isnan(X)] = 0
+                X[np.isinf(X)] = 0
+
+                # Obtain cluster label namess
+                clusters_label_num = np.arange(n_units).repeat(n_wf)
+
+                # Reduce dims
+                X_2d = cmf.dim_reduction(X.reshape(-1, X.shape[-1]), method=dim_reduc_method)
+
+                # compute covariance and location
+                clusters_loc, clusters_cov = cmf.get_clusters_moments(data=X_2d, labels=clusters_label_num)
+
+                # compute distance metrics
+                dist_mats = cmf.get_clusters_all_dists(clusters_loc, clusters_cov, data=X_2d, labels=clusters_label_num)
+
+                # create data frames with labeled cluster names
+                dists_mats_df = {}
+                for metric, dist_mat in dist_mats.items():
+                    dists_mats_df[metric] = pd.DataFrame(dist_mat, index=cl_names, columns=cl_names)
+
+                # store
+                clusters_loc = {k: v for k, v in zip(cl_names, clusters_loc)}
+                clusters_cov = {k: v for k, v in zip(cl_names, clusters_cov)}
+
+                cluster_dists[analysis_id] = {'analysis': analysis, 'cl_names': cl_names,
+                                              'clusters_loc': clusters_loc, 'clusters_cov': clusters_cov,
+                                              'dists_mats': dists_mats_df}
+
+                print(".", end="")
+
+            with cl_dists_fn.open(mode='wb') as f:
+                pickle.dump(cluster_dists, f, protocol=pickle.HIGHEST_PROTOCOL)
+        else:
+            with cl_dists_fn.open(mode='rb') as f:
+                cluster_dists = pickle.load(f)
+
+        return cluster_dists
+
+    def match_clusters(self, overwrite=False, require_subsets=True,  **kwargs):
+        params = {'dist_metric': 'pe', 'dist_metric_thr': 0.5, 'select_lower': True}
+        params.update(kwargs)
+
+        dist_metric = params['dist_metric']
+        dist_metric_thr = params['dist_metric_thr']
+        select_lower = params['select_lower']
+
+        if require_subsets:  # rs -> require subsets, conservative in grouping clusters
+            cl_match_results_fn = self.results_path / f"cluster_matches_rs_{params['dist_metric']}.pickle"
+        else:  # nrs -> doesn't require subsets, results in more sessions being grouped
+            cl_match_results_fn = self.results_path / f"cluster_matches_nrs_{params['dist_metric']}.pickle"
+
+        if not cl_match_results_fn.exists() or overwrite:
+            cluster_dists = self.get_cluster_dists()
+
+            matching_analyses = self.get_session_match_analysis()
+            #[cluster_dists[k]['analysis'] for k in cluster_dists.keys()]
+            cluster_match_results = {k: {} for k in np.arange(len(matching_analyses))}
+            for analysis_id, analysis in matching_analyses.items():
+                dist_mat = cluster_dists[analysis_id]['dists_mats'][dist_metric]
+
+                matches_dict = cmf.find_session_cl_matches(dist_mat, thr=dist_metric_thr,
+                                                           session_cl_sep="-", select_lower=select_lower)
+                unique_matches_sets, unique_matches_dict = \
+                    cmf.matches_dict_to_unique_sets(matches_dict, dist_mat, select_lower=select_lower,
+                                                    require_subsets=require_subsets)
+
+                cluster_match_results[analysis_id] = {'analysis': analysis,
+                                                      'matches_dict': unique_matches_dict,
+                                                      'matches_sets': unique_matches_sets
+                                                      }
+
+            with cl_match_results_fn.open(mode='wb') as f:
+                pickle.dump(cluster_match_results, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        else:
+
+            with cl_match_results_fn.open(mode='rb') as f:
+                cluster_match_results = pickle.load(f)
+
+        return cluster_match_results
+
+    def get_units_table(self, overwrite=False):
+
+        units_table_fn = self.results_path / f"units_table.csv"
+        if not units_table_fn.exists() or overwrite:
+
+            n_total_units = 0
+            for session in self.sessions:
+                n_total_units += self.session_clusters[session]['n_cell']
+                n_total_units += self.session_clusters[session]['n_mua']
+
+            subject_units_table = pd.DataFrame(index=np.arange(n_total_units),
+                                               columns=["subject_cl_id", "subject", "session", "task", "date",
+                                                        "subsession", "tt", "depth", "unique_cl_name",
+                                                        "session_cl_id", "unit_type", "n_matches_con",
+                                                        "subject_cl_match_con_id", "n_matches_lib",
+                                                        "subject_cl_match_lib_id",
+                                                        "snr", "fr", "isi_viol_rate"])
+
+            subject_units_table["subject"] = self.subject
+            subject_cl_matches_con = self.match_clusters()
+
+            matches_con_sets = {}
+            matches_con_set_num = {}
+            matches_con_dict = {}
+            cnt = 0
+            for k, cma in subject_cl_matches_con.items():
+                matches_con_sets.update({cnt + ii: clx_set for ii, clx_set in enumerate(cma['matches_sets'])})
+                cnt = len(matches_con_sets)
+                matches_con_dict.update(cma['matches_dict'])
+
+            # creates a dict indexing each session to a set number
+            for set_num, clm_set in matches_con_sets.items():
+                for cl in clm_set:
+                    matches_con_set_num[cl] = set_num
+
+            subject_cl_matches_lib = self.match_clusters(require_subsets=False)
+            matches_lib_sets = {}
+            matches_lib_set_num = {}
+            matches_lib_dict = {}
+            cnt = 0
+            for k, cma in subject_cl_matches_lib.items():
+                matches_lib_sets.update({cnt + ii: clx_set for ii, clx_set in enumerate(cma['matches_sets'])})
+                cnt = len(matches_lib_sets)
+                matches_lib_dict.update(cma['matches_dict'])
+
+            for set_num, clm_set in matches_lib_sets.items():
+                for cl in clm_set:
+                    matches_lib_set_num[cl] = set_num
+
+            try:
+                unit_cnt = 0
+                for session in self.sessions:
+                    session_details = session.split("_")
+
+                    if len(session_details) > 3:
+                        subsession = session_details[3]
+                    else:
+                        subsession = "0000"
+
+                    session_clusters = self.session_clusters[session]
+
+                    n_session_cells = session_clusters['n_cell']
+                    n_session_mua = session_clusters['n_mua']
+                    n_session_units = n_session_cells + n_session_mua
+
+                    session_unit_idx = np.arange(n_session_units) + unit_cnt
+
+                    subject_units_table.loc[session_unit_idx, "subject_cl_id"] = session_unit_idx
+                    subject_units_table.loc[session_unit_idx, "session"] = session
+                    subject_units_table.loc[session_unit_idx, "task"] = session_details[1]
+                    subject_units_table.loc[session_unit_idx, "date"] = session_details[2]
+                    subject_units_table.loc[session_unit_idx, "subsession"] = subsession
+
+                    for unit_type in ['cell', 'mua']:
+                        for tt, tt_clusters in session_clusters[f'{unit_type}_IDs'].items():
+                            if len(tt_clusters) > 0:
+                                depth = self.sessions_tt_positions.loc[session, f"tt_{tt}"]
+                                for cl in tt_clusters:
+                                    cl_name = f"{session}-tt{tt}_d{depth}_cl{cl}"
+                                    subject_units_table.loc[unit_cnt, "subject_cl_id"] = unit_cnt
+                                    subject_units_table.loc[unit_cnt, "unique_cl_name"] = cl_name
+                                    subject_units_table.loc[unit_cnt, "tt"] = tt
+                                    subject_units_table.loc[unit_cnt, "depth"] = depth
+                                    subject_units_table.loc[unit_cnt, "unit_type"] = unit_type
+                                    subject_units_table.loc[unit_cnt, "session_cl_id"] = cl
+
+                                    subject_units_table.loc[unit_cnt, "snr"] = session_clusters["clusters_snr"][tt][cl]
+                                    subject_units_table.loc[unit_cnt, "fr"] = session_clusters["clusters_fr"][tt][cl]
+                                    subject_units_table.loc[unit_cnt, "isi_viol_rate"] =\
+                                        session_clusters["clusters_isi_viol_rate"][tt][cl]
+
+                                    if unit_type == 'cell':
+
+                                        # add fields of conservative cluster matching (requires subset)
+                                        if cl_name in matches_con_dict.keys():
+                                            cl_matches = matches_con_dict[cl_name][0]
+                                            subject_units_table.loc[unit_cnt, "n_matches_con"] = len(cl_matches)
+                                            subject_units_table.loc[unit_cnt, "subject_cl_match_con_id"] =\
+                                                matches_con_set_num[cl_name]
+
+                                        # add fields of liberal cluster matching ( does not require subset matching)
+                                        if cl_name in matches_lib_dict.keys():
+                                            cl_matches = matches_lib_dict[cl_name][0]
+                                            subject_units_table.loc[unit_cnt, "n_matches_lib"] = len(cl_matches)
+                                            subject_units_table.loc[unit_cnt, "subject_cl_match_lib_id"] =\
+                                                matches_lib_set_num[cl_name]
+
+                                    unit_cnt += 1
+            except:
+                print(session, tt, cl)
+                traceback.print_exc(file=sys.stdout)
+
+            subject_units_table.to_csv(units_table_fn)
+        else:
+            subject_units_table = pd.read_csv(units_table_fn, index_col=0)
+
+        return subject_units_table
+
     # private methods
+    def _spk_filter_data(self, session, tt):
+        tt_str = 'tt_' + str(tt)
+        sos, _ = pp_funcs.get_sos_filter_bank(['Sp'], fs=self.params['samp_rate'])
+        sig = np.load(self.session_paths[session]['PreProcessed'] / (tt_str + '.npy'))
+
+        hp_data = np.zeros_like(sig)
+        for ch in range(4):
+            hp_data[ch] = signal.sosfiltfilt(sos, sig[ch])
+
+        return hp_data
+
     def _session_paths(self, session):
         time_step = self.params['time_step']
         samp_rate = self.params['samp_rate']
@@ -322,9 +665,15 @@ class SubjectInfo:
                     spike_ids = np.load(_cluster_spike_ids_fn)
                     spike_times_dict = {unit: spike_times[spike_ids == unit].flatten() for unit in missing_units}
                     # print(spike_times_dict[0])
-                    hp_data = sort_funcs.load_hp_binary_data(_hp_data_fn)
+
+                    if _hp_data_fn.exists():
+                        hp_data = sort_funcs.load_hp_binary_data(_hp_data_fn)
+                    else:  # filter data
+                        hp_data = self._spk_filter_data(session, tt)
+
                     with _hp_data_info_fn.open(mode='rb') as f:
                         hp_data_info = pickle.load(f)
+
                     cluster_stats_missing = sort_funcs.get_cluster_stats(spike_times_dict, hp_data, hp_data_info)
                     #cluster_stats2 = cluster_stats_missing
                     cluster_stats2 = cluster_stats2.append(cluster_stats_missing)
@@ -340,44 +689,6 @@ class SubjectInfo:
             except:
                 print(f"Error Computing Cluster Stats for {session}")
                 pass
-
-    def get_session_tt_wf(self, session, tt, cluster_ids=None, wf_lims=None, n_wf=200):
-
-        if wf_lims is None:
-            wf_lims = [-12, 20]
-        tt_str = 'tt_' + str(tt)
-        _sort_path = Path(self.session_paths[session]['Sorted'], tt_str, self.sorter)
-
-        _cluster_spike_time_fn = _sort_path / 'spike_times.npy'
-        _cluster_spike_ids_fn = _sort_path / 'spike_clusters.npy'
-        _hp_data_fn = _sort_path / 'recording.dat'
-
-        spike_times = np.load(_cluster_spike_time_fn)
-        spike_ids = np.load(_cluster_spike_ids_fn)
-        hp_data = sort_funcs.load_hp_binary_data(_hp_data_fn)
-
-        wf_samps = np.arange(wf_lims[0], wf_lims[1])
-        if cluster_ids is None:
-            cluster_ids = np.unique(spike_ids)
-
-        n_clusters = len(cluster_ids)
-        out = np.zeros((n_clusters, n_wf, len(wf_samps) * 4), dtype=np.float16)
-
-        for cl_idx, cluster in enumerate(cluster_ids):
-            cl_spk_times = spike_times[spike_ids == cluster]
-            n_cl_spks = len(cl_spk_times)
-            if n_wf == 'all':
-                sampled_spikes = cl_spk_times
-            elif n_wf > n_cl_spks:
-                # Note that if number of spikes < n_wf, spikes will be repeated such that sampled_spikes has n_wf
-                sampled_spikes = cl_spk_times[np.random.randint(n_cl_spks, size=n_wf)]
-            else:  # sample from spikes
-                sampled_spikes = cl_spk_times[np.random.choice(np.arange(n_cl_spks), size=n_wf, replace=False)]
-
-            for wf_idx, samp_spk in enumerate(sampled_spikes):
-                out[cl_idx, wf_idx] = hp_data[:, wf_samps + samp_spk].flatten()
-
-        return out
 
     def _session_clusters(self, session):
         table = {'session': session, 'path': str(self.session_paths[session]['Sorted']),
@@ -489,131 +800,6 @@ class SubjectInfo:
                 sort_tables['summary'].at[session, 'n_' + ut] = _clusters_info['n_' + ut]
 
         return sort_tables
-
-    def get_cluster_dists(self, overwrite=False, **kwargs):
-        params = {'dim_reduc_method': 'umap', 'n_wf': 1000}
-        params.update(kwargs)
-
-        cl_dists_fn = self.results_path / f"cluster_dists.pickle"
-        if not cl_dists_fn.exists() or overwrite:
-            # determine sessions/tt to match based on depth
-            matching_analyses = []
-            for tt in np.arange(1, 17):
-                tt_depths = list(self.tt_depth_match[tt].keys())
-
-                for tt_d in tt_depths:
-                    tt_d_sessions = self.tt_depth_match[tt][tt_d]
-                    # check if there are more 2 or more sessions with units
-                    n_cells_session = np.zeros(len(tt_d_sessions), dtype=int)
-
-                    for ii, session in enumerate(tt_d_sessions):
-                        session_cell_ids = self.session_clusters[session]['cell_IDs']
-                        if tt in session_cell_ids.keys():
-                            n_cells_session[ii] = len(session_cell_ids[tt])
-                    sessions_with_cells = np.where(n_cells_session > 0)[0]
-
-                    if len(sessions_with_cells) >= 2:
-                        n_units = n_cells_session[sessions_with_cells].sum()
-                        matching_analyses.append((tt, tt_d, np.array(tt_d_sessions)[sessions_with_cells].tolist(),
-                                                  n_units, n_cells_session[sessions_with_cells].tolist()))
-
-            n_wf = params['n_wf']
-            dim_reduc_method = params['dim_reduc_method']
-            n_samps = 32 * 4
-            cluster_dists = {k: {} for k in np.arange(len(matching_analyses))}
-
-            for analysis_id, analysis in enumerate(matching_analyses):
-                tt, d, sessions, n_clusters, n_session_units = analysis
-
-                X = np.empty((0, n_wf, n_samps), dtype=np.float16)
-                for session in sessions:
-                    cluster_ids = self.session_clusters[session]['cell_IDs'][tt]
-                    session_cell_wf = self.get_session_tt_wf(session, tt, cluster_ids=cluster_ids, n_wf=n_wf)
-                    X = np.concatenate((X, session_cell_wf), axis=0)
-
-                # Obtain cluster label namess
-                cluster_labels = np.arange(n_clusters).repeat(n_wf)
-
-                # Obtain cluster labels & mapping between labels [this part can be improved]
-                cl_names = []
-                for session_num, session in enumerate(sessions):
-                    cluster_ids = self.session_clusters[session]['cell_IDs'][tt]
-                    for cl_num, cl_id in enumerate(cluster_ids):
-                        cl_name = f"{session}-tt{tt}_d{d}_cl{cl_id}"
-                        cl_names.append(cl_name)
-
-                # Reduce dims
-                X_2d = cmf.dim_reduction(X.reshape(-1, X.shape[-1]), method=dim_reduc_method)
-
-                # compute covariance and location
-                clusters_loc, clusters_cov = cmf.get_clusters_moments(data=X_2d, labels=cluster_labels)
-
-                # compute distance metrics
-                dist_mats = cmf.get_clusters_all_dists(clusters_loc, clusters_cov, data=X_2d, labels=cluster_labels)
-
-                # create data frames with labeled cluster names
-                dists_mats_df = {}
-                for metric, dist_mat in dist_mats.items():
-                    dists_mats_df[metric] = pd.DataFrame(dist_mat, index=cl_names, columns=cl_names)
-
-                # store
-                clusters_loc = {k: v for k, v in zip(cl_names, clusters_loc)}
-                clusters_cov = {k: v for k, v in zip(cl_names, clusters_cov)}
-
-                cluster_dists[analysis_id] = {'analysis': analysis, 'cl_names': cl_names,
-                                              'clusters_loc': clusters_loc, 'clusters_cov': clusters_cov,
-                                              'dists_mats': dists_mats_df}
-
-            with cl_dists_fn.open(mode='wb') as f:
-                pickle.dump(cluster_dists, f, protocol=pickle.HIGHEST_PROTOCOL)
-        else:
-            with cl_dists_fn.open(mode='rb') as f:
-                cluster_dists = pickle.load(f)
-
-        return cluster_dists
-
-    def match_clusters(self, overwrite=False, **kwargs):
-        params = {'dist_metric': 'pe', 'dist_metric_thr': 0.5, 'select_lower': True, 'require_subsets': True }
-        params.update(kwargs)
-
-        dist_metric = params['dist_metric']
-        dist_metric_thr = params['dist_metric_thr']
-        select_lower = params['select_lower']
-        require_subsets = params['require_subsets']
-
-        if require_subsets:  # rs -> require subsets, conservative in grouping clusters
-            cl_match_results_fn = self.results_path / f"cluster_matches_rs_{params['dist_metric']}.pickle"
-        else:  # nrs -> doesn't require subsets, results in more sessions being grouped
-            cl_match_results_fn = self.results_path / f"cluster_matches_nrs_{params['dist_metric']}.pickle"
-
-        if not cl_match_results_fn.exists() or overwrite:
-            cluster_dists = self.get_cluster_dists()
-
-            matching_analyses = [cluster_dists[k]['analysis'] for k in cluster_dists.keys()]
-            cluster_match_results = {k: {} for k in np.arange(len(matching_analyses))}
-            for analysis_id, analysis in enumerate(matching_analyses):
-                dist_mat = cluster_dists[analysis_id]['dists_mats'][dist_metric]
-
-                matches_dict = cmf.find_session_cl_matches(dist_mat, thr=dist_metric_thr,
-                                                           session_cl_sep="-", select_lower=select_lower)
-                unique_matches_sets, unique_matches_dict = \
-                    cmf.matches_dict_to_unique_sets(matches_dict, dist_mat, select_lower=select_lower,
-                                                    require_subsets=require_subsets)
-
-                cluster_match_results[analysis_id] = {'analysis': analysis,
-                                                      'matches_dict': unique_matches_dict,
-                                                      'matches_sets': unique_matches_sets
-                                                      }
-
-            with cl_match_results_fn.open(mode='wb') as f:
-                pickle.dump(cluster_match_results, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-        else:
-
-            with cl_match_results_fn.open(mode='rb') as f:
-                cluster_match_results = pickle.load(f)
-
-        return cluster_match_results
 
 
 class SubjectSessionInfo(SubjectInfo):
@@ -982,6 +1168,17 @@ class SubjectSessionInfo(SubjectInfo):
             raise NotImplementedError
 
         return scores
+
+    def get_encoding_model(self, model):
+        """
+        :param model: one or more of ['speed', 'hd', 'ha', 'border', 'position', 'grid']
+        :return:dictionary containing model coefficients, training and test performance
+        """
+
+        if isinstance(model, str):
+            model = [model]
+
+        return of_funcs.get_session_encoding_model(self, model)
 
     def get_encoding_models(self, overwrite=False):
         """

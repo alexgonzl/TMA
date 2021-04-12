@@ -442,8 +442,14 @@ def plot_2d_cluster_ellipsoids(clusters_loc, clusters_cov, data=None, std_levels
     n_levels = len(std_levels)
     if isinstance(clusters_loc, list):
         n_clusters = len(clusters_loc)
-    else:  # not supper robust here
-        n_clusters = cl
+    elif isinstance(clusters_loc, np.ndarray):  # not supper robust here
+        n_clusters = clusters_loc.shape[0]
+    elif isinstance(clusters_loc, dict):
+        n_clusters = len(clusters_loc)
+    else:
+        print("Invalid input")
+        return
+
     cluster_ellipsoids = np.zeros((n_clusters, n_levels), dtype=object)
 
     for cl in range(n_clusters):
@@ -453,6 +459,9 @@ def plot_2d_cluster_ellipsoids(clusters_loc, clusters_cov, data=None, std_levels
 
     if cl_colors is None:
         cl_colors = colors
+    elif isinstance(cl_colors, str):
+        cl_colors = [cl_colors]
+
     n_colors = len(cl_colors)
 
     if ax is None:

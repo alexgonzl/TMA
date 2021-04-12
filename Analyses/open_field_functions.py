@@ -272,6 +272,27 @@ def get_session_encoding_models(session_info):
     return sem.all_models
 
 
+def get_session_encoding_model(session_info, models):
+    # get data
+    fr = session_info.get_fr()
+    spikes = session_info.get_binned_spikes()
+    of_dat = SimpleNamespace(**session_info.get_track_data())
+    task_params = session_info.task_params
+
+    sem = spatial_funcs.SpatialEncodingModels(x=of_dat.x, y=of_dat.y, speed=of_dat.sp, ha=of_dat.ha,
+                                              hd=of_dat.hd, fr=fr, spikes=spikes, n_jobs=10, **task_params)
+
+    out = {}
+    for model in models:
+        model_method = f"get_{model}_model"
+        if hasattr(sem, model_method):
+            out[model] = getattr(sem, model_method)()
+        else:
+            print(f"Encoding model for {model} does not exists.")
+
+    return out
+
+
 def get_session_scores(session_info):
     """
     Loops and computes traditional scores open-field scores for each unit, these include:
