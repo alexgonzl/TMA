@@ -242,16 +242,18 @@ def get_poisson_deviance(y, y_hat):
         y_hat = y_hat.reshape(1, -1)
 
     if np.all(y >= 0):
+        try:
+            # the implementation below is for numerical stability.
+            with np.errstate(divide='ignore'):
+                dev_per_samp = np.log(y**y) - np.log(y_hat**y) - y + y_hat
 
-        # the implementation below is for numerical stability.
-        with np.errstate(divide='ignore'):
-            dev_per_samp = np.log(y**y) - np.log(y_hat**y) - y + y_hat
+            # for invalid samples [y_hat<=0], make deviance equal to y
+            invalid_samps = y_hat <= 0
+            dev_per_samp[invalid_samps] = y[invalid_samps]
 
-        # for invalid samples [y_hat<=0], make deviance equal to y
-        invalid_samps = y_hat <= 0
-        dev_per_samp[invalid_samps] = y[invalid_samps]
-
-        return 2*np.nanmean(dev_per_samp, axis=1)
+            return 2*np.nanmean(dev_per_samp, axis=1)
+        except:
+            return np.nan
     else:
         return np.nan
 
@@ -268,7 +270,9 @@ def get_poisson_d2(y, y_hat):
         y = y.reshape(1, -1)
         y_hat = y_hat.reshape(1, -1)
 
-    y_bar = y.mean(axis=1)
+    n_samps = y.shape[1]
+    y = y.astype(int)  # y should be integers, otherwise will run into numerical errors
+    y_bar = np.tile(y.mean(axis=1), (n_samps, 1)).T
     d = get_poisson_deviance(y, y_hat)
     d_null = get_poisson_deviance(y, y_bar)
     d2 = 1 - d / d_null

@@ -831,6 +831,8 @@ class SubjectSessionInfo(SubjectInfo):
 
         self._analyses = self._check_analyses()
 
+        self.enc_models = None
+
     def __str__(self):
         print()
         print(f'Session Information for subject {self.subject}, session {self.session}')
@@ -1175,12 +1177,38 @@ class SubjectSessionInfo(SubjectInfo):
         :return:dictionary containing model coefficients, training and test performance
         """
 
-        if isinstance(model, str):
-            model = [model]
-
-        return of_funcs.get_session_encoding_model(self, model)
+        if self.enc_models is None:
+            return of_funcs.get_session_encoding_models(self, models=model)
+        else:
+            if isinstance(model, str):
+                model_method = f"{model}_model"
+                if hasattr(self.enc_models, model_method):
+                    return getattr(self.enc_models, model_method)
+                else:
+                    print(f"{model} model")
+            else:
+                print()
 
     def get_encoding_models(self, overwrite=False):
+        """
+        obtains a object with all the models
+        :returns: enc_models object
+        """
+        if (self.enc_models is None) or overwrite:
+            if self.n_units == 0:
+                print('No units.')
+                return None
+
+            if self.task == 'OF':
+                print("Getting Encoding Models")
+                self.enc_models = of_funcs.get_session_encoding_models(self)
+            else:
+                print('Method not develop for other tasks.')
+                raise NotImplementedError
+
+        return self.enc_models
+
+    def get_encoding_models_scores(self, overwrite=False):
         """
         obtains a series of pandas data frames quantifying the extent of coding to environmental variables
         :param overwrite:
@@ -1192,15 +1220,11 @@ class SubjectSessionInfo(SubjectInfo):
 
         if self.task == 'OF':
             if not self.paths['cluster_OF_encoding_models'].exists() or overwrite:
-                print('Encoding Models do not exist or overwrite=True, creating them.')
-                scores = of_funcs.get_session_encoding_models(self)
+                models = self.get_encoding_models()
+                scores = models.scores
                 scores.to_csv(self.paths['cluster_OF_encoding_models'])
-                # with self.paths['cluster_OF_metrics'].open(mode='wb') as f:
-                #     pickle.dump(scores, f, protocol=pickle.HIGHEST_PROTOCOL)
             else:
                 scores = pd.read_csv(self.paths['cluster_OF_encoding_models'], index_col=0)
-                # with self.paths['cluster_OF_metrics'].open(mode='rb') as f:
-                #     scores = pickle.load(f)
         else:
             print('Method not develop for other tasks.')
             raise NotImplementedError
@@ -1298,7 +1322,7 @@ def get_task_params(session_info):
                                       'width_bins': 3,  # distance from border to consider it a border cell [bins]
                                       'min_field_size_bins': 10},  # minimum area for fields in # of bins
 
-            'grid_score_params__': {'ac_thr': 0.1,  # autocorrelation threshold for finding fields
+            'grid_score_params__': {'ac_thr': 0.01,  # autocorrelation threshold for finding fields
                                     'radix_range': [0.5, 2.0],  # range of radii for grid score in the autocorr
                                     'apply_sigmoid': True,  # apply sigmoid to rate maps
                                     'sigmoid_center': 0.5,  # center for sigmoid

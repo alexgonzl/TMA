@@ -23,6 +23,7 @@ var/
 wheels/
 pip-wheel-metadata/
 share/python-wheels/
+
 *.egg-info/
 .installed.cfg
 *.egg
@@ -33,6 +34,13 @@ MANIFEST
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+
+# Data
+*.pickle
+*.npy
+*.csv
+*.png
+.idea/
 
 # Installer logs
 pip-log.txt

@@ -247,7 +247,7 @@ def get_session_fr_maps_cont(session_info):
     return fr_maps
 
 
-def get_session_encoding_models(session_info):
+def get_session_encoding_models(session_info, models=None):
     """
     Loops and computes traditional scores open-field scores for each unit, these include:
         -> speed score: correlation between firing rate and speed
@@ -265,32 +265,22 @@ def get_session_encoding_models(session_info):
     of_dat = SimpleNamespace(**session_info.get_track_data())
     task_params = session_info.task_params
 
-    sem = spatial_funcs.SpatialEncodingModels(x=of_dat.x, y=of_dat.y, speed=of_dat.sp, ha=of_dat.ha,
-                                              hd=of_dat.hd, fr=fr, spikes=spikes, n_jobs=10, **task_params)
-    sem.get_all_models()
+    sem = spatial_funcs.AllSpatialEncodingModels(x=of_dat.x, y=of_dat.y, speed=of_dat.sp, ha=of_dat.ha,
+                                                 hd=of_dat.hd, neural_data=fr, n_jobs=10, **task_params)
+    if models is None:
+        sem.get_all_models()
+    else:
+        if isinstance(models, str):
+            models = [models]
 
-    return sem.all_models
+        for model in models:
+            model_method = f"get_{model}_model"
+            if hasattr(sem, model_method):
+                getattr(sem, model_method)()
+            else:
+                print(f"Encoding model for {model} does not exists.")
 
-
-def get_session_encoding_model(session_info, models):
-    # get data
-    fr = session_info.get_fr()
-    spikes = session_info.get_binned_spikes()
-    of_dat = SimpleNamespace(**session_info.get_track_data())
-    task_params = session_info.task_params
-
-    sem = spatial_funcs.SpatialEncodingModels(x=of_dat.x, y=of_dat.y, speed=of_dat.sp, ha=of_dat.ha,
-                                              hd=of_dat.hd, fr=fr, spikes=spikes, n_jobs=10, **task_params)
-
-    out = {}
-    for model in models:
-        model_method = f"get_{model}_model"
-        if hasattr(sem, model_method):
-            out[model] = getattr(sem, model_method)()
-        else:
-            print(f"Encoding model for {model} does not exists.")
-
-    return out
+    return sem
 
 
 def get_session_scores(session_info):

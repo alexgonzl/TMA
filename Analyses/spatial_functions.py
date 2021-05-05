@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 from scipy import ndimage, stats, signal
+from scipy.ndimage.filters import maximum_filter
+from scipy.ndimage.morphology import generate_binary_structure, binary_erosion
 from sklearn import linear_model as lm
 from sklearn.decomposition import PCA, NMF
 
@@ -12,6 +14,7 @@ import time
 from pathlib import Path
 import pickle
 import warnings
+import copy
 
 
 # TODO: make global constant params
@@ -189,23 +192,724 @@ class SpatialMetrics:
         return scores
 
 
-class SpatialEncodingModels:
+class SpatialEncodingModelCrossVal:
+    """
+    Class: Encoding model class with generalized train/test/predict methods for spatial
+    """
 
-    def __init__(self, x, y, speed, ha, hd, fr, spikes, data_type='fr', bias_term=True, n_xval=5, n_jobs=-1,
-                 **params):
+    def __init__(self, features, response, x_pos, y_pos, n_xval,
+                 response_type='fr', reg_type='linear', norm_resp=None,
+                 features_by_fold=False, features_by_fold_unit=False, crossval_samp_ids=None, samps_per_split=1000,
+                 model_function=None, spatial_map_function=None, random_seed=42, **spatial_map_params):
+
+        np.random.seed(random_seed)
+
+        self.features = features
+        self.response = response
+        self.x_pos = x_pos
+        self.y_pos = y_pos
+        self.n_units = response.shape[0]
+        self.n_xval = n_xval
+        self.reg_type = reg_type
+        self.features_by_fold = features_by_fold
+        self.features_by_fold_unit = features_by_fold_unit
+
+        self.norm_resp = None
+        if norm_resp is not None:
+            if norm_resp in ['zscore', 'max']:
+                self.norm_resp = norm_resp
+
+        # response info
+        self.max_response = np.zeros((n_xval, self.n_units))*np.nan
+        self.mean_response = np.zeros((n_xval, self.n_units))*np.nan
+        self.std_response = np.zeros((n_xval, self.n_units))*np.nan
+
+        if crossval_samp_ids is not None:
+            self.crossval_samp_ids = crossval_samp_ids
+        else:
+            n_samps = len(x_pos)
+            self.crossval_samp_ids = rs.split_timeseries(n_samps=n_samps,
+                                                         samps_per_split=samps_per_split,
+                                                         n_data_splits=n_xval)
+
+        if features_by_fold:
+            self.n_features = features[0, 0].shape[1]
+        else:
+            self.n_features = features.shape[1]
+
+        if model_function is None:
+            if reg_type == 'poisson':
+                self.model_function = lm.PoissonRegressor(alpha=0, fit_intercept=False)
+            else:
+                self.model_function = lm.LinearRegression(fit_intercept=False)
+        else:
+            self.model_function = model_function
+
+        if spatial_map_function is None:
+            map_params_names = ['x_bin_edges', 'y_bin_edges', 'spatial_window_size', 'spatial_sigma']
+            default_map_params = default_OF_params()
+            for p in map_params_names:
+                if p not in spatial_map_params.keys():
+                    spatial_map_params[p] = default_map_params[p]
+            self.spatial_map_function = get_spatial_map_function(response_type, **spatial_map_params)
+        else:
+            self.spatial_map_function = spatial_map_function
+
+        self.models = np.empty((n_xval, self.n_units), dtype=object)
+
+        self.model_metrics = ['r2', 'ar2', 'err', 'n_err', 'map_r']
+        n_idx = self.n_xval * self.n_units * len(self.model_metrics) * 2  # 2-> train/test split
+        self.scores = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
+
+    def get_features_fold(self, fold, unit=None):
+        if self.features_by_fold:
+            train_features = self.features[fold, 0]  # 0 -> train set
+            test_features = self.features[fold, 1]  # 1 -> test set
+        elif self.features_by_fold_unit:
+            train_features = self.features[fold, unit, 0]  # 0 -> train set
+            test_features = self.features[fold, unit, 1]  # 1 -> test set
+        else:
+            train_features = self.features[self.crossval_samp_ids != fold, :]
+            test_features = self.features[self.crossval_samp_ids == fold, :]
+        return train_features, test_features
+
+    def get_response_fold(self, fold):
+        train_response = self.response[:, self.crossval_samp_ids != fold]
+        test_response = self.response[:, self.crossval_samp_ids == fold]
+
+        if self.norm_resp == 'zscore':
+
+            self.mean_response[fold, :] = np.nanmean(train_response, axis=1)
+            self.std_response[fold, :] = np.nanstd(train_response, axis=1)
+
+            mr = self.mean_response[fold, :][:, np.newaxis]
+            sr = self.std_response[fold, :][:, np.newaxis]
+
+            train_response = (train_response-mr)/sr
+            test_response = (test_response-mr)/sr
+
+        elif self.norm_resp == 'max':
+
+            self.max_response[fold, :] = np.nanmax(train_response, axis=1)
+
+            mr = self.max_response[fold, :][:, np.newaxis]
+            train_response = train_response/mr
+            test_response = test_response/mr
+
+        return train_response, test_response
+
+    def train_model_fold(self, fold):
+        if self.features_by_fold_unit:
+            pass
+        else:
+            train_features, _ = self.get_features_fold(fold)
+        train_response, _ = self.get_response_fold(fold)
+
+        model_units = np.empty(self.n_units, dtype=object)
+        for unit in range(self.n_units):
+            model_function = copy.deepcopy(self.model_function)
+            if self.features_by_fold_unit:
+                train_features, _ = self.get_features_fold(fold, unit)
+            if train_features is not None:
+                model_units[unit] = model_function.fit(train_features, train_response[unit])
+        return model_units
+
+    def predict_model_fold(self, fold):
+        if self.features_by_fold_unit:
+            pass
+        else:
+            train_features, test_features = self.get_features_fold(fold)
+
+        train_response, test_response = self.get_response_fold(fold)
+        train_response_hat = np.empty_like(train_response)
+        test_response_hat = np.empty_like(test_response)
+        for unit in range(self.n_units):
+            if self.features_by_fold_unit:
+                train_features, test_features = self.get_features_fold(fold, unit)
+
+            if train_features is not None:
+                train_response_hat[unit] = self.models[fold, unit].predict(train_features)
+                test_response_hat[unit] = self.models[fold, unit].predict(test_features)
+            else:
+                train_response_hat[unit] = np.nan
+                test_response_hat[unit] = np.nan
+
+        return train_response_hat, test_response_hat
+
+    def get_spatial_map_fold(self, fold):
+        # get spatial positions for this fold and by train/test sets
+        test_idx = self.crossval_samp_ids == fold
+        x_test = self.x_pos[test_idx]
+        y_test = self.y_pos[test_idx]
+
+        train_idx = self.crossval_samp_ids != fold
+        x_train = self.x_pos[train_idx]
+        y_train = self.y_pos[train_idx]
+
+        # get responses
+        train_response, test_response = self.get_response_fold(fold)
+
+        # get true spatial maps for this fold
+        train_map = np.empty(self.n_units, dtype=object)
+        test_map = np.empty(self.n_units, dtype=object)
+        for unit in range(self.n_units):
+            train_map[unit] = self.spatial_map_function(train_response[unit], x_train, y_train)
+            test_map[unit] = self.spatial_map_function(test_response[unit], x_test, y_test)
+
+        return train_map, test_map
+
+    def get_predicted_spatial_map_fold(self, fold):
+        # get spatial positions for this fold and by train/test sets
+        test_idx = self.crossval_samp_ids == fold
+        x_test = self.x_pos[test_idx]
+        y_test = self.y_pos[test_idx]
+
+        train_idx = self.crossval_samp_ids != fold
+        x_train = self.x_pos[train_idx]
+        y_train = self.y_pos[train_idx]
+
+        # get predicted responses
+        train_response_hat, test_response_hat = self.predict_model_fold(fold)
+
+        # get predicted spatial maps for this fold
+        train_map_hat = np.empty(self.n_units, dtype=object)
+        test_map_hat = np.empty(self.n_units, dtype=object)
+        for unit in range(self.n_units):
+            try:
+                train_map_hat[unit] = self.spatial_map_function(train_response_hat[unit], x_train, y_train)
+                test_map_hat[unit] = self.spatial_map_function(test_response_hat[unit], x_test, y_test)
+            except:
+                pass
+
+        return train_map_hat, test_map_hat
+
+    def score_model_fold(self, fold):
+
+        # regression metrics
+        train_response, test_response = self.get_response_fold(fold)
+        train_response_hat, test_response_hat = self.predict_model_fold(fold)
+
+        train_score = rs.get_regression_metrics(train_response, train_response_hat,
+                                                reg_type=self.reg_type, n_params=self.n_features)
+        test_score = rs.get_regression_metrics(test_response, test_response_hat,
+                                               reg_type=self.reg_type, n_params=self.n_features)
+
+        # spatial map correlations
+        train_map, test_map = self.get_spatial_map_fold(fold)
+        train_map_hat, test_map_hat = self.get_predicted_spatial_map_fold(fold)
+
+        train_r = np.zeros(self.n_units)*np.nan
+        test_r = np.zeros(self.n_units)*np.nan
+        for unit in range(self.n_units):
+            try:
+                train_r[unit] = rs.pearson(train_map[unit].flatten(), train_map_hat[unit].flatten())
+                test_r[unit] = rs.pearson(test_map[unit].flatten(), test_map_hat[unit].flatten())
+            except:
+                pass
+
+        train_score['map_r'] = train_r
+        test_score['map_r'] = test_r
+
+        return train_score, test_score
+
+    def train_model(self):
+        for fold in range(self.n_xval):
+            self.models[fold, :] = self.train_model_fold(fold)
+
+    def score_model(self):
+        cnt = 0
+        for fold in range(self.n_xval):
+            fold_train_scores, fold_test_scores = self.score_model_fold(fold)
+            for unit in range(self.n_units):
+                for metric in self.model_metrics:
+                    self.scores.loc[cnt, ['fold', 'unit_id', 'metric', 'split']] = fold, unit, metric, 'train'
+                    self.scores.loc[cnt, 'value'] = fold_train_scores[metric][unit]
+                    cnt += 1
+
+                    self.scores.loc[cnt, ['fold', 'unit_id', 'metric', 'split']] = fold, unit, metric, 'test'
+                    self.scores.loc[cnt, 'value'] = fold_test_scores[metric][unit]
+                    cnt += 1
+
+        self.scores = self.scores.astype({'value': 'float'})
+        return self.scores
+
+    def avg_folds(self):
+        return self.scores.groupby(['unit_id', 'metric', 'split'], as_index=False).mean()
+
+
+class AllSpatialEncodingModels:
+    def __init__(self, x, y, speed, ha, hd, neural_data, data_type='fr', bias_term=True, n_xval=5,
+                 secs_per_split=20.0, n_jobs=-1, random_seed=42, norm_resp='None', **params):
+        """
+        :param x: array length [n_samps], x position of subject
+        :param y: array length [n_samps], y position of subject
+        :param speed: array length [n_samps], speed of subject
+        :param ha: array length [n_samps],  head angle
+        :param hd: array length [n_samps],  heading direction
+        :param neural_data: array [n_neurons x n_samps], neural data, can be firing rate (spikes/s)
+            or binned spikes (spike counts per sample bin)
+        :param data_type: string, indicates the data type in neural_data
+        :param bias_term: bool, if True, encoding models will be model with a bias term
+        :param n_xval: int, number of cross validation splits
+        :param secs_per_split: float, indicates length of time for splitting time series in the x-validation folds
+        :param n_jobs: number of cores to use
+        :param params: additional model parameters, see specific models for details
+        """
+
+        np.random.seed(random_seed)
+
         self.x = x
         self.y = y
         self.speed = speed
         self.ha = ha
         self.hd = hd
-        self.fr = fr
-        self.spikes = spikes
+
         self.data_type = data_type
         self.bias_term = bias_term
         self.n_xval = n_xval
         self.n_jobs = n_jobs
 
-        self.n_neurons = fr.shape[0]
+        self.reg_type = 'poisson' if data_type == 'spikes' else 'linear'
+
+        # add extra dimension if neural data is a 1d of samples (1 unit data)
+        if neural_data.ndim == 1:
+            neural_data = neural_data[np.newaxis, ]
+
+        self.neural_data = neural_data
+        self.n_units = neural_data.shape[0]
+        self.n_samples = len(x)
+
+        self.norm_resp = norm_resp
+
+        # get parameters
+        self.params = params
+        if len(params) > 0:
+            for key, val in params.items():
+                self.params[key] = val
+
+        default_params = default_OF_params()
+        for key, val in default_params.items():
+            if key not in self.params.keys():
+                self.params[key] = val
+
+        self.params['occ_num_thr'] = 1
+        self.params['occ_time_thr'] = 0.02
+
+        self.spatial_map_function = get_spatial_map_function(self.data_type, **self.params)
+
+        # get time series cross validation splits
+        self.secs_per_split = secs_per_split
+        self.samps_per_split = np.int(secs_per_split / params['time_step'])
+        self.crossval_samp_ids = rs.split_timeseries(n_samps=self.n_samples,
+                                                     samps_per_split=self.samps_per_split,
+                                                     n_data_splits=n_xval)
+
+        self.valid_sp_samps = None
+
+        self.models = ['speed', 'hd', 'ha',  'border', 'grid', 'pos']
+        self.speed_model = None
+        self.pos_model = None
+        self.ha_model = None
+        self.hd_model = None
+        self.border_model = None
+        self.grid_model = None
+
+        self.scores = pd.DataFrame(columns=['unit_id', 'metric', 'split', 'model', 'value'])
+
+    def get_speed_model(self):
+        features, sp_bin_idx, valid_samps = get_speed_encoding_features(self.speed, self.params['sp_bin_edges_'])
+        response = self.neural_data[:, valid_samps]
+        self.valid_sp_samps = valid_samps
+
+        crossval_samp_ids = self.crossval_samp_ids[valid_samps]
+        x = self.x[valid_samps]
+        y = self.y[valid_samps]
+
+        if self.data_type == 'spikes':
+            model_function = lm.PoissonRegressor(alpha=0, fit_intercept=False)
+        else:
+            model_function = lm.LinearRegression(fit_intercept=False)
+
+        self.speed_model = SpatialEncodingModelCrossVal(features, response, x, y,
+                                                        crossval_samp_ids=crossval_samp_ids, n_xval=self.n_xval,
+                                                        response_type=self.data_type, reg_type=self.reg_type,
+                                                        model_function=model_function,
+                                                        spatial_map_function=self.spatial_map_function,
+                                                        norm_resp=self.norm_resp)
+        self.speed_model.train_model()
+        self.speed_model.score_model()
+
+        coefs = self.get_coefs('speed')
+        n_idx = self.n_xval * self.n_units * 2
+        df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
+        cnt = 0
+        for fold in range(self.n_xval):
+            for unit in range(self.n_units):
+                c = coefs[fold, unit]
+                if c is not None:
+                    val = rs.spearman(c, self.params['sp_bin_edges_'][1:])
+                else:
+                    val = np.nan
+                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
+                cnt += 1
+                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
+                cnt += 1
+        df = df.astype({'value': 'float'})
+        self.speed_model.scores = self.speed_model.scores.append(df, ignore_index=True)
+
+    def get_hd_model(self):
+        if self.valid_sp_samps is None:
+            features, ang_bin_idx, valid_samps = \
+                get_angle_encoding_features(self.hd, self.params['ang_bin_edges_'],
+                                            speed=self.speed,
+                                            min_speed=self.params['min_speed_thr'],
+                                            max_speed=self.params['max_speed_thr'])
+        else:
+            features, ang_bin_idx, valid_samps = \
+                get_angle_encoding_features(self.hd, self.params['ang_bin_edges_'],
+                                            valid_samps=self.valid_sp_samps)
+
+        response = self.neural_data[:, valid_samps]
+
+        crossval_samp_ids = self.crossval_samp_ids[valid_samps]
+        x = self.x[valid_samps]
+        y = self.y[valid_samps]
+
+        if self.data_type == 'spikes':
+            model_function = lm.PoissonRegressor(alpha=0, fit_intercept=False)
+        else:
+            model_function = lm.LinearRegression(fit_intercept=False)
+
+        self.hd_model = SpatialEncodingModelCrossVal(features, response, x, y,
+                                                     crossval_samp_ids=crossval_samp_ids, n_xval=self.n_xval,
+                                                     response_type=self.data_type, reg_type=self.reg_type,
+                                                     model_function=model_function,
+                                                     spatial_map_function=self.spatial_map_function,
+                                                     norm_resp=self.norm_resp)
+        self.hd_model.train_model()
+        self.hd_model.score_model()
+
+        coefs = self.get_coefs('hd')
+        n_idx = self.n_xval * self.n_units * 2
+        df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
+        cnt = 0
+        for fold in range(self.n_xval):
+            for unit in range(self.n_units):
+                c = coefs[fold, unit]
+                if c is not None:
+                    val = rs.circ_corrcl(self.params['ang_bin_edges_'][1:], c)
+                else:
+                    val = np.nan
+                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
+                cnt += 1
+                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
+                cnt += 1
+        df = df.astype({'value': 'float'})
+        self.hd_model.scores = self.hd_model.scores.append(df, ignore_index=True)
+
+    def get_ha_model(self):
+        if self.valid_sp_samps is None:
+            features, ang_bin_idx, valid_samps = \
+                get_angle_encoding_features(self.ha, self.params['ang_bin_edges_'],
+                                            speed=self.speed,
+                                            min_speed=self.params['min_speed_thr'],
+                                            max_speed=self.params['max_speed_thr'])
+        else:
+            features, ang_bin_idx, valid_samps = \
+                get_angle_encoding_features(self.ha, self.params['ang_bin_edges_'],
+                                            valid_samps=self.valid_sp_samps)
+
+        response = self.neural_data[:, valid_samps]
+
+        crossval_samp_ids = self.crossval_samp_ids[valid_samps]
+        x = self.x[valid_samps]
+        y = self.y[valid_samps]
+
+        if self.data_type == 'spikes':
+            model_function = lm.PoissonRegressor(alpha=0, fit_intercept=False)
+        else:
+            model_function = lm.LinearRegression(fit_intercept=False)
+
+        self.ha_model = SpatialEncodingModelCrossVal(features, response, x, y,
+                                                     crossval_samp_ids=crossval_samp_ids, n_xval=self.n_xval,
+                                                     response_type=self.data_type, reg_type=self.reg_type,
+                                                     model_function=model_function,
+                                                     spatial_map_function=self.spatial_map_function,
+                                                     norm_resp=self.norm_resp)
+        self.ha_model.train_model()
+        self.ha_model.score_model()
+
+        coefs = self.get_coefs('ha')
+        n_idx = self.n_xval * self.n_units * 2
+        df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
+        cnt = 0
+        for fold in range(self.n_xval):
+            for unit in range(self.n_units):
+                c = coefs[fold, unit]
+                if c is not None:
+                    val = rs.circ_corrcl(self.params['ang_bin_edges_'][1:], c)
+                else:
+                    val = np.nan
+                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
+                cnt += 1
+                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
+                cnt += 1
+        df = df.astype({'value': 'float'})
+        self.ha_model.scores = self.ha_model.scores.append(df, ignore_index=True)
+
+    def get_pos_model(self):
+
+        # get feauture parameters
+        feature_params = {
+            'spatial_window_size': self.params['spatial_window_size'] if 'spatial_window_size' in self.params.keys() else 5,
+            'spatial_sigma': self.params['spatial_sigma'] if 'spatial_sigma' in self.params.keys() else 2,
+            'feat_type': self.params['feat_type'] if 'feat_type' in self.params.keys() else 'pca'}
+
+        if 'n_components' in self.params.keys():
+            feature_params['n_components'] = self.params['n_components']
+        else:
+            if feature_params['feat_type'] == 'pca':
+                feature_params['n_components'] = 0.95
+            elif feature_params['feat_type'] == 'nma':
+                feature_params['n_components'] = 100
+
+        # get regression params
+        if 'reg_alpha' in self.params.keys():
+            reg_alpha = self.params['reg_alpha'] if (self.params['alpha'] is not None) else 0.15
+        else:
+            reg_alpha = 0.15
+
+        if self.data_type == 'spikes':
+            model_function = lm.PoissonRegressor(alpha=reg_alpha, fit_intercept=self.bias_term, max_iter=50)
+        else:
+            l1_ratio = self.params['l1_ratio'] if ('l1_ratio' in self.params.keys()) else 0.15
+            model_function = lm.ElasticNet(alpha=reg_alpha, l1_ratio=l1_ratio, fit_intercept=self.bias_term)
+
+        # get features
+        features, inverse = get_position_encoding_features(self.x, self.y,
+                                                           self.params['x_bin_edges_'], self.params['y_bin_edges_'],
+                                                           **feature_params)
+
+        # get response
+        response = self.neural_data
+
+        self.pos_model = SpatialEncodingModelCrossVal(features, response, self.x, self.y,
+                                                      crossval_samp_ids=self.crossval_samp_ids, n_xval=self.n_xval,
+                                                      response_type=self.data_type, reg_type=self.reg_type,
+                                                      model_function=model_function,
+                                                      spatial_map_function=self.spatial_map_function,
+                                                      norm_resp=self.norm_resp)
+        self.pos_model.train_model()
+        self.pos_model.score_model()
+        setattr(self.pos_model, 'feature_inverse', inverse)
+
+        coefs = self.get_coefs('pos')
+        n_idx = self.n_xval * self.n_units * 2
+        df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
+        cnt = 0
+        for unit in range(self.n_units):
+            true_rate_map = self.spatial_map_function(response[unit], self.x, self.y).flatten()
+            for fold in range(self.n_xval):
+                try:
+                    c = coefs[fold, unit]
+                    if c is not None:
+                        c_map = inverse(c)
+                        val = rs.pearson(true_rate_map, c_map)
+                    else:
+                        val = np.nan
+                    df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
+                    cnt += 1
+                    df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
+                    cnt += 1
+                except:
+                    pass
+        df = df.astype({'value': 'float'})
+        self.pos_model.scores = self.pos_model.scores.append(df, ignore_index=True)
+
+    def get_grid_model(self):
+
+        feature_params = {'thr': self.params['rate_thr'] if ('rate_thr' in self.params.keys()) else 0.1,
+                          'min_field_size': self.params['min_field_size'] if (
+                                      'min_field_size' in self.params.keys()) else 10,
+                          'sigmoid_center': self.params['sigmoid_center'] if (
+                                      'sigmoid_center' in self.params.keys()) else 0.5,
+                          'sigmoid_slope': self.params['sigmoid_slope'] if (
+                                      'sigmoid_slope' in self.params.keys()) else 10,
+                          'binary_fields': self.params['binary_fields'] if (
+                                  'binary_fields' in self.params.keys()) else False,
+                          'x_bin_edges': self.params['x_bin_edges_'],
+                          'y_bin_edges': self.params['y_bin_edges_']}
+
+        response = self.neural_data
+
+        # needs to generate feautures by fold/unit
+        features = np.empty((self.n_xval, self.n_units, 2), dtype=object)
+        fields = np.empty((self.n_xval, self.n_units), dtype=object)
+        for unit in range(self.n_units):
+            for fold in range(self.n_xval):
+                train_ids = self.crossval_samp_ids != fold
+                test_ids = self.crossval_samp_ids == fold
+
+                fields[fold, unit] = get_grid_fields(response[unit, train_ids], self.x[train_ids], self.y[train_ids],
+                                                     **feature_params)
+
+                if fields[fold, unit] is not None:
+                    features[fold, unit, 0] = get_grid_encodign_features(fields[fold, unit], self.x[train_ids], self.y[train_ids],
+                                                                         x_bin_edges=feature_params['x_bin_edges'],
+                                                                         y_bin_edges=feature_params['y_bin_edges'])
+                    features[fold, unit, 1] = get_grid_encodign_features(fields[fold, unit], self.x[test_ids], self.y[test_ids],
+                                                                         x_bin_edges=feature_params['x_bin_edges'],
+                                                                         y_bin_edges=feature_params['y_bin_edges'])
+
+        if self.data_type == 'spikes':
+            model_function = lm.PoissonRegressor(alpha=0, fit_intercept=self.bias_term)
+        else:
+            model_function = lm.LinearRegression(fit_intercept=self.bias_term)
+
+        self.grid_model = SpatialEncodingModelCrossVal(features, response, self.x, self.y,
+                                                       crossval_samp_ids=self.crossval_samp_ids, n_xval=self.n_xval,
+                                                       response_type=self.data_type, reg_type=self.reg_type,
+                                                       model_function=model_function,
+                                                       spatial_map_function=self.spatial_map_function,
+                                                       features_by_fold_unit=True, norm_resp=self.norm_resp)
+
+        self.grid_model.train_model()
+        self.grid_model.score_model()
+        setattr(self.grid_model, 'grid_fields', fields)
+
+        coefs = self.get_coefs('grid')
+        n_idx = self.n_xval*self.n_units*2
+        df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
+        cnt = 0
+        for fold in range(self.n_xval):
+            for unit in range(self.n_units):
+                c = coefs[fold, unit]
+                if c is not None:
+                    m = np.nanmean(c)
+                    s = np.nanstd(c) if len(c) > 1 else 1
+                    val = m/s
+                else:
+                    val = np.nan
+                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
+                cnt += 1
+                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
+                cnt += 1
+        df = df.astype({'value': 'float'})
+        self.grid_model.scores = self.grid_model.scores.append(df, ignore_index=True)
+
+    def get_border_model(self):
+        feature_params = {'feat_type': self.params['feat_type'] if ('feat_type' in self.params.keys()) else 'sigmoid',
+                          'spatial_window_size': self.params['spatial_window_size'] if (
+                                      'spatial_window_size' in self.params.keys()) else 5,
+                          'spatial_sigma': self.params['spatial_sigma'] if (
+                                      'spatial_sigma' in self.params.keys()) else 2,
+                          'border_width_bins': self.params['border_width_bins'] if (
+                                      'border_width_bins' in self.params.keys()) else 3,
+                          'sigmoid_slope_thr': self.params['sigmoid_slope_thr'] if (
+                                  'sigmoid_slope_thr' in self.params.keys()) else 0.1,
+                          'center_gaussian_spread': self.params['center_gaussian_spread'] if (
+                                  'center_gaussian_spread' in self.params.keys()) else 0.2,
+                          'include_center_feature': self.params['include_center_feature'] if (
+                                  'include_center_feature' in self.params.keys()) else True,
+                          'x_bin_edges': self.params['x_bin_edges_'],
+                          'y_bin_edges': self.params['y_bin_edges_']}
+
+        features = get_border_encoding_features(self.x, self.y, **feature_params)
+
+        if self.data_type == 'spikes':
+            model_function = lm.PoissonRegressor(alpha=0, fit_intercept=self.bias_term)
+        else:
+            model_function = lm.LinearRegression(fit_intercept=self.bias_term)
+
+        self.border_model = SpatialEncodingModelCrossVal(features, self.neural_data, x_pos=self.x, y_pos=self.y,
+                                                         crossval_samp_ids=self.crossval_samp_ids, n_xval=self.n_xval,
+                                                         response_type=self.data_type, reg_type=self.reg_type,
+                                                         model_function=model_function,
+                                                         spatial_map_function=self.spatial_map_function,
+                                                         norm_resp=self.norm_resp)
+
+        self.border_model.train_model()
+        self.border_model.score_model()
+
+        coefs = self.get_coefs('border')
+        n_idx = self.n_xval*self.n_units*2
+        df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
+        cnt = 0
+        for fold in range(self.n_xval):
+            for unit in range(self.n_units):
+                c = coefs[fold, unit]
+                if c is not None:
+                    val = np.max(c[:4] - c[0])
+                else:
+                    val = np.nan
+                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
+                cnt += 1
+                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
+                cnt += 1
+        df = df.astype({'value': 'float'})
+        self.border_model.scores = self.border_model.scores.append(df, ignore_index=True)
+
+    def get_all_models(self, verbose=True):
+        self.scores = pd.DataFrame()
+        for model in self.models:
+            t0 = time.time()
+            getattr(self, f"get_{model}_model")()
+            model_tbl = getattr(self, f"{model}_model").avg_folds()
+            model_tbl['model'] = model
+            self.scores = pd.concat((self.scores, model_tbl))
+            if verbose:
+                print(f"{model} model completed. {time.time()-t0:0.2f}secs")
+            self.scores.reset_index(drop=True, inplace=True)
+        return self.scores
+
+    def get_coefs(self, model):
+        coefs = np.empty((self.n_xval, self.n_units), dtype=object)
+        for fold in range(self.n_xval):
+            for unit in range(self.n_units):
+                model_obj = getattr(self, f"{model}_model").models[fold][unit]
+                if model_obj is not None:
+                    coefs[fold, unit] = model_obj.coef_
+        return coefs
+
+
+class AllSpatialEncodingModelsScores:
+
+    def __init__(self, x, y, speed, ha, hd, neural_data, data_type='fr', bias_term=True, n_xval=5, n_jobs=-1, **params):
+        """
+        :param x: array length [n_samps], x position of subject
+        :param y: array length [n_samps], y position of subject
+        :param speed: array length [n_samps], speed of subject
+        :param ha: array length [n_samps],  head angle
+        :param hd: array length [n_samps],  heading direction
+        :param neural_data: array [n_neurons x n_samps], neural data, can be firing rate (spikes/s)
+            or binned spikes (spike counts per sample bin)
+        :param data_type: string, indicates the data type in neural_data
+        :param bias_term: bool, if True, encoding models will be model with a bias term
+        :param n_xval: int, number of cross validation splits
+        :param secs_per_split: float, indicates length of time for splitting time series in the x-validation folds
+        :param n_jobs: number of cores to use
+        :param params: additional model parameters, see specific models for details
+        """
+        self.x = x
+        self.y = y
+        self.speed = speed
+        self.ha = ha
+        self.hd = hd
+
+        self.data_type = data_type
+        self.bias_term = bias_term
+        self.n_xval = n_xval
+        self.n_jobs = n_jobs
+
+        self.reg_type = 'poisson' if data_type == 'spikes' else 'linear'
+
+        # add extra dimension if neural data is a 1d of samples (1 unit data)
+        if neural_data.ndim == 1:
+            neural_data = neural_data[np.newaxis,]
+        else:
+            n_units, _ = neural_data.shape
+        self.neural_data = neural_data
+        self.n_units = neural_data.shape[0]
         self.n_samples = len(x)
 
         if len(params) > 0:
@@ -217,14 +921,11 @@ class SpatialEncodingModels:
             if not hasattr(self, key):
                 setattr(self, key, val)
 
-        _models = ['speed_model', 'hd_model', 'ha_model', 'border_model',
-                   'grid_model', 'pos_model', 'all_models']
-        for s in _models:
-            if s == 'all_models':
-                setattr(self, s, pd.DataFrame())
-            else:
-                setattr(self, s, [])
-            setattr(self, s + '_computed', False)
+        self.all_models = pd.DataFrame()
+
+        model_types = ['pos', 'speed', 'ha', 'hd', 'border', 'grid']
+        for model in model_types:
+            setattr(self, f"_{model}_models", np.empty((self.n_units, self.n_xval), dtype=object))
 
     def get_all_models(self):
         t0 = time.time()
@@ -255,17 +956,11 @@ class SpatialEncodingModels:
         return self.all_models
 
     def get_speed_model(self):
-        if self.data_type == 'fr':
-            coeffs, train_perf, test_perf = get_speed_encoding_model(self.speed, self.fr, self.sp_bin_edges_,
-                                                                     data_type='fr', n_xval=self.n_xval)
-        elif self.data_type == 'spikes':
-            coeffs, train_perf, test_perf = get_speed_encoding_model(self.speed, self.spikes, self.sp_bin_edges_,
-                                                                     data_type='spikes', n_xval=self.n_xval)
-        else:
-            return np.nan
+        coeffs, train_perf, test_perf = get_speed_encoding_model(self.speed, self.neural_data, self.sp_bin_edges_,
+                                                                 data_type=self.data_type, n_xval=self.n_xval)
 
         out = {'coeffs': coeffs, 'train_perf': train_perf, 'test_perf': test_perf}
-        self.speed_model = out
+        self.speed_model_output = out
 
         train_perf2 = self._perf2df(train_perf)
         train_perf2['split'] = 'train'
@@ -280,21 +975,13 @@ class SpatialEncodingModels:
         return out
 
     def get_hd_model(self):
-        if self.data_type == 'fr':
-            coeffs, train_perf, test_perf = get_angle_encoding_model(self.hd, self.fr, self.ang_bin_edges_,
-                                                                     speed=self.speed, min_speed=self.min_speed_thr,
-                                                                     max_speed=self.max_speed_thr,
-                                                                     data_type='fr', n_xval=self.n_xval)
-        elif self.data_type == 'spikes':
-            coeffs, train_perf, test_perf = get_angle_encoding_model(self.hd, self.spikes, self.ang_bin_edges_,
-                                                                     speed=self.speed, min_speed=self.min_speed_thr,
-                                                                     max_speed=self.max_speed_thr,
-                                                                     data_type='spikes', n_xval=self.n_xval)
-        else:
-            return np.nan
+        coeffs, train_perf, test_perf = get_angle_encoding_model(self.hd, self.neural_data, self.ang_bin_edges_,
+                                                                 speed=self.speed, min_speed=self.min_speed_thr,
+                                                                 max_speed=self.max_speed_thr,
+                                                                 data_type=self.data_type, n_xval=self.n_xval)
 
         out = {'coeffs': coeffs, 'train_perf': train_perf, 'test_perf': test_perf}
-        self.hd_model = out
+        self.hd_model_out = out
 
         train_perf2 = self._perf2df(train_perf)
         train_perf2['split'] = 'train'
@@ -309,21 +996,13 @@ class SpatialEncodingModels:
         return out
 
     def get_ha_model(self):
-        if self.data_type == 'fr':
-            coeffs, train_perf, test_perf = get_angle_encoding_model(self.ha, self.fr, self.ang_bin_edges_,
-                                                                     speed=self.speed, min_speed=self.min_speed_thr,
-                                                                     max_speed=self.max_speed_thr,
-                                                                     data_type='fr', n_xval=self.n_xval)
-        elif self.data_type == 'spikes':
-            coeffs, train_perf, test_perf = get_angle_encoding_model(self.ha, self.spikes, self.ang_bin_edges_,
-                                                                     speed=self.speed, min_speed=self.min_speed_thr,
-                                                                     max_speed=self.max_speed_thr,
-                                                                     data_type='spikes', n_xval=self.n_xval)
-        else:
-            return np.nan
+        coeffs, train_perf, test_perf = get_angle_encoding_model(self.ha, self.neural_data, self.ang_bin_edges_,
+                                                                 speed=self.speed, min_speed=self.min_speed_thr,
+                                                                 max_speed=self.max_speed_thr,
+                                                                 data_type=self.data_type, n_xval=self.n_xval)
 
         out = {'coeffs': coeffs, 'train_perf': train_perf, 'test_perf': test_perf}
-        self.ha_model = out
+        self.ha_model_out = out
 
         train_perf2 = self._perf2df(train_perf)
         train_perf2['split'] = 'train'
@@ -338,21 +1017,13 @@ class SpatialEncodingModels:
         return out
 
     def get_border_model(self):
-        if self.data_type == 'fr':
-            coeffs, train_perf, test_perf = get_border_encoding_model(self.x, self.y, self.fr,
-                                                                      self.x_bin_edges_, self.y_bin_edges_,
-                                                                      data_type='fr', bias_term=self.bias_term,
-                                                                      n_xval=self.n_xval)
-        elif self.data_type == 'spikes':
-            coeffs, train_perf, test_perf = get_border_encoding_model(self.x, self.y, self.spikes,
-                                                                      self.x_bin_edges_, self.y_bin_edges_,
-                                                                      data_type='spikes', bias_term=self.bias_term,
-                                                                      n_xval=self.n_xval)
-        else:
-            return np.nan
+        coeffs, train_perf, test_perf = get_border_encoding_model(self.x, self.y, self.neural_data,
+                                                                  self.x_bin_edges_, self.y_bin_edges_,
+                                                                  data_type=self.data_type, bias_term=self.bias_term,
+                                                                  n_xval=self.n_xval)
 
         out = {'coeffs': coeffs, 'train_perf': train_perf, 'test_perf': test_perf}
-        self.border_model = out
+        self.border_model_out = out
 
         train_perf2 = self._perf2df(train_perf)
         train_perf2['split'] = 'train'
@@ -367,21 +1038,13 @@ class SpatialEncodingModels:
         return out
 
     def get_grid_model(self):
-        if self.data_type == 'fr':
-            coeffs, train_perf, test_perf = get_grid_encoding_model(self.x, self.y, self.fr,
-                                                                    self.x_bin_edges_, self.y_bin_edges_,
-                                                                    data_type='fr', bias_term=self.bias_term,
-                                                                    n_xval=self.n_xval)
-        elif self.data_type == 'spikes':
-            coeffs, train_perf, test_perf = get_grid_encoding_model(self.x, self.y, self.spikes,
-                                                                    self.x_bin_edges_, self.y_bin_edges_,
-                                                                    data_type='spikes', bias_term=self.bias_term,
-                                                                    n_xval=self.n_xval)
-        else:
-            return np.nan
+        coeffs, train_perf, test_perf = get_grid_encoding_model(self.x, self.y, self.neural_data,
+                                                                self.x_bin_edges_, self.y_bin_edges_,
+                                                                data_type=self.data_type, bias_term=self.bias_term,
+                                                                n_xval=self.n_xval)
 
         out = {'coeffs': coeffs, 'train_perf': train_perf, 'test_perf': test_perf}
-        self.grid_model = out
+        self.grid_model_out = out
 
         train_perf2 = self._perf2df(train_perf)
         train_perf2['split'] = 'train'
@@ -395,57 +1058,18 @@ class SpatialEncodingModels:
 
         return out
 
-    def get_position_model(self, get_features=True):
+    def get_position_model(self):
 
-        kwargs = {}
-        if get_features:
-            # try to get load feature_matrix for given data.
-            feat_mat_fn = Path(f"pos_feat_design_mat_nx{self.n_x_bins}_ny{self.n_y_bins}.npy")
-            if feat_mat_fn.exists():
-                feature_design_matrix = np.load(feat_mat_fn)
-            else:
-                # generate & save locally feature mat
-                feature_design_matrix = generate_position_design_matrix(self.n_x_bins, self.n_y_bins,
-                                                                        spatial_window_size=self.spatial_window_size,
-                                                                        spatial_sigma=self.spatial_sigma)
-                np.save(feat_mat_fn, feature_design_matrix)
-            kwargs['feature_design_matrix'] = 'feature_design_matrix'
+        params = {'feat_type': 'pca', 'spatial_window_size': self.spatial_window_size,
+                  'spatial_sigma': self.spatial_sigma}
 
-            feat_obj_fn = Path(f"pos_feat_{self.pos_feat_type}_nx{self.n_x_bins}_ny{self.n_y_bins}.pickle")
-            if feat_obj_fn.exists():
-                with open(feat_obj_fn, "rb") as f:
-                    feat_obj = pickle.load(f)
-            else:
-                if self.pos_feat_type == 'pca':
-                    _, _, feat_obj = _pca_position_features(feature_design_matrix, n_components=self.pos_feat_n_comp)
-
-                elif self.pos_feat_type == 'nmf':
-                    _, _, feat_obj = _nmf_position_features(feature_design_matrix, n_components=self.pos_feat_n_comp)
-
-                with open(feat_obj_fn, "wb") as f:
-                    pickle.dump(feat_obj, f, pickle.HIGHEST_PROTOCOL)
-
-            kwargs['feature_design_matrix'] = feature_design_matrix
-            kwargs[self.pos_feat_type] = feat_obj
-
-        kwargs['spatial_window_size'] = self.spatial_window_size
-        kwargs['spatial_sigma'] = self.spatial_sigma
-
-        if self.data_type == 'fr':
-            coeffs, train_perf, test_perf = get_position_encoding_model(self.x, self.y, self.fr,
-                                                                        self.x_bin_edges_, self.y_bin_edges_,
-                                                                        data_type='fr', n_xval=self.n_xval,
-                                                                        feat_type=self.pos_feat_type, **kwargs)
-        elif self.data_type == 'spikes':
-            coeffs, train_perf, test_perf = get_position_encoding_model(self.x, self.y, self.spikes,
-                                                                        self.x_bin_edges_, self.y_bin_edges_,
-                                                                        data_type='spikes', n_xval=self.n_xval,
-                                                                        feat_type=self.pos_feat_type, **kwargs)
-        else:
-            return np.nan
+        coeffs, train_perf, test_perf = get_position_encoding_model(self.x, self.y, self.neural_data,
+                                                                    self.x_bin_edges_, self.y_bin_edges_,
+                                                                    data_type=self.data_type, n_xval=self.n_xval,
+                                                                    **params)
 
         out = {'coeffs': coeffs, 'train_perf': train_perf, 'test_perf': test_perf}
-        self.pos_model = out
+        self.pos_model_out = out
 
         train_perf2 = self._perf2df(train_perf)
         train_perf2['split'] = 'train'
@@ -466,7 +1090,7 @@ class SpatialEncodingModels:
         out = pd.DataFrame(columns=['unit_id', 'metric', 'value'])
         cnt = 0
         for metric in metrics:
-            vals = perf[metric].mean(axis=0)   # means across folds
+            vals = perf[metric].mean(axis=0)  # means across folds
             for unit in range(n_units):
                 out.at[cnt, 'metric'] = metric
                 out.at[cnt, 'unit_id'] = unit
@@ -628,7 +1252,7 @@ class PointsOF:
 
 # ------------------------------------------------- Spatial Functions --------------------------------------------------
 
-def smooth_2d_map(bin_map, n_bins=5, sigma=2):
+def smooth_2d_map(bin_map, n_bins=5, sigma=2, apply_median_filt=True, **kwargs):
     """
     :param bin_map: map to be smooth.
         array in which each cell corresponds to the value at that xy position
@@ -637,7 +1261,10 @@ def smooth_2d_map(bin_map, n_bins=5, sigma=2):
     :return: sm_map: smoothed map. note that this is a truncated sigma map, meaning that high or
             low values wont affect far away bins
     """
-    sm_map = ndimage.filters.median_filter(bin_map, n_bins)
+    if apply_median_filt:
+        sm_map = ndimage.filters.median_filter(bin_map, n_bins)
+    else:
+        sm_map = bin_map
     trunc = (((n_bins - 1) / 2) - 0.5) / sigma
 
     return ndimage.filters.gaussian_filter(sm_map, sigma, mode='constant', truncate=trunc)
@@ -674,7 +1301,8 @@ def w_histogram_2d(x, y, w, x_bin_edges, y_bin_edges):
     return pos_sum_2d
 
 
-def firing_rate_2_rate_map(fr, x, y, x_bin_edges, y_bin_edges, occ_num_thr=3, spatial_window_size=5, spatial_sigma=2):
+def firing_rate_2_rate_map(fr, x, y, x_bin_edges, y_bin_edges,
+                           occ_num_thr=3, spatial_window_size=5, spatial_sigma=2, **kwargs):
     fr_sum_2d = w_histogram_2d(x, y, fr, x_bin_edges, y_bin_edges)
     pos_counts_map = histogram_2d(x, y, x_bin_edges, y_bin_edges)
 
@@ -682,12 +1310,12 @@ def firing_rate_2_rate_map(fr, x, y, x_bin_edges, y_bin_edges, occ_num_thr=3, sp
     fr_avg_pos[pos_counts_map > occ_num_thr] = fr_sum_2d[pos_counts_map > occ_num_thr] \
                                                / pos_counts_map[pos_counts_map > occ_num_thr]
 
-    sm_fr_map = smooth_2d_map(fr_avg_pos, n_bins=spatial_window_size, sigma=spatial_sigma)
+    sm_fr_map = smooth_2d_map(fr_avg_pos, n_bins=spatial_window_size, sigma=spatial_sigma, **kwargs)
     return sm_fr_map
 
 
-def spikes_2_rate_map(spikes, x, y, x_bin_edges, y_bin_edges, time_step=0.02, occ_time_thr=0.06, spatial_window_size=5,
-                      spatial_sigma=2):
+def spikes_2_rate_map(spikes, x, y, x_bin_edges, y_bin_edges,
+                      time_step=0.02, occ_time_thr=0.06, spatial_window_size=5, spatial_sigma=2, **kwargs):
     spk_sum_2d = w_histogram_2d(x, y, spikes, x_bin_edges, y_bin_edges)
     pos_sec_map = histogram_2d(x, y, x_bin_edges, y_bin_edges) * time_step
 
@@ -695,7 +1323,7 @@ def spikes_2_rate_map(spikes, x, y, x_bin_edges, y_bin_edges, time_step=0.02, oc
     fr_avg_pos[pos_sec_map > occ_time_thr] = spk_sum_2d[pos_sec_map > occ_time_thr] \
                                              / pos_sec_map[pos_sec_map > occ_time_thr]
 
-    sm_fr_map = smooth_2d_map(fr_avg_pos, n_bins=spatial_window_size, sigma=spatial_sigma)
+    sm_fr_map = smooth_2d_map(fr_avg_pos, n_bins=spatial_window_size, sigma=spatial_sigma, **kwargs)
     return sm_fr_map
 
 
@@ -965,7 +1593,7 @@ def get_position_encoding_model(x, y, neural_data, x_bin_edges, y_bin_edges, dat
 
     if neural_data.ndim == 1:
         n_units = 1
-        neural_data = neural_data[np.newaxis, ]
+        neural_data = neural_data[np.newaxis,]
     else:
         n_units, _ = neural_data.shape
     assert n_samps == neural_data.shape[1], 'Mismatch lengths between speed and neural_data.'
@@ -974,30 +1602,20 @@ def get_position_encoding_model(x, y, neural_data, x_bin_edges, y_bin_edges, dat
     xval_samp_ids = rs.split_timeseries(n_samps=n_samps, samps_per_split=1000, n_data_splits=n_xval)
 
     # get feature parameters
-    feat_type = kwargs['feat_type'] if ('feat_type' in kwargs.keys()) else 'pca'
     feature_params = {
-        'feature_design_matrix': kwargs['feature_design_matrix'] if ('feature_design_matrix' in kwargs.keys()) else None,
-        'nmf': kwargs['nmf'] if ('nmf' in kwargs.keys()) else None,
-        'pca': kwargs['pca'] if ('pca' in kwargs.keys()) else None,
-        }
-
-    if 'spatial_window_size' in kwargs.keys():
-        if (kwargs['spatial_window_size'] is not None) & (kwargs['spatial_window_size'] > 0):
-            spatial_window_size = kwargs['spatial_window_size']
-            feature_params['spatial_window_size'] = kwargs['spatial_window_size']
-
-    if 'spatial_sigma' in kwargs.keys():
-        if (kwargs['spatial_sigma'] is not None) & (kwargs['spatial_sigma'] > 0):
-            spatial_sigma = kwargs['spatial_sigma']
-            feature_params['spatial_sigma'] = kwargs['spatial_sigma']
+        'spatial_window_size': kwargs['spatial_window_size'] if 'spatial_window_size' in kwargs.keys() else 5,
+        'spatial_sigma': kwargs['spatial_sigma'] if 'spatial_sigma' in kwargs.keys() else 2,
+        'feat_type': kwargs['feat_type'] if 'feat_type' in kwargs.keys() else 'pca'}
 
     if 'n_components' in kwargs.keys():
-        if kwargs['n_components'] is not None:
-            feature_params['n_components'] = kwargs['n_components']
+        feature_params['n_components'] = kwargs['n_components']
+    else:
+        if feature_params['feat_type'] == 'pca':
+            feature_params['n_components'] = 0.95
+        elif feature_params['feat_type'] == 'nma':
+            feature_params['n_components'] = 100
 
-    features, inverse = get_position_encoding_features(x, y, x_bin_edges, y_bin_edges,
-                                                       feat_type=feat_type,
-                                                       **feature_params)
+    features, inverse = get_position_encoding_features(x, y, x_bin_edges, y_bin_edges, **feature_params)
 
     n_features = features.shape[1]
     n_pos_bins = (len(x_bin_edges) - 1) * (len(y_bin_edges) - 1)
@@ -1014,25 +1632,17 @@ def get_position_encoding_model(x, y, neural_data, x_bin_edges, y_bin_edges, dat
         bias_term = True
 
     # obtain relevant functions for data type
-    if data_type == 'spikes':
-        def spatial_map_function(_spikes, _x, _y):
-            out_map = spikes_2_rate_map(_spikes, _x, _y,
-                                        x_bin_edges=x_bin_edges, y_bin_edges=y_bin_edges,
-                                        spatial_window_size=spatial_window_size, spatial_sigma=spatial_sigma)
-            return out_map
+    map_params = {'x_bin_edges': x_bin_edges, 'y_bin_edges': y_bin_edges,
+                  'spatial_window_size': feature_params['spatial_window_size'],
+                  'spatial_sigma': feature_params['spatial_sigma']}
 
+    spatial_map_function = get_spatial_map_function(data_type, **map_params)
+    if data_type == 'spikes':
         model_function = lm.PoissonRegressor(alpha=0.1, fit_intercept=bias_term, max_iter=50)
         reg_type = 'poisson'
     elif data_type == 'fr':
-        def spatial_map_function(_fr, _x, _y):
-            out_map = firing_rate_2_rate_map(_fr, _x, _y,
-                                             x_bin_edges=x_bin_edges, y_bin_edges=y_bin_edges,
-                                             spatial_window_size=spatial_window_size, spatial_sigma=spatial_sigma)
-            return out_map
-
         l1_ratio = kwargs['l1_ratio'] if ('l1_ratio' in kwargs.keys()) else 0.15
         model_function = lm.ElasticNet(alpha=alpha, l1_ratio=l1_ratio, fit_intercept=bias_term)
-
         reg_type = 'linear'
     else:
         raise NotImplementedError
@@ -1068,7 +1678,7 @@ def get_position_encoding_model(x, y, neural_data, x_bin_edges, y_bin_edges, dat
 
                     # train model
                     model = model_function.fit(features_train, response_train)
-                    if feat_type in ['pca', 'nmf', 'kpca']:
+                    if kwargs['feat_type'] in ['pca', 'nmf', 'kpca']:
                         model_coef[fold, unit] = inverse(model.coef_)
                     else:
                         model_coef[fold, unit] = model.coef_
@@ -1106,15 +1716,13 @@ def get_position_encoding_model(x, y, neural_data, x_bin_edges, y_bin_edges, dat
     return model_coef, train_perf, test_perf
 
 
-def get_position_encoding_features(x, y, x_bin_edges, y_bin_edges, feature_design_matrix=None, feat_type='pca',
-                                   spatial_window_size=5, spatial_sigma=2, n_components=0.95, pca=None, nmf=None):
+def get_position_encoding_features(x, y, x_bin_edges, y_bin_edges, feat_type='pca', n_components=0.95, **params):
     """
     for each sample, creates a 1d feature array that is smoothed around the position of the animal
     :param x: array of x positions [n_samps length]
     :param y: array of y positions [n_smaps length]
     :param x_bin_edges: edges of x array
     :param y_bin_edges: edges of y array
-    :param feature_design_matrix: n_bins x n_bins array. maps from bin idx to feature array
     :param feat_type: string. options are ['pca', 'nmf', 'full', 'sparse']
         pca -> pca features
         nmf -> non negative factorization features
@@ -1127,26 +1735,16 @@ def get_position_encoding_features(x, y, x_bin_edges, y_bin_edges, feature_desig
     :param spatial_sigma: float, spatial std. for gaussian smoothing [default = 2]
     :param n_components: number of components to use, if feat_type is pca can be a float [0,1) for var. exp.
             default for pca = 0.95, default for nmf = 100.
-    :param pca: object instance of PCA. previously fit PCA instance (saves time); ignored if feat_type != pca.
-    :param nmf: object instance of NMF. previously fit NMF instance (saves time); ignored if feat_type != nmf
     :return: array [n_samps x n_feautures].
         n features is the product of x and y bins
     """
 
     n_samps = len(x)
 
+    # get enviroment dimension
     n_x_bins = len(x_bin_edges) - 1
     n_y_bins = len(y_bin_edges) - 1
     n_spatial_bins = n_x_bins * n_y_bins
-
-    # get feature design matrix
-    if feat_type in ['nmf', 'pca', 'spline']:
-        if feature_design_matrix is None:
-            feature_design_matrix = generate_position_design_matrix(n_x_bins, n_y_bins,
-                                                                    spatial_window_size=spatial_window_size,
-                                                                    spatial_sigma=spatial_sigma)
-        else:
-            assert feature_design_matrix.shape[0] == n_spatial_bins, 'Feature Matrix does not match given inputs.'
 
     # get x y bin idx
     x_bin = np.digitize(x, x_bin_edges) - 1
@@ -1155,18 +1753,35 @@ def get_position_encoding_features(x, y, x_bin_edges, y_bin_edges, feature_desig
     # for each sample get the linear bin idx of the xy bins
     yx_bin = np.ravel_multi_index(np.array((y_bin, x_bin)), (n_y_bins, n_x_bins))
 
-    # get features
-    if feat_type == 'pca':
-        transform_func, inverse_func, _ = _pca_position_features(feature_design_matrix, n_components, pca)
-        features = transform_func(yx_bin)
+    # get or load feature_matrix for given environment size
+    feat_mat_fn = Path(f"pos_feat_design_mat_nx{n_x_bins}_ny{n_y_bins}.npy")
+    if feat_mat_fn.exists():
+        feature_design_matrix = np.load(str(feat_mat_fn))
+    else:
+        # generate & save locally feature mat
+        feature_design_matrix = generate_position_design_matrix(n_x_bins, n_y_bins, **params)
+        np.save(str(feat_mat_fn), feature_design_matrix)
 
-        return features, inverse_func
+    if feat_type in ['pca', 'nmf']:
+        # get feature transformation object, if it exists for the environment
+        feat_obj_fn = Path(f"pos_feat_{feat_type}_nx{n_x_bins}_ny{n_y_bins}.pickle")
+        if feat_obj_fn.exists():
+            with open(feat_obj_fn, "rb") as f:
+                feat_obj = pickle.load(f)
+        else:
+            feat_obj = None
 
-    elif feat_type == 'nmf':
-        n_components = 100 if n_components < 1 else n_components
+        if feat_type == 'pca':
+            transform_func, inverse_func, feat_obj = _pca_position_features(feature_design_matrix, n_components,
+                                                                            feat_obj)
+            features = transform_func(yx_bin)
+        else:
+            transform_func, inverse_func, feat_obj = _nmf_position_features(feature_design_matrix, n_components,
+                                                                            feat_obj)
+            features = transform_func(yx_bin)
 
-        transform_func, inverse_func, _ = _nmf_position_features(feature_design_matrix, n_components, nmf)
-        features = transform_func(yx_bin)
+        with open(feat_obj_fn, "wb") as f:
+            pickle.dump(feat_obj, f, pickle.HIGHEST_PROTOCOL)
 
         return features, inverse_func
 
@@ -1181,7 +1796,6 @@ def get_position_encoding_features(x, y, x_bin_edges, y_bin_edges, feature_desig
 
     elif feat_type == 'splines':
         raise NotImplementedError
-
     else:
         raise NotImplementedError
 
@@ -1221,7 +1835,7 @@ def generate_position_design_matrix(n_x_bins, n_y_bins, spatial_window_size=5, s
             jjii_mesh = np.meshgrid(*jjii_coords)
             # get valid coords.
             valid_coords = ((jjii_mesh[0] >= 0) & (jjii_mesh[0] < n_y_bins)) & (
-                        (jjii_mesh[1] >= 0) & (jjii_mesh[1] < n_x_bins))
+                    (jjii_mesh[1] >= 0) & (jjii_mesh[1] < n_x_bins))
             valid_coords = valid_coords.flatten()
 
             # convert those position to 1d feature dimension
@@ -1416,6 +2030,8 @@ def get_speed_encoding_model_old(speed, fr, speed_bin_edges, compute_sp_score=Tr
 def get_speed_encoding_model(speed, neural_data, speed_bin_edges, data_type='spikes', n_xval=5):
     """
     Discretizes the speed into the speed_bin_edges to predict firing rate.
+    :param x: array of floats vector of position of x the animal, n_samps
+    :param y: array of floats vector of position of y the animal, n_samps
     :param speed: array floats vector of speed n_samps
     :param neural_data: array floats firing rate n_units x n_samps, also works for one unit
     :param speed_bin_edges: edges to bin the speed
@@ -1738,8 +2354,8 @@ def get_angle_encoding_model(theta, neural_data, ang_bin_edges, speed=None, min_
     train_perf = {}
     test_perf = {}
     for mm in perf_metrics:
-        train_perf[mm] = np.zeros((n_xval, n_units))*np.nan
-        test_perf[mm] = np.zeros((n_xval, n_units))*np.nan
+        train_perf[mm] = np.zeros((n_xval, n_units)) * np.nan
+        test_perf[mm] = np.zeros((n_xval, n_units)) * np.nan
     model_coef = np.zeros((n_xval, n_units, n_features)) * np.nan
 
     # obtain relevant functions for data type
@@ -1792,14 +2408,15 @@ def get_angle_encoding_model(theta, neural_data, ang_bin_edges, speed=None, min_
     return model_coef, train_perf, test_perf
 
 
-def get_angle_encoding_features(theta, ang_bin_edges, speed=None, min_speed=None, max_speed=None):
-    # get valid samples and overwrite for fitting
-    if (speed is not None) and (min_speed is not None) and (max_speed is not None):
-        valid_samps = np.logical_and(speed >= min_speed, speed <= max_speed)
-        theta = theta[valid_samps]
-    else:
-        valid_samps = np.ones(len(theta), dtype=bool)
+def get_angle_encoding_features(theta, ang_bin_edges, speed=None, min_speed=None, max_speed=None, valid_samps=None):
+    if valid_samps is None:
+        # get valid samples and overwrite for fitting
+        if (speed is not None) and (min_speed is not None) and (max_speed is not None):
+            valid_samps = np.logical_and(speed >= min_speed, speed <= max_speed)
+        else:
+            valid_samps = np.ones(len(theta), dtype=bool)
 
+    theta = theta[valid_samps]
     # binning of the angle / get discrete design matrix
     ang_design_matrix, ang_bin_idx = rs.get_discrete_data_mat(theta, ang_bin_edges)
 
@@ -1845,22 +2462,13 @@ def get_border_encoding_model(x, y, neural_data, x_bin_edges, y_bin_edges, feat_
     n_features = features.shape[1]  # number of columns
 
     # obtain relevant functions for data type
+    map_params = {'x_bin_edges': x_bin_edges, 'y_bin_edges': y_bin_edges,
+                  'spatial_window_size': spatial_window_size, 'spatial_sigma': spatial_sigma}
+    spatial_map_function = get_spatial_map_function(data_type, **map_params)
     if data_type == 'spikes':
-        def spatial_map_function(_spikes, _x, _y):
-            out_map = spikes_2_rate_map(_spikes, _x, _y,
-                                        x_bin_edges=x_bin_edges, y_bin_edges=y_bin_edges,
-                                        spatial_window_size=spatial_window_size, spatial_sigma=spatial_sigma)
-            return out_map
-
         model_function = lm.PoissonRegressor(alpha=0, fit_intercept=False)
         reg_type = 'poisson'
     elif data_type == 'fr':
-        def spatial_map_function(_fr, _x, _y):
-            out_map = firing_rate_2_rate_map(_fr, _x, _y,
-                                             x_bin_edges=x_bin_edges, y_bin_edges=y_bin_edges,
-                                             spatial_window_size=spatial_window_size, spatial_sigma=spatial_sigma)
-            return out_map
-
         model_function = lm.LinearRegression(fit_intercept=False)
         reg_type = 'linear'
     else:
@@ -2252,11 +2860,13 @@ def _get_lin_proximity_array(dim_size, border_width):
 
 
 def get_sigmoid_border_proximity_mats(width, height, border_width_bins=3,
-                                      sigmoid_slope_thr=0.1, center_gaussian_spread=0.2):
+                                      sigmoid_slope_thr=0.1, center_gaussian_spread=0.2, include_center_feature=True,
+                                      **kwargs):
     """
     Computes normalized and smoothed proximity to the east wall, north wall, and to the center.
     For the walls it uses a sigmoid function, for which the wall_width determines when it saturates
     For the center it uses a normalized gaussian.
+    :param include_center_feature:
     :param width: width of the environment [bins]
     :param height: height of the environment [bins]
     :param border_width_bins: number of bins from the border for the sigmoid to saturate
@@ -2276,16 +2886,20 @@ def get_sigmoid_border_proximity_mats(width, height, border_width_bins=3,
     north_prox = np.flipud(south_prox)
 
     x, y = np.meshgrid(np.arange(width), np.arange(height))  # get 2D variables instead of 1D
-    center_prox = gaussian_2d(y=y, x=x, my=center_h, mx=center_w, sx=width * center_gaussian_spread,
-                              sy=height * center_gaussian_spread)
-    center_prox = center_prox / np.max(center_prox)
 
-    prox_mats = np.zeros((5, height, width))
+    if include_center_feature:
+        center_prox = gaussian_2d(y=y, x=x, my=center_h, mx=center_w, sx=width * center_gaussian_spread,
+                                  sy=height * center_gaussian_spread)
+        center_prox = center_prox / np.max(center_prox)
+        prox_mats = np.zeros((5, height, width))
+        prox_mats[4] = center_prox
+    else:
+        prox_mats = np.zeros((4, height, width))
+
     prox_mats[0] = east_prox
     prox_mats[1] = north_prox
     prox_mats[2] = west_prox
     prox_mats[3] = south_prox
-    prox_mats[4] = center_prox
 
     return prox_mats
 
@@ -2420,22 +3034,13 @@ def get_grid_encoding_model(x, y, neural_data, x_bin_edges, y_bin_edges, data_ty
     xval_samp_ids = rs.split_timeseries(n_samps=n_samps, samps_per_split=1000, n_data_splits=n_xval)
 
     # obtain relevant functions for data type
+    map_params = {'x_bin_edges': x_bin_edges, 'y_bin_edges': y_bin_edges,
+                  'spatial_window_size': spatial_window_size, 'spatial_sigma': spatial_sigma}
+    spatial_map_function = get_spatial_map_function(data_type, **map_params)
     if data_type == 'spikes':
-        def spatial_map_function(_spikes, _x, _y):
-            out_map = spikes_2_rate_map(_spikes, _x, _y,
-                                        x_bin_edges=x_bin_edges, y_bin_edges=y_bin_edges,
-                                        spatial_window_size=spatial_window_size, spatial_sigma=spatial_sigma)
-            return out_map
-
         model_function = lm.PoissonRegressor(alpha=0, fit_intercept=False)
         reg_type = 'poisson'
     elif data_type == 'fr':
-        def spatial_map_function(_fr, _x, _y):
-            out_map = firing_rate_2_rate_map(_fr, _x, _y,
-                                             x_bin_edges=x_bin_edges, y_bin_edges=y_bin_edges,
-                                             spatial_window_size=spatial_window_size, spatial_sigma=spatial_sigma)
-            return out_map
-
         model_function = lm.LinearRegression(fit_intercept=False)
         reg_type = 'linear'
     else:
@@ -2471,7 +3076,7 @@ def get_grid_encoding_model(x, y, neural_data, x_bin_edges, y_bin_edges, data_ty
                                                **grid_encoding_features_params)
 
                 # can only create model if fields enough are found.
-                if ~np.any(np.isnan(fields_train)):
+                if fields_train is not None:
                     # test response
                     response_test = neural_data[unit, test_idx]
 
@@ -2532,7 +3137,7 @@ def get_grid_encodign_features(fields, x, y, x_bin_edges, y_bin_edges):
 
 
 def get_grid_fields(fr, x, y, x_bin_edges, y_bin_edges, thr=0.1, min_field_size=10,
-                    sigmoid_center=0.5, sigmoid_slope=10):
+                    sigmoid_center=0.5, sigmoid_slope=10, binary_fields=False):
     height = len(y_bin_edges) - 1
     width = len(x_bin_edges) - 1
 
@@ -2556,11 +3161,14 @@ def get_grid_fields(fr, x, y, x_bin_edges, y_bin_edges, thr=0.1, min_field_size=
 
         field_maps = np.zeros((n_fields, height, width))
         for field_id in range(n_fields):
-            field_maps[field_id] = fields == field_id
+            if binary_fields:
+                field_maps[field_id] = fields == field_id
+            else:
+                field_maps[field_id] = (fields == field_id)*moire_fit
 
         return field_maps
     else:
-        return np.nan
+        return None
 
 
 def get_encoding_map_fit(fr, maps, x, y, x_bin_edges, y_bin_edges, reg_type='linear', bias_term=False):
@@ -2701,7 +3309,7 @@ def get_encoding_map_predictions(fr, maps, coefs, x, y, x_bin_edges, y_bin_edges
     return fr_hat, r2, err, nerr
 
 
-def compute_grid_score(rate_map, ac_thr=0.1, radix_range=None,
+def compute_grid_score(rate_map, ac_thr=0.01, radix_range=None,
                        apply_sigmoid=True, sigmoid_center=None, sigmoid_slope=None,
                        find_fields=True,
                        verbose=False, ):
@@ -2748,6 +3356,7 @@ def compute_grid_score(rate_map, ac_thr=0.1, radix_range=None,
         while_counter = 0
         found_three_fields_flag = False
         thr_factor = 1
+        fields_map = np.zeros_like(n_rate_map)
         while (not found_three_fields_flag) and (while_counter <= 4):
             fields_map, n_fields = get_map_fields(n_rate_map, thr=mean_rate * thr_factor)
             if n_fields >= 3:
@@ -2772,13 +3381,18 @@ def compute_grid_score(rate_map, ac_thr=0.1, radix_range=None,
     ac_map_w = ac_map.shape[1]
     ac_map_h = ac_map.shape[0]
 
-    # get fields
-    map_fields, n_fields = get_map_fields(ac_map, thr=ac_thr)
-    n_fields = int(n_fields)
-
-    # get field positions
-    map_fields = np.array(map_fields, dtype=int)
-    field_locs = ndimage.measurements.center_of_mass(ac_map, map_fields, np.arange(n_fields))
+    # # get fields
+    # map_fields, n_fields = get_map_fields(ac_map, thr=ac_thr)
+    # n_fields = int(n_fields)
+    #
+    # # get field positions
+    # map_fields = np.array(map_fields, dtype=int)
+    # field_locs = ndimage.measurements.center_of_mass(ac_map, map_fields, np.arange(n_fields))
+    #
+    ac_p = detect_img_peaks(ac_map, background_thr=ac_thr)
+    labeled_ac_p, n_fields = ndimage.label(ac_p)
+    labeled_ac_p -= 1
+    field_locs = ndimage.measurements.center_of_mass(ac_p, labeled_ac_p, np.arange(n_fields))
     field_locs = np.array(field_locs)
 
     # field_mass = [np.sum(map_fields == field_id) for field_id in np.arange(n_fields)]
@@ -2798,24 +3412,27 @@ def compute_grid_score(rate_map, ac_thr=0.1, radix_range=None,
         if verbose:
             print('Did not find enough auto correlation fields.')
         return np.nan, np.nan, np.nan, np.nan
-
-    # maske the closest fields
-    masked_fields = np.array(map_fields)
-    for field in range(int(n_fields)):
-        if field not in closest_six_fields_idx:
-            masked_fields[map_fields == field] = -1
+    #
+    # # maske the closest fields
+    # masked_fields = np.array(map_fields)
+    # for field in range(int(n_fields)):
+    #     if field not in closest_six_fields_idx:
+    #         masked_fields[map_fields == field] = -1
 
     # select fields
     field_distances2 = field_distances[closest_six_fields_idx]
 
     mean_field_dist = np.mean(field_distances2.r)
-    grid_phase = np.min(field_distances2.ang)  # min angle corresponds to closest autocorr from x axis
+    angs = np.array(field_distances2.ang)
+    angs[angs > np.pi] = np.mod(angs[angs > np.pi], np.pi) - np.pi
+
+    grid_phase = np.min(np.abs(angs))  # min angle corresponds to closest autocorr from x axis
 
     radix_range = np.array(radix_range) * mean_field_dist
 
     # mask the region
-    mask_radix_out = np.zeros_like(map_fields)
-    mask_radix_in = np.zeros_like(map_fields)
+    mask_radix_out = np.zeros_like(ac_map)
+    mask_radix_in = np.zeros_like(ac_map)
 
     r, c = draw.disk((center.xy[0, 1], center.xy[0, 0]), radix_range[1], shape=(ac_map_h, ac_map_w))
     mask_radix_out[r, c] = 1
@@ -2999,6 +3616,73 @@ def fit_moire_grid(fr_map, **kwargs):
     return fit_l, fit_theta, moire_grid, score_mat
 
 
+# ------------------------------------------------- Auxiliary Functions ----------------------------------------------#
+def get_spatial_map_function(data_type, **params):
+    map_params = ['x_bin_edges', 'y_bin_edges', 'spatial_window_size', 'spatial_sigma', 'apply_median_filt']
+    if 'x_bin_edges' not in params.keys():
+        if 'x_bin_edges_' in params.keys():
+            params['x_bin_edges'] = params['x_bin_edges_']
+    if 'y_bin_edges' not in params.keys():
+        if 'y_bin_edges_' in params.keys():
+            params['y_bin_edges'] = params['y_bin_edges_']
+
+    for p in map_params:
+        if p not in params.keys():
+            if p == 'apply_median_filt':
+                params[p] = False
+            elif p == 'spatial_window_size':
+                params[p] = 5
+            elif p == 'spatial_sigma':
+                params[p] = 2
+            else:
+                raise ValueError(f"Missing {p} Param")
+
+    if data_type == 'spikes':
+        def spatial_map_function(_spikes, _x, _y):
+            out_map = spikes_2_rate_map(_spikes, _x, _y, **params)
+            return out_map
+
+    elif data_type == 'fr':
+        def spatial_map_function(_fr, _x, _y):
+            out_map = firing_rate_2_rate_map(_fr, _x, _y, **params)
+            return out_map
+    else:
+        raise NotImplementedError
+    return spatial_map_function
+
+
+def detect_img_peaks(image, background_thr=0.01):
+    """
+    Takes an image and detect the peaks usingthe local maximum filter.
+    Returns a boolean mask of the peaks (i.e. 1 when
+    the pixel's value is the neighborhood maximum, 0 otherwise)
+    ** modified from: https://stackoverflow.com/questions/3684484/peak-detection-in-a-2d-array
+    """
+    # define an 8-connected neighborhood
+    neighborhood = generate_binary_structure(2, 2)
+
+    #apply the local maximum filter; all pixel of maximal value
+    #in their neighborhood are set to 1
+    local_max = maximum_filter(image, footprint=neighborhood) == image
+    #local_max is a mask that contains the peaks we are
+    #looking for, but also the background.
+    #In order to isolate the peaks we must remove the background from the mask.
+
+    #we create the mask of the background
+    background = (image<background_thr)
+
+    #a little technicality: we must erode the background in order to
+    #successfully subtract it form local_max, otherwise a line will
+    #appear along the background border (artifact of the local maximum filter)
+    eroded_background = binary_erosion(background, structure=neighborhood, border_value=1)
+
+    #we obtain the final mask, containing only peaks,
+    #by removing the background from the local_max mask (xor operation)
+    detected_peaks = local_max * ~eroded_background
+
+    return detected_peaks
+
+
 ########################################################################################################################
 ################################### utils ################################################
 ########################################################################################################################
@@ -3057,7 +3741,7 @@ def default_OF_params():
                                   'width_bins': 3,  # distance from border to consider it a border cell [bins]
                                   'min_field_size_bins': 10},  # minimum area for fields in # of bins
 
-        'grid_score_params__': {'ac_thr': 0.1,  # autocorrelation threshold for finding fields
+        'grid_score_params__': {'ac_thr': 0.01,  # autocorrelation threshold for finding fields
                                 'radix_range': [0.5, 2.0],  # range of radii for grid score in the autocorr
                                 'apply_sigmoid': True,  # apply sigmoid to rate maps
                                 'sigmoid_center': 0.5,  # center for sigmoid
