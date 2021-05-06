@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.interpolate import interp1d
+import scipy.signal
 from scipy.signal import filtfilt, get_window
 
 
@@ -131,3 +132,84 @@ def get_last_not_nan_value(x, i):
         return get_last_not_nan_value(x, i - 1)
     else:
         return x[i]
+
+
+def get_sos_filter_bank(f_types, fs=32000.0, hp_edge_freq=None, lp_edge_freq=None, sp_edge_freq=None, notch_freq=None,
+                        notch_harmonics=2, notch_q=20, gpass=0.2, gstop=60.0):
+    """
+    Function that creates default filters
+    fTypes -> list of filters that have to be ['HP', 'LP', 'Notch', 'Sp'].
+    fs -> integer, sampling frequency in samps/s defualt to 32000
+    *_EdgeFreq -> edge frequencies for each filter type.
+        Defaults are: HP-2Hz, LP-5000Hz, Sp->300Hz [High Pass], Notch->60Hz (3 Harmonics)
+    Notch_Harmonics -> int, # of harmonics from Notch_Freq to filter [as default]
+    gpass -> allowed oscillation gain in the pass bands [def. 0.2dB ~ to up to 1.03 multiplication of the pass band  ]
+    gstop -> required suppresion in the stopband [def. 60dB ~ at least to 0.001 multiplication of the stop band  - ]
+    returns SOS a N sections x 6 second order sections filter matrix.
+    """
+
+    SOS = np.zeros((0, 6))
+    for f in f_types:
+        if f not in ['HP', 'LP', 'Notch', 'Sp']:
+            print('filter type {} not supported.'.format(f))
+            print('skipping filter.')
+
+        # settings for low pass and bandpass
+        if f in ['LP', 'HP']:
+            if f is 'LP':
+                if lp_edge_freq is None:
+                    cut_freq = 5000.0
+                    cut_buffer = 5500.0
+                else:
+                    cut_freq = lp_edge_freq
+                    cut_buffer = lp_edge_freq + lp_edge_freq * 0.1
+            elif f is 'HP':
+                if hp_edge_freq is None:
+                    cut_freq = 2.0
+                    cut_buffer = 0.2
+                else:
+                    cut_freq = hp_edge_freq
+                    cut_buffer = hp_edge_freq * 0.1
+
+            sos = scipy.signal.iirdesign(cut_freq / (fs / 2), cut_buffer / (fs / 2), gpass, gstop, output='sos')
+            SOS = np.vstack((SOS, sos))
+
+        if f is 'Notch':
+
+            n_notches = notch_harmonics + 1
+
+            if notch_freq is None:
+                cut_freq = np.arange(1, n_notches + 1) * 60.0
+            else:
+                cut_freq = np.arange(1, n_notches + 1) * notch_freq
+
+            if notch_q is None:
+                q = np.array(cut_freq)  # changing Quality factor to keep notch bandwidth constant.
+
+            elif type(notch_q) is np.ndarray:
+                if len(notch_q) >= n_notches:
+                    q = np.array(notch_q)
+                # if length of quality factor array don't match the number of harmonics default to the first one
+                elif len(notch_q) < n_notches:
+                    q = np.ones(n_notches) * notch_q[0]
+            else:
+                # Q = np.ones(nNotches)*Notch_Q
+                q = np.arange(1, n_notches + 1) * notch_q
+
+            for i, notch in enumerate(cut_freq):
+                b, a = scipy.signal.iirnotch(notch, q[i], fs=fs)
+                sos = scipy.signal.tf2sos(b, a)
+                SOS = np.vstack((SOS, sos))
+
+        if f is 'Sp':
+            if sp_edge_freq is None:
+                cut_freq = 350.0
+                cut_buffer = 300.0
+            else:
+                cut_freq = sp_edge_freq
+                cut_buffer = sp_edge_freq - sp_edge_freq * 0.1
+            sos = scipy.signal.iirdesign(cut_freq / (fs / 2), cut_buffer / (fs / 2), gpass, gstop, output='sos')
+            SOS = np.vstack((SOS, sos))
+
+    zi = scipy.signal.sosfilt_zi(SOS)
+    return SOS, zi
