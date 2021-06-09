@@ -76,6 +76,8 @@ MazeZonesCoords = {'Home': [(-300, -80), (-300, 80), (300, 80), (300, -80)],
                    'I2': [(-330, 900), (-450, 1180), (-200, 1000)],
                    }
 
+SegA_subcoordinates = {'SegA': [(-150, 80), (-80, 500), (80, 500), (150, 80)]}
+
 # expected traveling distances for each segment in cm
 MazeZonesDists = {'Home': 4.0, 'Center': 4.0, 'SegA': 42.0, 'SegB': 42.0,
                   'SegC': 21.0, 'SegD': 21.0, 'SegE': 42.0, 'SegF': 21.0,
@@ -96,28 +98,33 @@ filtCoeff = signal.firwin(smooth_filt_window, cutoff=0.2, window="hanning")
 ################################################################################
 # Main Functions: get
 ################################################################################
-def getBehTrackData(sessionPaths, overwrite=0):
-    if (not sessionPaths['BehavTrackDat'].exists()) | overwrite:
+def getBehTrackData(session_info, overwrite=0):
+
+    if (not session_info.paths['behav_track_data'].exists()) | overwrite:
         print('Computing Position Data.')
-        posPath = Path(sessionPaths['Raw'], 'VT1.nvt')
-        t, x, y, ha = pp_funcs.get_position(posPath)
-        xs, ys, ts = processXY(x, y, t, sessionPaths['step'])
+        # get session time and track data
+        t_rs = session_info.get_time()  # resampled time (binned time)
+        t_vt, x_vt, y_vt, ha_vt = session_info.get_raw_track_data()  # position, etc in pixels, ha is in degrees
+        ha_vt = np.mod(np.deg2rad(ha_vt), 2 * np.pi)  # convert to radians.
+
+        x, y = processXY(x_vt, y_vt, t_vt, t_rs)
+        t = t_rs
 
         print('Computing Event Data.')
-        evPath = Path(sessionPaths['Raw'], 'Events.nev')
+        evPath = Path(session_info.paths['Raw'], 'Events.nev')
         ev = pp_funcs.get_events(evPath)
-        EventDat = getEventMatrix(ev, ts)
+        EventDat = getEventMatrix(ev, t)
 
-        print('Comrrecting Positions with Event Info.')
-        xs, ys = correctXY(EventDat, xs, ys)
+        print('Correcting Positions with Event Info.')
+        x, y = correctXY(EventDat, x, y)
 
         print('Creating Position Data Structure.')
-        PosDat = getPositionMat(xs, ys, ts, sessionPaths['step'])
+        PosDat = getPositionMat(x, y, t, session_info.params['time_step'])
         PosDat['EventDat'] = EventDat
-        PosDat['tB'] = t[0]
-        PosDat['tE'] = t[-1]
+        PosDat['tB'] = t_vt[0]
+        PosDat['tE'] = t_vt[-1]
 
-        with h5py.File(sessionPaths['BehavTrackDat'], 'w') as f:
+        with h5py.File(session_info.paths['behav_track_data'], 'w') as f:
             for k, v in PosDat.items():
                 f.create_dataset(k, data=v)
         print('Behavioral Tracking Variables Computed and Saved.')
@@ -125,7 +132,7 @@ def getBehTrackData(sessionPaths, overwrite=0):
     else:
         print('Loading Beh Tracking Data')
         PosDat = {}
-        with h5py.File(sessionPaths['BehavTrackDat'], 'r') as f:
+        with h5py.File(session_info.paths['behav_track_data'], 'r') as f:
             for k in f.keys():
                 if k == 'PosMat':
                     PosDat[k] = pd.DataFrame(f.get(k)[()], columns=ZonesNames)
@@ -339,7 +346,7 @@ def ScaleRotateSmoothTrackDat(x, y):
     return x, y
 
 
-def processXY(x, y, t, step):
+def processXY(x, y, t, t_rs):
     # transform and smooth tracking signal @ original rate
     t1 = time.time()
     xs, ys = ScaleRotateSmoothTrackDat(x, y)
@@ -347,13 +354,12 @@ def processXY(x, y, t, step):
     print('Smoothing track data completed: {0:0.2f} s '.format(t2 - t1))
 
     # resampling the data
-    ts, xs = filt_funcs.resample_signal(t, xs, step)
-    _, ys = filt_funcs.resample_signal(t, ys, step)
-    ts = np.round(ts * 1000) / 1000  # round tp to ms resolution.
+    xs = filt_funcs.resample_signal(t, t_rs, xs)
+    ys = filt_funcs.resample_signal(t, t_rs, ys)
     t3 = time.time()
-    print('Resampling the Data to {0} seconds completed: {1:.2f} s '.format(step, t3 - t2))
+    print(f'Resampling the Data completed: {t3-t2:.2f}s')
 
-    return xs, ys, ts
+    return xs, ys
 
 
 def correctXY(EventDat, x, y):

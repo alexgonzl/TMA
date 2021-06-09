@@ -37,10 +37,13 @@ subject and session.
 
 
 class SubjectInfo:
+
+
     def __init__(self, subject, sorter='KS2', data_root='BigPC', overwrite=False, time_step=0.02,
                  samp_rate=32000, n_tetrodes=16, fr_temporal_smoothing=0.125, spk_outlier_thr=None,
                  overwrite_cluster_stats=False):
 
+        subject = str(subject.title())
         self.subject = subject
         self.sorter = sorter
         self.params = {'time_step': time_step, 'samp_rate': samp_rate, 'n_tetrodes': n_tetrodes,
@@ -56,7 +59,7 @@ class SubjectInfo:
             elif subject in ['Ca', 'Mi', 'Al']:
                 self.root_path = Path('/mnt/Data3_SSD2T/Data')
 
-            self.raw_path = Path('/mnt/RawData/Data', subject)
+            self.raw_path = Path('/mnt/Raw_Data/Data', subject)
 
         elif data_root == 'oak':
             self.root_path = Path('/mnt/o/giocomo/alexg/')
@@ -65,7 +68,7 @@ class SubjectInfo:
             # self.results_path = self.root_path / 'Analyses' / subject
         else:
             self.root_path = Path(data_root)
-            self.raw_path = self.root_path / 'RawData' / subject
+            self.raw_path = self.root_path / 'Raw_Data' / subject
 
         self.preprocessed_path = self.root_path / 'PreProcessed' / subject
         self.sorted_path = self.root_path / 'Sorted' / subject
@@ -589,6 +592,7 @@ class SubjectInfo:
         paths['cluster_fr_maps'] = paths['Results'] / 'maps.npy'
         paths['cluster_OF_metrics'] = paths['Results'] / 'OF_metrics.csv'
         paths['cluster_OF_encoding_models'] = paths['Results'] / 'OF_encoding.csv'
+        paths['cluster_OF_encoding_agg_coefs'] = paths['Results'] / 'OF_encoding_agg_coefs.csv'
 
         paths['ZoneAnalyses'] = paths['Results'] / 'ZoneAnalyses.pkl'
 
@@ -606,23 +610,23 @@ class SubjectInfo:
 
         # plots directories
         paths['Plots'] = paths['Results'] / 'Plots'
-        paths['Plots'].mkdir(parents=True, exist_ok=True)
+        # paths['Plots'].mkdir(parents=True, exist_ok=True)
         paths['SampCountsPlots'] = paths['Plots'] / 'SampCountsPlots'
-        paths['SampCountsPlots'].mkdir(parents=True, exist_ok=True)
+        # paths['SampCountsPlots'].mkdir(parents=True, exist_ok=True)
 
         paths['ZoneFRPlots'] = paths['Plots'] / 'ZoneFRPlots'
-        paths['ZoneFRPlots'].mkdir(parents=True, exist_ok=True)
+        # paths['ZoneFRPlots'].mkdir(parents=True, exist_ok=True)
 
         paths['ZoneCorrPlots'] = paths['Plots'] / 'ZoneCorrPlots'
-        paths['ZoneCorrPlots'].mkdir(parents=True, exist_ok=True)
+        # paths['ZoneCorrPlots'].mkdir(parents=True, exist_ok=True)
         paths['SIPlots'] = paths['Plots'] / 'SIPlots'
-        paths['SIPlots'].mkdir(parents=True, exist_ok=True)
+        # paths['SIPlots'].mkdir(parents=True, exist_ok=True)
 
         paths['TrialPlots'] = paths['Plots'] / 'TrialPlots'
-        paths['TrialPlots'].mkdir(parents=True, exist_ok=True)
+        # paths['TrialPlots'].mkdir(parents=True, exist_ok=True)
 
         paths['CueDescPlots'] = paths['Plots'] / 'CueDescPlots'
-        paths['CueDescPlots'].mkdir(parents=True, exist_ok=True)
+        # paths['CueDescPlots'].mkdir(parents=True, exist_ok=True)
 
         return paths
 
@@ -814,11 +818,10 @@ class SubjectSessionInfo(SubjectInfo):
         self.clusters = self.session_clusters[session]
         if len(session.split('_')) == 3:
             self.subject, self.task, self.date = session.split('_')
-            self.subject = self.subject.capitalize()
             self.sub_session_id = '0000'
         elif len(session.split('_')) == 4:
             self.subject, self.task, self.date, self.sub_session_id = session.split('_')
-            self.subject = self.subject.capitalize()
+        self.subject = self.subject.capitalize()
 
         self.task_params = get_task_params(self)
         self.n_units = self.clusters['n_cell'] + self.clusters['n_mua']
@@ -867,8 +870,21 @@ class SubjectSessionInfo(SubjectInfo):
                 'scores': (self.get_scores, self.paths['cluster_OF_metrics'].exists()),
                 'encoding_models': (self.get_encoding_models, self.paths['cluster_OF_encoding_models'].exists())
             }
+        elif self.task[:2] == 'T3':
+            analyses = {
+                'track_data': (self.get_track_data, self.paths['behav_track_data'].exists()),
+                'time': (self.get_time, True),
+                'spikes': (self.get_spikes, self.paths['cluster_spikes'].exists()),
+                'binned_spikes': (self.get_binned_spikes, self.paths['cluster_binned_spikes'].exists()),
+                'fr': (self.get_fr, self.paths['cluster_fr'].exists()),
+                'spike_maps': (self.get_spike_maps, self.paths['cluster_spike_maps'].exists()),
+                'maps': (self.get_fr_maps, self.paths['cluster_fr_maps'].exists()),
+                'scores': (self.get_scores, self.paths['cluster_OF_metrics'].exists()),
+                'encoding_models': (self.get_encoding_models, self.paths['cluster_OF_encoding_models'].exists())
+            }
         else:
-            raise NotImplementedError
+            return NotImplementedError
+
         return analyses
 
     def run_analyses(self, overwrite=False):
@@ -1216,12 +1232,13 @@ class SubjectSessionInfo(SubjectInfo):
         """
         if self.n_units == 0:
             print('No units.')
-            return None
+            return None, None
 
         if self.task == 'OF':
             if not self.paths['cluster_OF_encoding_models'].exists() or overwrite:
-                models = self.get_encoding_models()
-                scores = models.scores
+                sem = self.get_encoding_models()
+                # get scores and save
+                scores = sem.scores
                 scores.to_csv(self.paths['cluster_OF_encoding_models'])
             else:
                 scores = pd.read_csv(self.paths['cluster_OF_encoding_models'], index_col=0)
@@ -1302,7 +1319,7 @@ def get_task_params(session_info):
 
             # filtering parameters
             'spatial_sigma': 2,  # spatial smoothing sigma factor [au]
-            'spatial_window_size': 5,  # number of spatial position bins to smooth [bins]
+            'spatial_window_size': 3,  # number of spatial position bins to smooth [bins]
             'temporal_window_size': 11,  # smoothing temporal window for filtering [bins]
             'temporal_angle_window_size': 11,  # smoothing temporal window for angles [bins]
             'temporal_window_type': 'hann',  # window type for temporal window smoothing

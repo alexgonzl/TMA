@@ -1,4 +1,5 @@
 import numpy as np
+import scipy.signal as signal
 from scipy.signal import filtfilt
 from types import SimpleNamespace
 import warnings
@@ -261,18 +262,22 @@ def get_session_encoding_models(session_info, models=None):
     """
     # get data
     fr = session_info.get_fr()
+
+    # smooth data to match behavior time smoothness
+    sos_coefs = signal.tf2sos(session_info.task_params['filter_coef_'], 1)
+    fr2 = signal.sosfiltfilt(sos_coefs, fr, axis=1)
+
     spikes = session_info.get_binned_spikes()
     of_dat = SimpleNamespace(**session_info.get_track_data())
     task_params = session_info.task_params
 
     sem = spatial_funcs.AllSpatialEncodingModels(x=of_dat.x, y=of_dat.y, speed=of_dat.sp, ha=of_dat.ha,
-                                                 hd=of_dat.hd, neural_data=fr, n_jobs=10, **task_params)
+                                                 hd=of_dat.hd, neural_data=fr2, n_jobs=10, **task_params)
     if models is None:
-        sem.get_all_models()
+        sem.get_models()
     else:
         if isinstance(models, str):
             models = [models]
-
         for model in models:
             model_method = f"get_{model}_model"
             if hasattr(sem, model_method):
@@ -280,6 +285,7 @@ def get_session_encoding_models(session_info, models=None):
             else:
                 print(f"Encoding model for {model} does not exists.")
 
+    sem.get_scores()
     return sem
 
 

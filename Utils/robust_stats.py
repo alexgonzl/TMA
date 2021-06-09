@@ -128,13 +128,15 @@ def robust_zscore(x, axis=None):
     return (x - m) / (mad * 1.4826)
 
 
-def zscore(signal):
-    mu = np.nanmean(signal)
-    s = np.nanstd(signal)
-    if s > 0:
-        z = (signal-mu)/s
-    else:
-        z = signal-mu
+def zscore(signal, axis=None):
+    mu = np.nanmean(signal, axis=axis)
+    s = np.nanstd(signal, axis=axis)
+    z = np.zeros_like(signal)
+    for ii, s_ii in enumerate(s):
+        if s_ii > 0:
+            z[ii] = (signal[ii]-mu[ii])/s_ii
+        else:
+            z[ii] = signal[ii]-mu[ii]
     return z
 
 
@@ -666,6 +668,8 @@ def split_timeseries(n_samps, samps_per_split=1500, n_data_splits=10, ):
     :return: time series of integers, each with the id of the split.
     """
 
+    assert n_data_splits*samps_per_split<=n_samps, f"Error. Needs at least {n_data_splits*samps_per_split} samples" \
+                                                   f" provided only {n_samps} "
     split_edges = np.append(np.arange(0, n_samps, samps_per_split), n_samps)
     n_ts_segments = len(split_edges)-1
 

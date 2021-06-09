@@ -1,3 +1,5 @@
+import sys
+
 import numpy as np
 import pandas as pd
 from scipy import ndimage, stats, signal
@@ -17,8 +19,8 @@ import warnings
 import copy
 
 
-# TODO: make global constant params
-
+# TODO: 1. move classes out to open field functions
+#       2. optimize grid model
 
 # class functions
 class SpatialMetrics:
@@ -220,9 +222,9 @@ class SpatialEncodingModelCrossVal:
                 self.norm_resp = norm_resp
 
         # response info
-        self.max_response = np.zeros((n_xval, self.n_units))*np.nan
-        self.mean_response = np.zeros((n_xval, self.n_units))*np.nan
-        self.std_response = np.zeros((n_xval, self.n_units))*np.nan
+        self.max_response = np.zeros((n_xval, self.n_units)) * np.nan
+        self.mean_response = np.zeros((n_xval, self.n_units)) * np.nan
+        self.std_response = np.zeros((n_xval, self.n_units)) * np.nan
 
         if crossval_samp_ids is not None:
             self.crossval_samp_ids = crossval_samp_ids
@@ -285,16 +287,16 @@ class SpatialEncodingModelCrossVal:
             mr = self.mean_response[fold, :][:, np.newaxis]
             sr = self.std_response[fold, :][:, np.newaxis]
 
-            train_response = (train_response-mr)/sr
-            test_response = (test_response-mr)/sr
+            train_response = (train_response - mr) / sr
+            test_response = (test_response - mr) / sr
 
         elif self.norm_resp == 'max':
 
             self.max_response[fold, :] = np.nanmax(train_response, axis=1)
 
             mr = self.max_response[fold, :][:, np.newaxis]
-            train_response = train_response/mr
-            test_response = test_response/mr
+            train_response = train_response / mr
+            test_response = test_response / mr
 
         return train_response, test_response
 
@@ -398,8 +400,8 @@ class SpatialEncodingModelCrossVal:
         train_map, test_map = self.get_spatial_map_fold(fold)
         train_map_hat, test_map_hat = self.get_predicted_spatial_map_fold(fold)
 
-        train_r = np.zeros(self.n_units)*np.nan
-        test_r = np.zeros(self.n_units)*np.nan
+        train_r = np.zeros(self.n_units) * np.nan
+        test_r = np.zeros(self.n_units) * np.nan
         for unit in range(self.n_units):
             try:
                 train_r[unit] = rs.pearson(train_map[unit].flatten(), train_map_hat[unit].flatten())
@@ -473,7 +475,7 @@ class AllSpatialEncodingModels:
 
         # add extra dimension if neural data is a 1d of samples (1 unit data)
         if neural_data.ndim == 1:
-            neural_data = neural_data[np.newaxis, ]
+            neural_data = neural_data[np.newaxis,]
 
         self.neural_data = neural_data
         self.n_units = neural_data.shape[0]
@@ -500,21 +502,30 @@ class AllSpatialEncodingModels:
         # get time series cross validation splits
         self.secs_per_split = secs_per_split
         self.samps_per_split = np.int(secs_per_split / params['time_step'])
-        self.crossval_samp_ids = rs.split_timeseries(n_samps=self.n_samples,
-                                                     samps_per_split=self.samps_per_split,
-                                                     n_data_splits=n_xval)
 
-        self.valid_sp_samps = None
+        try:
+            self.crossval_samp_ids = rs.split_timeseries(n_samps=self.n_samples,
+                                                         samps_per_split=self.samps_per_split,
+                                                         n_data_splits=n_xval)
+            self.valid_record = True
+        except AssertionError:
+            print("Insuficient Number of samples to run models.")
+            print(sys.exc_info()[1])
+            self.crossval_samp_ids = None
+            self.valid_record = False
 
-        self.models = ['speed', 'hd', 'ha',  'border', 'grid', 'pos']
+        self.valid_sp_samps = np.ones(self.n_samples, dtype=bool)
+
+        self.models = ['speed', 'hd', 'ha', 'border', 'grid', 'pos']
         self.speed_model = None
         self.pos_model = None
         self.ha_model = None
         self.hd_model = None
         self.border_model = None
         self.grid_model = None
+        self.agg_model = None
 
-        self.scores = pd.DataFrame(columns=['unit_id', 'metric', 'split', 'model', 'value'])
+        self.scores = None
 
     def get_speed_model(self):
         features, sp_bin_idx, valid_samps = get_speed_encoding_features(self.speed, self.params['sp_bin_edges_'])
@@ -539,23 +550,26 @@ class AllSpatialEncodingModels:
         self.speed_model.train_model()
         self.speed_model.score_model()
 
-        coefs = self.get_coefs('speed')
-        n_idx = self.n_xval * self.n_units * 2
-        df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
-        cnt = 0
-        for fold in range(self.n_xval):
-            for unit in range(self.n_units):
-                c = coefs[fold, unit]
-                if c is not None:
-                    val = rs.spearman(c, self.params['sp_bin_edges_'][1:])
-                else:
-                    val = np.nan
-                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
-                cnt += 1
-                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
-                cnt += 1
-        df = df.astype({'value': 'float'})
+        df = self._score_coefs_df('speed')
         self.speed_model.scores = self.speed_model.scores.append(df, ignore_index=True)
+
+        # coefs = self.get_coefs('speed')
+        # n_idx = self.n_xval * self.n_units * 2
+        # df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
+        # cnt = 0
+        # for fold in range(self.n_xval):
+        #     for unit in range(self.n_units):
+        #         c = coefs[fold, unit]
+        #         if c is not None:
+        #             val = rs.spearman(c, self.params['sp_bin_edges_'][1:])
+        #         else:
+        #             val = np.nan
+        #         df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
+        #         cnt += 1
+        #         df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
+        #         cnt += 1
+        # df = df.astype({'value': 'float'})
+        # self.speed_model.scores = self.speed_model.scores.append(df, ignore_index=True)
 
     def get_hd_model(self):
         if self.valid_sp_samps is None:
@@ -589,23 +603,26 @@ class AllSpatialEncodingModels:
         self.hd_model.train_model()
         self.hd_model.score_model()
 
-        coefs = self.get_coefs('hd')
-        n_idx = self.n_xval * self.n_units * 2
-        df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
-        cnt = 0
-        for fold in range(self.n_xval):
-            for unit in range(self.n_units):
-                c = coefs[fold, unit]
-                if c is not None:
-                    val = rs.circ_corrcl(self.params['ang_bin_edges_'][1:], c)
-                else:
-                    val = np.nan
-                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
-                cnt += 1
-                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
-                cnt += 1
-        df = df.astype({'value': 'float'})
+        df = self._score_coefs_df('hd')
         self.hd_model.scores = self.hd_model.scores.append(df, ignore_index=True)
+
+        # coefs = self.get_coefs('hd')
+        # n_idx = self.n_xval * self.n_units * 2
+        # df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
+        # cnt = 0
+        # for fold in range(self.n_xval):
+        #     for unit in range(self.n_units):
+        #         c = coefs[fold, unit]
+        #         if c is not None:
+        #             val = rs.circ_corrcl(self.params['ang_bin_edges_'][1:], c)
+        #         else:
+        #             val = np.nan
+        #         df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
+        #         cnt += 1
+        #         df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
+        #         cnt += 1
+        # df = df.astype({'value': 'float'})
+        # self.hd_model.scores = self.hd_model.scores.append(df, ignore_index=True)
 
     def get_ha_model(self):
         if self.valid_sp_samps is None:
@@ -639,29 +656,33 @@ class AllSpatialEncodingModels:
         self.ha_model.train_model()
         self.ha_model.score_model()
 
-        coefs = self.get_coefs('ha')
-        n_idx = self.n_xval * self.n_units * 2
-        df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
-        cnt = 0
-        for fold in range(self.n_xval):
-            for unit in range(self.n_units):
-                c = coefs[fold, unit]
-                if c is not None:
-                    val = rs.circ_corrcl(self.params['ang_bin_edges_'][1:], c)
-                else:
-                    val = np.nan
-                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
-                cnt += 1
-                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
-                cnt += 1
-        df = df.astype({'value': 'float'})
+        df = self._score_coefs_df('ha')
         self.ha_model.scores = self.ha_model.scores.append(df, ignore_index=True)
+
+        # coefs = self.get_coefs('ha')
+        # n_idx = self.n_xval * self.n_units * 2
+        # df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
+        # cnt = 0
+        # for fold in range(self.n_xval):
+        #     for unit in range(self.n_units):
+        #         c = coefs[fold, unit]
+        #         if c is not None:
+        #             val = rs.circ_corrcl(self.params['ang_bin_edges_'][1:], c)
+        #         else:
+        #             val = np.nan
+        #         df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
+        #         cnt += 1
+        #         df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
+        #         cnt += 1
+        # df = df.astype({'value': 'float'})
+        # self.ha_model.scores = self.ha_model.scores.append(df, ignore_index=True)
 
     def get_pos_model(self):
 
         # get feauture parameters
         feature_params = {
-            'spatial_window_size': self.params['spatial_window_size'] if 'spatial_window_size' in self.params.keys() else 5,
+            'spatial_window_size': self.params[
+                'spatial_window_size'] if 'spatial_window_size' in self.params.keys() else 3,
             'spatial_sigma': self.params['spatial_sigma'] if 'spatial_sigma' in self.params.keys() else 2,
             'feat_type': self.params['feat_type'] if 'feat_type' in self.params.keys() else 'pca'}
 
@@ -703,38 +724,40 @@ class AllSpatialEncodingModels:
         self.pos_model.score_model()
         setattr(self.pos_model, 'feature_inverse', inverse)
 
-        coefs = self.get_coefs('pos')
-        n_idx = self.n_xval * self.n_units * 2
-        df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
-        cnt = 0
-        for unit in range(self.n_units):
-            true_rate_map = self.spatial_map_function(response[unit], self.x, self.y).flatten()
-            for fold in range(self.n_xval):
-                try:
-                    c = coefs[fold, unit]
-                    if c is not None:
-                        c_map = inverse(c)
-                        val = rs.pearson(true_rate_map, c_map)
-                    else:
-                        val = np.nan
-                    df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
-                    cnt += 1
-                    df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
-                    cnt += 1
-                except:
-                    pass
-        df = df.astype({'value': 'float'})
+        df = self._score_coefs_df('pos')
         self.pos_model.scores = self.pos_model.scores.append(df, ignore_index=True)
+        # coefs = self.get_coefs('pos')
+        # n_idx = self.n_xval * self.n_units * 2
+        # df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
+        # cnt = 0
+        # for unit in range(self.n_units):
+        #     true_rate_map = self.spatial_map_function(response[unit], self.x, self.y).flatten()
+        #     for fold in range(self.n_xval):
+        #         try:
+        #             c = coefs[fold, unit]
+        #             if c is not None:
+        #                 c_map = inverse(c)
+        #                 val = rs.pearson(true_rate_map, c_map)
+        #             else:
+        #                 val = np.nan
+        #             df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
+        #             cnt += 1
+        #             df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
+        #             cnt += 1
+        #         except:
+        #             pass
+        # df = df.astype({'value': 'float'})
+        # self.pos_model.scores = self.pos_model.scores.append(df, ignore_index=True)
 
     def get_grid_model(self):
 
         feature_params = {'thr': self.params['rate_thr'] if ('rate_thr' in self.params.keys()) else 0.1,
                           'min_field_size': self.params['min_field_size'] if (
-                                      'min_field_size' in self.params.keys()) else 10,
+                                  'min_field_size' in self.params.keys()) else 10,
                           'sigmoid_center': self.params['sigmoid_center'] if (
-                                      'sigmoid_center' in self.params.keys()) else 0.5,
+                                  'sigmoid_center' in self.params.keys()) else 0.5,
                           'sigmoid_slope': self.params['sigmoid_slope'] if (
-                                      'sigmoid_slope' in self.params.keys()) else 10,
+                                  'sigmoid_slope' in self.params.keys()) else 10,
                           'binary_fields': self.params['binary_fields'] if (
                                   'binary_fields' in self.params.keys()) else False,
                           'x_bin_edges': self.params['x_bin_edges_'],
@@ -754,10 +777,12 @@ class AllSpatialEncodingModels:
                                                      **feature_params)
 
                 if fields[fold, unit] is not None:
-                    features[fold, unit, 0] = get_grid_encodign_features(fields[fold, unit], self.x[train_ids], self.y[train_ids],
+                    features[fold, unit, 0] = get_grid_encodign_features(fields[fold, unit], self.x[train_ids],
+                                                                         self.y[train_ids],
                                                                          x_bin_edges=feature_params['x_bin_edges'],
                                                                          y_bin_edges=feature_params['y_bin_edges'])
-                    features[fold, unit, 1] = get_grid_encodign_features(fields[fold, unit], self.x[test_ids], self.y[test_ids],
+                    features[fold, unit, 1] = get_grid_encodign_features(fields[fold, unit], self.x[test_ids],
+                                                                         self.y[test_ids],
                                                                          x_bin_edges=feature_params['x_bin_edges'],
                                                                          y_bin_edges=feature_params['y_bin_edges'])
 
@@ -777,34 +802,36 @@ class AllSpatialEncodingModels:
         self.grid_model.score_model()
         setattr(self.grid_model, 'grid_fields', fields)
 
-        coefs = self.get_coefs('grid')
-        n_idx = self.n_xval*self.n_units*2
-        df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
-        cnt = 0
-        for fold in range(self.n_xval):
-            for unit in range(self.n_units):
-                c = coefs[fold, unit]
-                if c is not None:
-                    m = np.nanmean(c)
-                    s = np.nanstd(c) if len(c) > 1 else 1
-                    val = m/s
-                else:
-                    val = np.nan
-                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
-                cnt += 1
-                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
-                cnt += 1
-        df = df.astype({'value': 'float'})
+        df = self._score_coefs_df('grid')
         self.grid_model.scores = self.grid_model.scores.append(df, ignore_index=True)
+        # coefs = self.get_coefs('grid')
+        # n_idx = self.n_xval * self.n_units * 2
+        # df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
+        # cnt = 0
+        # for fold in range(self.n_xval):
+        #     for unit in range(self.n_units):
+        #         c = coefs[fold, unit]
+        #         if c is not None:
+        #             m = np.nanmean(c)
+        #             s = np.nanstd(c) if len(c) > 1 else 1
+        #             val = m / s
+        #         else:
+        #             val = np.nan
+        #         df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
+        #         cnt += 1
+        #         df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
+        #         cnt += 1
+        # df = df.astype({'value': 'float'})
+        # self.grid_model.scores = self.grid_model.scores.append(df, ignore_index=True)
 
     def get_border_model(self):
         feature_params = {'feat_type': self.params['feat_type'] if ('feat_type' in self.params.keys()) else 'sigmoid',
                           'spatial_window_size': self.params['spatial_window_size'] if (
-                                      'spatial_window_size' in self.params.keys()) else 5,
+                                  'spatial_window_size' in self.params.keys()) else 5,
                           'spatial_sigma': self.params['spatial_sigma'] if (
-                                      'spatial_sigma' in self.params.keys()) else 2,
+                                  'spatial_sigma' in self.params.keys()) else 2,
                           'border_width_bins': self.params['border_width_bins'] if (
-                                      'border_width_bins' in self.params.keys()) else 3,
+                                  'border_width_bins' in self.params.keys()) else 3,
                           'sigmoid_slope_thr': self.params['sigmoid_slope_thr'] if (
                                   'sigmoid_slope_thr' in self.params.keys()) else 0.1,
                           'center_gaussian_spread': self.params['center_gaussian_spread'] if (
@@ -831,35 +858,224 @@ class AllSpatialEncodingModels:
         self.border_model.train_model()
         self.border_model.score_model()
 
-        coefs = self.get_coefs('border')
-        n_idx = self.n_xval*self.n_units*2
+        df = self._score_coefs_df('border')
+        self.border_model.scores = self.border_model.scores.append(df, ignore_index=True)
+        # n_idx = self.n_xval * self.n_units * 2
+        # df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
+        # cnt = 0
+        # for fold in range(self.n_xval):
+        #     for unit in range(self.n_units):
+        #         c = coefs[fold, unit]
+        #         if c is not None:
+        #             val = np.max(c[:4] - c[0])
+        #         else:
+        #             val = np.nan
+        #         df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
+        #         cnt += 1
+        #         df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
+        #         cnt += 1
+        # df = df.astype({'value': 'float'})
+        # self.border_model.scores = self.border_model.scores.append(df, ignore_index=True)
+
+    def get_agg_model(self, models=None):
+        """
+        Aggreggate model. combines the outputs of multiple
+        :param models:
+        :return:
+        """
+        if models is None:
+            models = ['speed', 'hd', 'border', 'grid', 'pos']
+        n_models = len(models)
+
+        response = self.neural_data
+        samples = np.arange(self.n_samples)
+        sp_valid_ids_bool = self.valid_sp_samps
+
+        # needs to generate feautures by fold/unit
+        features = np.empty((self.n_xval, self.n_units, 2), dtype=object)
+        for fold in range(self.n_xval):
+            train_ids = self.crossval_samp_ids != fold
+            test_ids = self.crossval_samp_ids == fold
+            n_fold_train_samps = train_ids.sum()
+            n_fold_test_samps = test_ids.sum()
+
+            # get predicted responses for each model, unit, train/test split
+            model_resp = {}
+            for model in models:
+                if getattr(self, f"{model}_model") is None:
+                    model_resp[model] = np.zeros((self.n_units, n_fold_train_samps)), \
+                                        np.zeros((self.n_units, n_fold_test_samps))
+                else:
+                    model_resp[model] = getattr(self, f"{model}_model").predict_model_fold(fold)
+
+            # speed & hd responses might have different lengths based on valid moving samples
+            fold_train_samples = samples[train_ids]
+            fold_train_samples_sp = samples[train_ids & sp_valid_ids_bool]
+            within_fold_train_sp_ids_bool = np.in1d(fold_train_samples, fold_train_samples_sp)
+
+            fold_test_samples = samples[test_ids]
+            fold_test_samples_sp = samples[test_ids & sp_valid_ids_bool]
+            within_fold_test_sp_ids_bool = np.in1d(fold_test_samples, fold_test_samples_sp)
+
+            # create feature vector
+            for unit in range(self.n_units):
+                X_train = np.zeros((n_fold_train_samps, n_models))
+                X_test = np.zeros((n_fold_test_samps, n_models))
+
+                for mm, model in enumerate(models):
+                    if model in ['speed', 'hd', 'ha']:
+                        X_train[within_fold_train_sp_ids_bool, mm] = model_resp[model][0][unit]
+                        X_test[within_fold_test_sp_ids_bool, mm] = model_resp[model][1][unit]
+                    else:
+                        X_train[:, mm] = model_resp[model][0][unit]
+                        X_test[:, mm] = model_resp[model][1][unit]
+                X_train[np.isnan(X_train)] = 0
+                X_test[np.isnan(X_test)] = 0
+
+                features[fold, unit, 0] = X_train
+                features[fold, unit, 1] = X_test
+
+        if self.data_type == 'spikes':
+            model_function = lm.PoissonRegressor(alpha=0, fit_intercept=False)
+        else:
+            model_function = lm.LinearRegression(fit_intercept=False)
+
+        self.agg_model = SpatialEncodingModelCrossVal(features, response, self.x, self.y,
+                                                      crossval_samp_ids=self.crossval_samp_ids, n_xval=self.n_xval,
+                                                      response_type=self.data_type, reg_type=self.reg_type,
+                                                      model_function=model_function,
+                                                      spatial_map_function=self.spatial_map_function,
+                                                      features_by_fold_unit=True, norm_resp=self.norm_resp)
+
+        setattr(self.agg_model, 'included_models', models)
+        self.agg_model.train_model()
+        self.agg_model.score_model()
+
+        df = self._score_coefs_df('agg')
+        self.agg_model.scores = self.agg_model.scores.append(df, ignore_index=True)
+        # # fill in with nan coef scores for consistency
+        # n_idx = self.n_xval * self.n_units * 2
+        # df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
+        # cnt = 0
+        # for fold in range(self.n_xval):
+        #     for unit in range(self.n_units):
+        #         val = np.nan
+        #         df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
+        #         cnt += 1
+        #         df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
+        #         cnt += 1
+        # df = df.astype({'value': 'float'})
+        # self.agg_model.scores = self.agg_model.scores.append(df, ignore_index=True)
+
+    def _score_coefs_df(self, model, agg_coef=False):
+
+        if agg_coef:
+            metric_name = 'agg_coef'
+            coefs = self.get_coefs('agg')
+
+            def c_func(betas, *args):
+                if model in self.agg_model.included_models:
+                    model_idx = np.array(self.agg_model.included_models) == model
+                    return betas[model_idx]
+                else:
+                    return np.nan
+        else:
+            metric_name = 'coef'
+            coefs = self.get_coefs(model)
+            if model == 'border':
+                def c_func(betas):
+                    b = np.max(betas[0:4])
+                    ce = betas[4]
+                    return (b - ce) / np.abs(betas).mean()
+            elif model == 'grid':
+                def c_func(betas):
+                    m = np.nanmean(betas)
+                    s = np.nanstd(betas) if len(betas) > 1 else 1
+                    return m / s
+            elif model == 'pos':
+                def c_func(betas, trm):
+                    c_map = self.pos_model.feature_inverse(betas)
+                    r = rs.pearson(c_map, trm)
+                    return np.arctanh(r)
+            elif model in ['hd', 'ha']:
+                def c_func(betas):
+                    cr = rs.circ_corrcl(self.params['ang_bin_edges_'][1:], betas)
+                    return np.arctanh(cr)
+            elif model == 'speed':
+                def c_func(betas):
+                    r =rs.spearman(betas, self.params['sp_bin_edges_'][1:])
+                    return np.arctanh(r)
+            elif model == 'agg':
+                def c_func(betas):
+                    return np.nan
+            else:
+                sys.exit(f"invalid model {model}")
+
+        n_idx = self.n_xval * self.n_units * 2
         df = pd.DataFrame(index=range(n_idx), columns=['fold', 'unit_id', 'metric', 'split', 'value'])
         cnt = 0
-        for fold in range(self.n_xval):
-            for unit in range(self.n_units):
+        unit_rate_map = None
+        for unit in range(self.n_units):
+            if model == 'pos' and not agg_coef:
+                unit_rate_map = self.spatial_map_function(self.neural_data[unit], self.x, self.y).flatten()
+            for fold in range(self.n_xval):
                 c = coefs[fold, unit]
                 if c is not None:
-                    val = np.max(c[:4] - c[0])
+                    if model == 'pos':
+                        val = c_func(c, unit_rate_map)
+                    elif model=='grid':
+                        if self.grid_model.models[fold, unit] is None:
+                            val = np.nan
+                        else:
+                            val = c_func(c)
+                    else:
+                        val = c_func(c)
                 else:
                     val = np.nan
-                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'train', val
+                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, metric_name, 'train', val
                 cnt += 1
-                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, 'coef', 'test', val
+                df.loc[cnt, ['fold', 'unit_id', 'metric', 'split', 'value']] = fold, unit, metric_name, 'test', val
                 cnt += 1
         df = df.astype({'value': 'float'})
-        self.border_model.scores = self.border_model.scores.append(df, ignore_index=True)
+        return df
 
-    def get_all_models(self, verbose=True):
-        self.scores = pd.DataFrame()
-        for model in self.models:
-            t0 = time.time()
-            getattr(self, f"get_{model}_model")()
-            model_tbl = getattr(self, f"{model}_model").avg_folds()
-            model_tbl['model'] = model
-            self.scores = pd.concat((self.scores, model_tbl))
-            if verbose:
-                print(f"{model} model completed. {time.time()-t0:0.2f}secs")
-            self.scores.reset_index(drop=True, inplace=True)
+    def _add_agg_coefs_model_scores(self):
+        models_all = self.agg_model.included_models + ['agg']
+        for model in models_all:
+            df = self._score_coefs_df(model, agg_coef=True)
+            model_obj = getattr(self, f"{model}_model")
+            model_scores = model_obj.scores
+            model_scores = model_scores.append(df, ignore_index=True)
+            setattr(model_obj, 'scores', model_scores)
+            # model_scores object updates the model scores tables in self
+
+    def get_models(self, verbose=True):
+        if self.valid_record:
+            models_all = self.models + ['agg']
+            for model in models_all:
+                t0 = time.time()
+                getattr(self, f"get_{model}_model")()
+                if verbose:
+                    print(f"{model} model completed. {time.time() - t0:0.2f}secs")
+
+        return None
+
+    def get_scores(self):
+        if self.valid_record:
+            scores = pd.DataFrame(columns=['unit_id', 'metric', 'split', 'model', 'value'])
+            if getattr(self, 'agg_model') is not None:
+                self._add_agg_coefs_model_scores()
+
+            models_all = self.models + ['agg']
+            for model in models_all:
+                if getattr(self, f'{model}_model') is not None:
+                    model_tbl = getattr(self, f"{model}_model").avg_folds()
+                    model_tbl['model'] = model
+                    scores = pd.concat((scores, model_tbl))
+                    scores.reset_index(drop=True, inplace=True)
+            self.scores = scores
+        else:
+            self.scores = pd.DataFrame(None)
         return self.scores
 
     def get_coefs(self, model):
@@ -3164,7 +3380,7 @@ def get_grid_fields(fr, x, y, x_bin_edges, y_bin_edges, thr=0.1, min_field_size=
             if binary_fields:
                 field_maps[field_id] = fields == field_id
             else:
-                field_maps[field_id] = (fields == field_id)*moire_fit
+                field_maps[field_id] = (fields == field_id) * moire_fit
 
         return field_maps
     else:
@@ -3661,23 +3877,23 @@ def detect_img_peaks(image, background_thr=0.01):
     # define an 8-connected neighborhood
     neighborhood = generate_binary_structure(2, 2)
 
-    #apply the local maximum filter; all pixel of maximal value
-    #in their neighborhood are set to 1
+    # apply the local maximum filter; all pixel of maximal value
+    # in their neighborhood are set to 1
     local_max = maximum_filter(image, footprint=neighborhood) == image
-    #local_max is a mask that contains the peaks we are
-    #looking for, but also the background.
-    #In order to isolate the peaks we must remove the background from the mask.
+    # local_max is a mask that contains the peaks we are
+    # looking for, but also the background.
+    # In order to isolate the peaks we must remove the background from the mask.
 
-    #we create the mask of the background
-    background = (image<background_thr)
+    # we create the mask of the background
+    background = (image < background_thr)
 
-    #a little technicality: we must erode the background in order to
-    #successfully subtract it form local_max, otherwise a line will
-    #appear along the background border (artifact of the local maximum filter)
+    # a little technicality: we must erode the background in order to
+    # successfully subtract it form local_max, otherwise a line will
+    # appear along the background border (artifact of the local maximum filter)
     eroded_background = binary_erosion(background, structure=neighborhood, border_value=1)
 
-    #we obtain the final mask, containing only peaks,
-    #by removing the background from the local_max mask (xor operation)
+    # we obtain the final mask, containing only peaks,
+    # by removing the background from the local_max mask (xor operation)
     detected_peaks = local_max * ~eroded_background
 
     return detected_peaks
