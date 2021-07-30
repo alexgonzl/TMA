@@ -28,6 +28,29 @@ def median_window_filter(x, window):
             pass
     return y
 
+def median_window_filter_causal(x, window):
+    """ moving median filter that can take np.nan as entries.
+        note that the filter is non-causal, output of sample ii is the median
+        of samples of the corresponding window centered around ii.
+    Inputs:
+        x       ->  signal to filtered,
+        window  ->  number of samples to use for median estimation.
+
+    Output:
+        y       <-  median filtered signal
+    """
+    if window % 2:
+        window = window + 1
+    n = len(x)
+    y = x.copy()
+    window_range = np.arange(0, window).astype(int)
+    for ii in np.arange(window, n - window + 1):
+        try:
+            idx = window_range+ii
+            y[ii] = np.nanmedian(y[idx])
+        except:
+            pass
+    return y
 
 def median_window_filtfilt(x, window):
     """ moving median filter that can take np.nan as entries.
@@ -118,6 +141,23 @@ def angle_xy(x, y):
         angle[i] = np.math.atan2(y[i], x[i])
     return angle
 
+def fill_nan_vals(x:np.ndarray, method='last'):
+
+    x_out = x.copy()
+    nan_ids = np.where(np.isnan(x_out))[0]
+
+    if method =='last':
+        for ii in nan_ids:
+            x_out[ii] = get_last_not_nan_value(x_out, ii)
+    elif method=='next':
+        r_nan_ids = np.flip(nan_ids)
+        for ii in r_nan_ids:
+            x_out[ii] = get_next_non_nan_value(x_out, ii)
+    else:
+        x_l = fill_nan_vals(x, 'last')
+        x_n = fill_nan_vals(x, 'next')
+        x_out = (x_l+x_n)/2
+    return x_out
 
 def get_last_not_nan_value(x, i):
     """
@@ -132,6 +172,16 @@ def get_last_not_nan_value(x, i):
         return get_last_not_nan_value(x, i - 1)
     else:
         return x[i]
+
+def get_next_non_nan_value(x,i):
+
+    if i == len(x):
+        return 0
+    elif np.isnan(x[i]):
+        return get_next_non_nan_value(x,i+1)
+    else:
+        return x[i]
+
 
 
 def get_sos_filter_bank(f_types, fs=32000.0, hp_edge_freq=None, lp_edge_freq=None, sp_edge_freq=None, notch_freq=None,

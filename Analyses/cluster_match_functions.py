@@ -20,6 +20,9 @@ from shapely.geometry import Polygon
 from descartes.patch import PolygonPatch
 from itertools import combinations
 
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 
 pd.set_option('display.max_rows', 50)
 sns.set(style='whitegrid', palette='muted')

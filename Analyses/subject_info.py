@@ -1397,7 +1397,139 @@ def get_task_params(session_info):
         task_params['height'] = task_params['n_y_bins']
 
     elif task[:2] == 'T3':
-        pass
+        if subject in ['Li', 'Ne', 'Cl', 'Ca', 'Al']:
+            conv_params = {
+                # pixel params
+                'x_pix_lims': [100, 650],  # camera field of view x limits [pixels]
+                'y_pix_lims': [100, 500],  # camera field of view y limits [pixels]
+                'x_pix_bias': -380,  # factor for centering the x pixel position
+                'y_pix_bias': -280,  # factor for centering the y pixel position
+                'vt_rate': 1.0 / 60.0,  # video acquisition frame rate
+                'xy_pix_rot_rad': np.pi / 2 + 0.08,  # rotation of original xy pix camera to experimenter xy
+
+                # conversion params
+                'x_pix_mm': 1300.0 / 344.0,  # pixels to mm for the x axis [pix/mm]
+                'y_pix_mm': 1450.0 / 444.0,  # pixels to mm for the y axis [pix/mm]
+                'x_mm_bias': 20,  # factor for centering the x mm position
+                'y_mm_bias': 650,  # factor for centering the y mm position
+                'x_mm_lims': [-630, 630],  # limits on the x axis of the maze [mm]
+                'y_mm_lims': [-60, 1350],  # limits on the y axis of the maze [mm]
+                'x_cm_lims': [-63, 63],  # limits on the x axis of the maze [cm]
+                'y_cm_lims': [-6, 135],  # limits on the y axis of the maze [cm]
+            }
+        elif subject in ['Mi']:
+            conv_params = {
+
+                # pixel params
+                'x_pix_lims': [200, 600],  # camera field of view x limits [pixels]
+                'y_pix_lims': [100, 450],  # camera field of view y limits [pixels]
+                'x_pix_bias': -390,  # factor for centering the x pixel position
+                'y_pix_bias': -265,  # factor for centering the y pixel position
+                'vt_rate': 1.0 / 60.0,  # video acquisition frame rate
+                'xy_pix_rot_rad': np.pi / 2,  # rotation of original xy pix camera to experimenter xy
+
+                # conversion params
+                'x_pix_mm': 1300.0 / 290.0,  # pixels to mm for the x axis [pix/mm]
+                'y_pix_mm': 1450.0 / 370.0,  # pixels to mm for the y axis [pix/mm]
+                'x_mm_bias': 0,  # factor for centering the x mm position
+                'y_mm_bias': 750,  # factor for centering the y mm position
+                'x_mm_lims': [-630, 630],  # limits on the x axis of the maze [mm]
+                'y_mm_lims': [0, 1450],  # limits on the y axis of the maze [mm]
+                'x_cm_lims': [-63, 63],  # limits on the x axis of the maze [cm]
+                'y_cm_lims': [0, 145],  # limits on the y axis of the maze [cm]
+            }
+            pass
+        else:
+            conv_params = {}
+        default_task_params = {
+            # binning parameters
+            'mm_bin': 30,  # millimeters per bin [mm]
+            'cm_bin': 3,  # cm per bin [cm]
+            'max_speed_thr': 100,  # max speed threshold for allowing valid movement [cm/s]
+            'min_speed_thr': 2,  # min speed threshold for allowing valid movement [cm/s]
+            'rad_bin': np.deg2rad(10),  # angle radians per bin [rad]
+            'occ_num_thr': 3,  # number of occupation times threshold [bins
+            'occ_time_thr': time_step * 3,  # time occupation threshold [sec]
+            'speed_bin': 2,  # speed bin size [cm/s]
+
+            # filtering parameters
+            'spatial_sigma': 2,  # spatial smoothing sigma factor [au]
+            'spatial_window_size': 3,  # number of spatial position bins to smooth [bins]
+            'temporal_window_size': 5,  # smoothing temporal window for filtering [bins]
+            'temporal_angle_window_size': 5,  # smoothing temporal window for angles [bins]
+            'temporal_window_type': 'hann',  # window type for temporal window smoothing
+
+            # statistical tests parameters:
+            'sig_alpha': 0.02,  # double sided alpha level for significance testing
+            'n_perm': 200,  # number of permutations
+
+            # type of encoding model. see spatial_funcs.get_border_encoding_features
+            'reg_type': 'poisson',
+            # these are ignoed if border_enc_model_type is linear.
+            'border_enc_model_feature_params__': {'center_gaussian_spread': 0.2,  # as % of environment
+                                                  'sigmoid_slope_thr': 0.15,  # value of sigmoid at border width
+                                                  },
+
+            'border_score_params__': {'fr_thr': 0.25,  # firing rate threshold
+                                      'width_bins': 3,  # distance from border to consider it a border cell [bins]
+                                      'min_field_size_bins': 10},  # minimum area for fields in # of bins
+
+            'grid_score_params__': {'ac_thr': 0.01,  # autocorrelation threshold for finding fields
+                                    'radix_range': [0.5, 2.0],  # range of radii for grid score in the autocorr
+                                    'apply_sigmoid': True,  # apply sigmoid to rate maps
+                                    'sigmoid_center': 0.5,  # center for sigmoid
+                                    'sigmoid_slope': 10,  # slope for sigmoid
+                                    'find_fields': True},  # mask fields before autocorrelation
+
+            # grid encoding model
+            'grid_fit_type': 'auto_corr',  # ['auto_corr', 'moire'], how to find parameters for grid
+            'pos_feat_type': 'pca',  # feature type for position encoding model
+            'pos_feat_n_comp': 0.95,  # variance explaiend for pca in position feautrues
+
+        }
+
+        task_params.update(conv_params)
+        task_params.update(default_task_params)
+
+        # derived parameters
+
+        # -- filter coefficients --
+        task_params['filter_coef_'] = signal.get_window(task_params['temporal_window_type'],
+                                                        task_params['temporal_window_size'],
+                                                        fftbins=False)
+        task_params['filter_coef_'] /= task_params['filter_coef_'].sum()
+
+        task_params['filter_coef_angle_'] = signal.get_window(task_params['temporal_window_type'],
+                                                              task_params['temporal_angle_window_size'],
+                                                              fftbins=False)
+        task_params['filter_coef_angle_'] /= task_params['filter_coef_angle_'].sum()
+
+        # -- bins --
+        task_params['ang_bin_edges_'] = np.arange(0, 2 * np.pi + task_params['rad_bin'], task_params['rad_bin'])
+        task_params['ang_bin_centers_'] = task_params['ang_bin_edges_'][:-1] + task_params['rad_bin'] / 2
+        task_params['n_ang_bins'] = len(task_params['ang_bin_centers_'])
+
+        task_params['sp_bin_edges_'] = np.arange(task_params['min_speed_thr'],
+                                                 task_params['max_speed_thr'] + task_params['speed_bin'],
+                                                 task_params['speed_bin'])
+        task_params['sp_bin_centers_'] = task_params['sp_bin_edges_'][:-1] + task_params['speed_bin'] / 2
+        task_params['n_sp_bins'] = len(task_params['sp_bin_centers_'])
+
+        task_params['x_bin_edges_'] = np.arange(task_params['x_cm_lims'][0],
+                                                task_params['x_cm_lims'][1] + task_params['cm_bin'],
+                                                task_params['cm_bin'])
+        task_params['x_bin_centers_'] = task_params['x_bin_edges_'][:-1] + task_params['cm_bin'] / 2
+        task_params['n_x_bins'] = len(task_params['x_bin_centers_'])
+        task_params['n_width_bins'] = task_params['n_x_bins']
+        task_params['width'] = task_params['n_x_bins']
+
+        task_params['y_bin_edges_'] = np.arange(task_params['y_cm_lims'][0],
+                                                task_params['y_cm_lims'][1] + task_params['cm_bin'],
+                                                task_params['cm_bin'])
+        task_params['y_bin_centers_'] = task_params['y_bin_edges_'][:-1] + task_params['cm_bin'] / 2
+        task_params['n_y_bins'] = len(task_params['y_bin_centers_'])
+        task_params['n_height_bins'] = task_params['n_y_bins']
+        task_params['height'] = task_params['n_y_bins']
 
     return task_params
 
