@@ -20,19 +20,486 @@ from shapely.geometry.polygon import LinearRing, Polygon
 from collections import Counter
 from descartes import PolygonPatch
 
-import Analyses.TreeMazeFunctions as tmf
-#import spatial_tuning as ST
-#import stats_functions as StatsF
+from Analyses import experiment_info as si
+from Analyses import tree_maze_functions as tmf
+
+
+# import spatial_tuning as ST
+# import stats_functions as StatsF
+
+################################################################################
+# Figure Classes
+################################################################################
+
+class Fig1:
+    fontsize = 7
+
+    fig_w = 6.5
+    fig_ratio = 1.7
+
+    wspace = 0.02
+    hspace = 0.08
+    ax_w = 0.3
+    ax_h = 0.45
+
+    row2_h = 0.35
+    row2_y0 = 0.1
+
+    de_h = 0.33
+    de_w = 0.22
+    de_x0 = ax_w * 2 + wspace * 5
+
+    panel_locs = dict(a=[0, ax_h + hspace, ax_w, ax_h],
+                      b=[ax_w + wspace, ax_h + hspace, ax_w, ax_h],
+                      c=[0.05, row2_y0, ax_w * 2 - 0.05, row2_h],
+                      d=[de_x0, ax_h + hspace * 2, de_w, de_h],
+                      e=[de_x0, row2_y0 + 0.02, de_w, de_h])
+
+    label_fontsize = 9
+    label_base_loc_x = 0.02
+    label_base_loc_y = 0.98
+    label_row2_y = 0.5
+    subject_palette = 'deep'
+
+    params = dict(figsize=(fig_w, fig_w / fig_ratio), dpi=1000, fontsize=fontsize,
+                  panel_a={'lw': 0.4},
+                  panel_b={'lw': 0.2, 'line_alpha': 1, 'line_color': '0.2', 'sub_seg_lw': 0.05,
+                           'n_trials': 5, 'max_dur': 700, 'marker_alpha': 1, 'marker_size': 8,
+                           'fontsize': fontsize, 'seed': 1, 'leg_fontsize': fontsize - 1,
+                           'leg_markersize': 2, 'leg_lw': 0.8,
+                           'cue': np.array([['L', 'R'], ['L', 'R']]), 'dec': np.array([['L', 'R'], ['L', 'L']]),
+                           'goal': np.array([[3, 2], [4, -1]]), 'long_trial': np.array([[0, 0], [1, -1]])},
+                  panel_c={'h_lw': 0.3, 'v_lw': 1, 'samp_buffer': 20, 'trial_nums': np.arange(13, 17),
+                           'fontsize': fontsize},
+                  panel_d={'min_n_units': 1, 'min_n_trials': 50, 'fontsize': fontsize, 'palette': subject_palette,
+                           'marker_alpha': 0.7, 'marker_swarm_size': 1.5,
+                           'y_ticks': np.array([0, .25, .50, .75, 1]),
+                           'box_plot_lw': 0.75, 'box_plot_median_lc': '0.4', 'box_plot_median_lw': 0.75,
+                           'summary_marker_size': 5, 'scale': 0.7},
+                  panel_e={'min_n_units': 1, 'min_n_trials': 50, 'fontsize': fontsize, 'palette': subject_palette,
+                           'marker_alpha': 0.9, 'marker_swarm_size': 1.5,
+                           'y_ticks': [0, 15, 30, 45],
+                           'box_plot_lw': 0.75, 'box_plot_median_lc': '0.4', 'box_plot_median_lw': 0.75,
+                           'summary_marker_size': 5, 'scale': 0.7}
+                  )
+
+    def __init__(self, session='Li_T3g_070618', **kargs):
+        self.params.update(kargs)
+        self.tree_maze = tmf.TreeMazeZones()
+
+        # session info and data for panels b and c.
+        subject = session.split('_')[0]
+        self.session_info = si.SubjectSessionInfo(subject, session)
+        self.session_behav = self.session_info.get_event_behavior()
+        self.session_track_data = self.session_info.get_track_data()
+        self.session_pos_zones_mat = self.session_info.get_pos_zones_mat()
+
+        # summary data for panels d and c.
+        self.summary_info = si.SummaryInfo()
+
+    def fig_layout(self):
+        f = plt.figure(constrained_layout=False,
+                       figsize=self.params['figsize'],
+                       dpi=self.params['dpi'])
+
+        # define figure layout
+        f_ax = np.zeros(5, dtype=object)
+
+        labels = ['a', 'b', 'c', 'd', 'e']
+        for ii, label in enumerate(labels):
+            f_ax[ii] = f.add_axes(self.panel_locs[label])
+
+        label_ax = f.add_axes([0, 0, 1, 1])
+        label_locs = dict(a=(self.label_base_loc_x, self.label_base_loc_y),
+                          b=(self.label_base_loc_x + self.ax_w + self.wspace, self.label_base_loc_y),
+                          c=(self.label_base_loc_x, self.label_row2_y),
+                          d=(self.label_base_loc_x + self.ax_w * 2 + self.wspace, self.label_base_loc_y),
+                          e=(self.label_base_loc_x + self.ax_w * 2 + self.wspace, self.label_row2_y)
+                          )
+        for label in labels:
+            label_ax.text(label_locs[label][0], label_locs[label][1], label, transform=label_ax.transAxes,
+                          fontsize=self.label_fontsize, fontweight='bold', va='top', ha='left')
+        label_ax.axis("off")
+        return f, f_ax
+
+    def plot_all(self):
+
+        f, ax = self.fig_layout()
+
+        panels = ['a', 'b', 'c', 'd', 'e']
+        for ii, p in enumerate(panels):
+            obj = getattr(self, f"panel_{p}")
+            obj(ax[ii])
+
+        return f
+
+    def panel_a(self, ax=None, **params):
+        fig_params = dict(seg_color=None, zone_labels=True, sub_segs=None, tm_layout=True, plot_cue=True,
+                          fontsize=self.fontsize,
+                          lw=self.params['panel_a']['lw'])
+        fig_params.update(params)
+
+        if ax is None:
+            f, ax = plt.subplots(figsize=(2, 2), dpi=600)
+        else:
+            f = ax.figure
+
+        ax = self.tree_maze.plot_maze(axis=ax, **fig_params)
+
+        # legend axis
+        leg_ax = f.add_axes(ax.get_position())
+        leg_ax.axis("off")
+
+        cue_w = 0.1
+        cue_h = 0.1
+
+        cues_p0 = dict(right=np.array([0.65, 0.15]),
+                       left=np.array([0.25, 0.15]))
+
+        text_strs = dict(right=r"$H \rightarrow D \rightarrow G_{1,2}$",
+                         left=r"$G_{3,4} \leftarrow D \leftarrow H$")
+
+        txt_ha = dict(right='left', left='right')
+
+        txt_hspace = 0.05
+        txt_pos = dict(right=cues_p0['right'] + np.array((0, -txt_hspace)),
+                       left=cues_p0['left'] + np.array((cue_w, -txt_hspace)))
+
+        for cue in ['right', 'left']:
+            cue_p0 = cues_p0[cue]
+            cue_coords = np.array([cue_p0, cue_p0 + np.array((0, cue_h)),
+                                   cue_p0 + np.array((cue_w, cue_h)), cue_p0 + np.array((cue_w, 0)), ])
+            cue_poly = Polygon(cue_coords)
+            plot_poly(cue_poly, ax=leg_ax, lw=0, alpha=0.9, color=self.tree_maze.split_colors[cue])
+
+            leg_ax.text(txt_pos[cue][0], txt_pos[cue][1], text_strs[cue], fontsize=fig_params['fontsize'],
+                        horizontalalignment=txt_ha[cue], verticalalignment='center')
+        leg_ax.set_xlim(0, 1)
+        leg_ax.set_ylim(0, 1)
+
+        leg_ax.text(cues_p0['right'][0] + cue_w, cues_p0['right'][1] + cue_h // 2,
+                    'Right Cue', fontsize=fig_params['fontsize'],
+                    horizontalalignment='left', verticalalignment='bottom')
+        leg_ax.text(cues_p0['left'][0], cues_p0['left'][1] + cue_h // 2,
+                    'Left Cue', fontsize=fig_params['fontsize'],
+                    horizontalalignment='right', verticalalignment='bottom')
+
+    def panel_b(self, ax=None, **params):
+        behav = self.session_behav
+        track_data = self.session_track_data
+
+        if ax is None:
+            f, a1 = plt.subplots(2, 2, figsize=(1, 1), dpi=600)
+        else:
+            f = ax.figure
+
+            p = ax.get_position()
+            x0, y0, w, h = p.x0, p.y0, p.width, p.height
+            w2 = w / 2
+            h2 = h / 2
+
+            a1 = np.zeros((2, 2), dtype=object)
+            a1[1, 0] = f.add_axes([x0, y0, w2, h2])
+            a1[1, 1] = f.add_axes([x0 + w2, y0, w2, h2])
+            a1[0, 0] = f.add_axes([x0, y0 + h2, w2, h2])
+            a1[0, 1] = f.add_axes([x0 + w2, y0 + h2, w2, h2])
+            ax.axis("off")
+
+        fig_params = self.params['panel_b']
+        fig_params.update(params)
+
+        np.random.seed(fig_params['seed'])
+
+        cue = fig_params['cue']
+        goal = fig_params['goal']
+        dec = fig_params['dec']
+        long_trial = fig_params['long_trial']
+
+        n_trials = fig_params['n_trials']
+        max_dur = fig_params['max_dur']
+        lw = fig_params['lw']
+        line_alpha = fig_params['line_alpha']
+        marker_alpha = fig_params['marker_alpha']
+        marker_size = fig_params['marker_size']
+
+        H_loc = self.tree_maze.well_coords['H']
+        for row in range(2):
+            for col in range(2):
+                dec_full = 'left' if dec[row, col] == 'L' else 'right'
+
+                _ = self.tree_maze.plot_maze(axis=a1[row, col],
+                                             seg_color=None, zone_labels=False, seg_alpha=0.1,
+                                             plot_cue=True, cue_color=cue[row, col],
+                                             fontsize=self.fontsize, lw=fig_params['lw'],
+                                             line_color=fig_params['line_color'],
+                                             sub_segs='all', sub_seg_color='None', sub_seg_lw=fig_params['sub_seg_lw'])
+
+                sub_table = behav.trial_table[(behav.trial_table.dec == dec[row, col]) &
+                                              (behav.trial_table.cue == cue[row, col]) &
+                                              (behav.trial_table.dur <= max_dur) &
+                                              (behav.trial_table.long == long_trial[row, col]) &
+                                              (behav.trial_table.goal == goal[row, col])
+                                              ]
+
+                # noinspection PyTypeChecker
+                sel_trials = np.random.choice(sub_table.index, size=n_trials, replace=False)
+
+                a1[row, col].scatter(H_loc[0], H_loc[1], s=marker_size, marker='o', lw=0, color='k')
+                marker_end_color = 'b' if dec[row, col] == cue[row, col] else 'r'
+
+                if goal[row, col] > 0:
+                    G_loc = self.tree_maze.well_coords[f"G{goal[row, col]}"]
+                    a1[row, col].scatter(G_loc[0], G_loc[1], s=marker_size, marker='d',
+                                         lw=0, alpha=marker_alpha, color=marker_end_color)
+                else:
+                    incorrect_wells = self.tree_maze.split_segs[dec_full]['goals']
+                    for iw in incorrect_wells:
+                        iw_loc = self.tree_maze.well_coords[iw]
+                        a1[row, col].scatter(iw_loc[0], iw_loc[1], s=marker_size, marker='d',
+                                             lw=0, alpha=marker_alpha, color=marker_end_color)
+
+                for trial in sel_trials:
+                    t0 = sub_table.loc[trial, 't0']
+                    tE = sub_table.loc[trial, 'tE']
+                    a1[row, col].plot(track_data.loc[t0:tE, 'x'], track_data.loc[t0:tE, 'y'],
+                                      color=self.tree_maze.split_colors[dec_full], lw=lw, alpha=line_alpha)
+
+        # plt.subplots_adjust(hspace=0.02, wspace=0, left=0.02, right=0.96, top=0.98, bottom=0)
+
+        legend_elements = [mpl.lines.Line2D([0.1], [0.1], color='g', lw=fig_params['leg_lw'], label='L Dec'),
+                           mpl.lines.Line2D([0], [0], color='purple', lw=fig_params['leg_lw'], label='R Dec'),
+                           mpl.lines.Line2D([0], [0], marker='o', color='k', lw=0, label='Start',
+                                            markerfacecolor='k', markersize=fig_params['leg_markersize']),
+                           mpl.lines.Line2D([0], [0], marker='d', color='b', lw=0, label='Correct',
+                                            markerfacecolor='b', markersize=fig_params['leg_markersize']),
+                           mpl.lines.Line2D([0], [0], marker='d', color='r', lw=0, label='Incorrect',
+                                            markerfacecolor='r', markersize=fig_params['leg_markersize'])]
+
+        ax.legend(handles=legend_elements, loc='center', bbox_to_anchor=[0, 0.05, 1, 1], frameon=False,
+                  fontsize=fig_params['leg_fontsize'], labelspacing=0.2)
+
+    def panel_c(self, ax=None, **params):
+        pos_zones_mat = self.session_info.get_pos_zones_mat()
+        behav = self.session_behav
+        track_data = self.session_track_data
+
+        if ax is None:
+            f, ax = plt.subplots(figsize=(2, 1), dpi=600)
+        else:
+            f = ax.figure
+
+        c_params = self.params['panel_c']
+        c_params.update(params)
+
+        self.tree_maze.plot_zone_ts_window(pos_zones_mat, trial_table=behav.trial_table,
+                                           t=track_data.t.values - track_data.t[0],
+                                           trial_nums=c_params['trial_nums'], samp_buffer=c_params['samp_buffer'],
+                                           h_lw=c_params['h_lw'], v_lw=c_params['v_lw'], fontsize=self.fontsize,
+                                           ax=ax)
+
+    def panel_d(self, ax=None, **params):
+
+        perf = self.summary_info.get_behav_perf()
+        subjects = self.summary_info.subjects
+
+        subset = perf[
+            (perf.n_units >= self.summary_info.min_n_units) & (perf.n_trials >= self.summary_info.min_n_trials)]
+
+        fig_params = self.params['panel_d']
+        fig_params.update(params)
+        fontsize = fig_params['fontsize']
+
+        if ax is None:
+            f, ax = plt.subplots(figsize=(1, 1), dpi=600)
+        else:
+            f = ax.figure
+
+        # ax = reduce_ax(ax, fig_params['scale'])
+        ax_pos = ax.get_position()
+
+        x0, y0, w, h = ax_pos.x0, ax_pos.y0, ax_pos.width, ax_pos.height
+        x_split = w * 0.75
+        ax.set_position([x0, y0, x_split, h])
+
+        sns.set_theme(context='paper', style="whitegrid", font_scale=1, palette=fig_params['palette'])
+        sns.set_style(rc={"axes.edgecolor": '0.3',
+                          'xtick.bottom': True,
+                          'ytick.left': True})
+
+        sns.boxplot(ax=ax, x='subject', y='pct_correct', data=subset, color='w', linewidth=fig_params['box_plot_lw'],
+                    whis=100)
+        sns.swarmplot(ax=ax, x='subject', y='pct_correct', data=subset, size=fig_params['marker_swarm_size'],
+                      **{'alpha': fig_params['marker_alpha']})
+
+        for line in ax.get_lines()[4::len(subjects)]:
+            line.set(**{'color': fig_params['box_plot_median_lc'],
+                        'lw': fig_params['box_plot_median_lw']})
+
+        ax.set_ylim(0, 1.01)
+        ax.set_yticks(fig_params['y_ticks'])
+        ax.set_yticklabels((fig_params['y_ticks'] * 100).astype(int), fontsize=fontsize)
+        ax.set_ylabel('% Correct Decision', fontsize=fontsize)
+
+        ax.set_xticklabels([f"s$_{{{ii}}}$" for ii in range(1, len(subjects) + 1)], fontsize=fontsize)
+        ax.set_xlabel('Subjects', fontsize=fontsize)
+
+        for spine in ['top', 'right']:
+            ax.spines[spine].set_visible(False)
+
+        ax.tick_params(axis="both", direction="in", length=2, width=0.8, color="0.5", which='major', pad=1)
+        ax.xaxis.set_label_coords(0.625, -0.1)
+
+        # summary
+        ax = f.add_axes([x0 + x_split, y0, w - x_split, h])
+        subset2 = subset.groupby('subject').median()
+
+        colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+        subset2['color'] = 0
+
+        for ii, s in enumerate(subjects):
+            subset2.loc[s, 'color'] = mpl.colors.to_hex(colors[ii])
+
+        sns.boxplot(ax=ax, y='pct_correct', data=subset2.loc[subjects], color='w', whis=100, width=0.5,
+                    linewidth=fig_params['box_plot_lw'])
+
+        # hard-coded x location for no overalp
+        x_locs = np.array([0, -1, 1, 0, -1, 0]) * 0.1
+        ax.scatter(x_locs, subset2.loc[subjects, 'pct_correct'], lw=0, zorder=10,
+                   s=fig_params['summary_marker_size'],
+                   c=subset2.loc[subjects, 'color'],
+                   alpha=fig_params['marker_alpha'])
+
+        for line in ax.get_lines()[4::len(subjects)]:
+            line.set(**{'color': fig_params['box_plot_median_lc'],
+                        'lw': fig_params['box_plot_median_lw']})
+
+        ax.set_ylim(0, 1.01)
+        ax.set_yticks(fig_params['y_ticks'])
+        ax.set_yticklabels('')
+        ax.set_ylabel('')
+
+        ax.set_xticklabels([r" $\bar s$ "], fontsize=fontsize)
+
+        for spine in ['top', 'right', 'left']:
+            ax.spines[spine].set_visible(False)
+
+        ax.tick_params(axis="both", direction="in", length=2, width=0.8, color="0.5", which='major', pad=1)
+        ax.tick_params(axis='y', left=False)
+
+    def panel_e(self, ax=None, **params):
+        perf = self.summary_info.get_behav_perf()
+        subjects = self.summary_info.subjects
+
+        subset = perf[
+            (perf.n_units >= self.summary_info.min_n_units) & (perf.n_trials >= self.summary_info.min_n_trials)]
+
+        fig_params = self.params['panel_e']
+        fig_params.update(params)
+        fontsize = fig_params['fontsize']
+
+        if ax is None:
+            f, ax = plt.subplots(figsize=(1, 1), dpi=600)
+        else:
+            f = ax.figure
+
+        # ax = reduce_ax(ax, fig_params['scale'])
+        ax_pos = ax.get_position()
+        x0, y0, w, h = ax_pos.x0, ax_pos.y0, ax_pos.width, ax_pos.height
+        x_split = w * 0.75
+        ax.set_position([x0, y0, x_split, h])
+
+        sns.set_theme(context='paper', style="whitegrid", font_scale=1, palette=fig_params['palette'])
+        sns.set_style(rc={"axes.edgecolor": '0.3',
+                          'xtick.bottom': True,
+                          'ytick.left': True})
+
+        sns.boxplot(ax=ax, x='subject', y='n_units', data=subset, color='w', linewidth=fig_params['box_plot_lw'],
+                    whis=100)
+        sns.swarmplot(ax=ax, x='subject', y='n_units', data=subset, size=fig_params['marker_swarm_size'],
+                      **{'alpha': fig_params['marker_alpha']})
+
+        for line in ax.get_lines()[4::len(subjects)]:
+            line.set(**{'color': fig_params['box_plot_median_lc'],
+                        'lw': fig_params['box_plot_median_lw']})
+
+        ax.set_ylim(0, 50)
+        ax.set_yticks(fig_params['y_ticks'])
+        ax.set_yticklabels(fig_params['y_ticks'], fontsize=fontsize)
+        ax.set_ylabel('# units ', fontsize=fontsize)
+
+        ax.set_xticklabels([f"s$_{{{ii}}}$" for ii in range(1, len(subjects) + 1)], fontsize=fontsize)
+        ax.set_xlabel('Subjects', fontsize=fontsize)
+
+        for spine in ['top', 'right']:
+            ax.spines[spine].set_visible(False)
+
+        ax.tick_params(axis="both", direction="in", length=2, width=0.8, color="0.5", which='major', pad=1)
+        ax.xaxis.set_label_coords(0.625, -0.1)
+
+        # summary
+        ax = f.add_axes([x0 + x_split, y0, w - x_split, h])
+        subset2 = subset.groupby('subject').median()
+
+        colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+        subset2['color'] = 0
+
+        for ii, s in enumerate(subjects):
+            subset2.loc[s, 'color'] = mpl.colors.to_hex(colors[ii])
+
+        sns.boxplot(ax=ax, y='n_units', data=subset2.loc[subjects], color='w', whis=100, width=0.5,
+                    linewidth=fig_params['box_plot_lw'])
+
+        # hard-coded x location for no overalp
+        x_locs = np.array([0, 0, 0, 0, 0, -1]) * 0.1
+        ax.scatter(x_locs, subset2.loc[subjects, 'n_units'], lw=0, zorder=10,
+                   s=fig_params['summary_marker_size'],
+                   c=subset2.loc[subjects, 'color'],
+                   alpha=fig_params['marker_alpha'])
+
+        for line in ax.get_lines()[4::len(subjects)]:
+            line.set(**{'color': fig_params['box_plot_median_lc'],
+                        'lw': fig_params['box_plot_median_lw']})
+
+        ax.set_ylim(0, 50)
+        ax.set_yticks(fig_params['y_ticks'])
+        ax.set_yticklabels('')
+        ax.set_ylabel('')
+
+        ax.set_xticklabels([r" $\bar s$ "], fontsize=fontsize)
+
+        for spine in ['top', 'right', 'left']:
+            ax.spines[spine].set_visible(False)
+
+        ax.tick_params(axis="both", direction="in", length=2, width=0.8, color="0.5", which='major', pad=1)
+        ax.tick_params(axis='y', left=False)
+
 
 ################################################################################
 # Plot Functions
 ################################################################################
-def plotPoly(poly,ax,alpha=0.3,color='g',lw=1.5,line_alpha=1):
+def plot_poly(poly, ax, alpha=0.3, color='g', lw=1.5, line_alpha=1, line_color='0.5'):
     p1x, p1y = poly.exterior.xy
-    ax.plot(p1x, p1y, color=[0.5, 0.5,0.5], linewidth=lw, alpha=line_alpha)
+    ax.plot(p1x, p1y, color=line_color, linewidth=lw, alpha=line_alpha)
     ring_patch = PolygonPatch(poly, fc=color, ec='none', alpha=alpha)
     ax.add_patch(ring_patch)
 
+
+def reduce_ax(ax, scale):
+    " reduces the axes dimensions by multiplying by scale"
+
+    assert scale < 1, "Scale needs to be < 1"
+    ax_pos = ax.get_position()
+    x0, y0, w, h = ax_pos.x0, ax_pos.y0, ax_pos.width, ax_pos.height
+    wp = w * scale
+    hp = h * scale
+    wspace = w - wp
+    hspace = h - hp
+
+    x0p = x0 + wspace / 2
+    y0p = y0 + hspace / 2
+
+    ax.set_position([x0p, y0p, wp, hp])
+    return ax
 # def plotCounts(counts, names,ax):
 #     nX = len(names)
 #     ab=sns.barplot(x=np.arange(nX),y=counts,ax=ax, ci=[],facecolor=(0.4, 0.6, 0.7, 1))

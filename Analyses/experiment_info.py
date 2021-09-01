@@ -13,6 +13,8 @@ import Analyses.cluster_match_functions as cmf
 import Pre_Processing.pre_process_functions as pp_funcs
 import Sorting.sort_functions as sort_funcs
 from Utils.robust_stats import robust_zscore
+import Analyses.tree_maze_functions as tmf
+import Analyses.plot_functions as pf
 
 import scipy.signal as signal
 
@@ -36,8 +38,338 @@ subject and session.
 """
 
 
-class SubjectInfo:
+class SummaryInfo:
+    subjects = ['Li', 'Ne', 'Cl', 'Al', 'Ca', 'Mi']
+    min_n_units = 1
+    min_n_trials = 50  # task criteria
+    min_pct_coverage = 0.75  # open field criteria
+    invalid_sessions = ['Li_OF_080718']
+    figure_names = [f"f{ii}" for ii in range(5)]
 
+    _root_paths = dict(GD=Path("/home/alexgonzalez/google-drive/TreeMazeProject/"),
+                       BigPC=Path("/mnt/Data_HD2T/TreeMazeProject/"))
+
+    def __init__(self, data_root='BigPC'):
+        self.main_path = self._root_paths[data_root]
+        self.paths = self._get_paths()
+        self.unit_table = self.get_unit_table()
+
+    def run_analyses(self, overwrite, task='all', verbose=False):
+        interrupt_flag = False
+        for subject in self.subjects:
+            if not interrupt_flag:
+                subject_info = SubjectInfo(subject)
+                for session in subject_info.sessions:
+                    try:
+                        if task == 'all':
+                            pass
+                        elif task not in session:
+                            continue
+                        else:
+                            pass
+
+                        if verbose:
+                            t0 = time.time()
+                            print(f'Processing Session {session}')
+                        session_info = SubjectSessionInfo(subject, session)
+                        session_info.run_analyses(overwrite=overwrite)
+                        if verbose:
+                            t1 = time.time()
+                            print(f"Session Processing Completed: {t1 - t0:0.2f}s")
+                            print()
+                        else:
+                            print(".", end='')
+                    except KeyboardInterrupt:
+                        interrupt_flag = True
+                        break
+                    except ValueError:
+                        pass
+                    except FileNotFoundError:
+                        pass
+                    except:
+                        pass
+            if verbose:
+                print(f"Subject {subject} Analyses Completed.")
+
+    def get_behav_perf(self, overwrite=False):
+        if not self.paths['behavior'].exists() or overwrite:
+            perf = pd.DataFrame()
+            for subject in self.subjects:
+                subject_info = SubjectInfo(subject)
+                for session in subject_info.sessions:
+                    if 'T3' in session:
+                        session_info = SubjectSessionInfo(subject, session)
+                        b = session_info.get_event_behavior(overwrite)
+                        sp = b.get_session_perf()
+
+                        sp['session'] = session
+                        sp['task'] = session_info.task
+                        sp['subject'] = subject
+                        sp['n_units'] = session_info.n_units
+                        sp['n_cells'] = session_info.n_cells
+                        sp['n_mua'] = session_info.n_mua
+                        perf = pd.concat((perf, sp), ignore_index=True)
+
+            perf.to_csv(self.paths['behavior'])
+        else:
+            perf = pd.read_csv(self.paths['behavior'], index_col=0)
+
+        return perf
+
+    def _get_paths(self, root_path=None):
+        if root_path is None:
+            results_path = self.main_path / 'Results_Summary'
+            figures_path = self.main_path / 'Figures'
+        else:
+            results_path = root_path / 'Results_Summary'
+            figures_path = root_path / 'Figures'
+
+        paths = dict(
+            behavior=results_path / 'behavior_session_perf.csv',
+            units=results_path / 'all_units_table.csv',
+            of_metric_scores=results_path / 'of_metric_scores_summary_table.csv',
+            of_model_scores=results_path / 'of_model_scores_summary_table_agg.csv',
+        )
+        paths['results'] = results_path
+        paths['figures'] = figures_path
+
+        for k in self.figure_names:
+            paths[k] = paths['figures'] / f"{k}.jpg"
+
+        return paths
+
+    def update_paths(self):
+        for subject in self.subjects:
+            _ = SubjectInfo(subject, overwrite=True)
+
+    def get_of_results(self, overwrite=False):
+
+        curate_flag = False
+        if not self.paths['of_metric_scores'].exists() or overwrite:
+            metric_scores = self._get_of_metric_scores()
+            curate_flag = True
+        else:
+            metric_scores = pd.read_csv(self.paths['of_metric_scores'], index_col=0)
+
+        if not self.paths['of_model_scores'].exists() or overwrite:
+            model_scores = self._get_of_models_scores()
+            curate_flag = True
+        else:
+            model_scores = pd.read_csv(self.paths['of_model_scores'], index_col=0)
+
+        if curate_flag:
+            metric_scores, model_scores = self._match_unit_ids(metric_scores, model_scores)
+
+            for session in self.invalid_sessions:
+                unit_idx = self.unit_table[self.unit_table.session == session].unique_cl_name
+                metric_scores.loc[metric_scores.cl_name.isin(unit_idx), 'session_valid'] = False
+                model_scores.loc[model_scores.cl_name.isin(unit_idx), 'session_valid'] = False
+
+            metric_scores.to_csv(self.paths['of_metric_scores'])
+            model_scores.to_csv(self.paths['of_model_scores'])
+
+        return metric_scores, model_scores
+
+    def _get_of_metric_scores(self, overwrite=False):
+        if not self.paths['of_metric_scores'].exists() or overwrite:
+            analyses = ['speed', 'hd', 'border', 'grid', 'stability']
+            output_scores_names = ['score', 'sig']
+            n_analyses = len(analyses)
+
+            unit_count = 0
+            metric_scores = pd.DataFrame()
+            for subject in self.subjects:
+                subject_info = SubjectInfo(subject)
+                for session in subject_info.sessions:
+                    if 'OF' in session:
+                        session_info = SubjectSessionInfo(subject, session)
+                        if session_info.n_units > 0:
+                            temp = session_info.get_scores()
+
+                            session_scores = pd.DataFrame(index=np.arange(session_info.n_units * n_analyses),
+                                                          columns=['unit_id', 'subject', 'session',
+                                                                   'session_pct_cov', 'session_valid',
+                                                                   'session_unit_id', 'unit_type', 'tt', 'tt_cl',
+                                                                   'cl_name', 'analysis_type',
+                                                                   'score', 'sig', ])
+
+                            session_scores['analysis_type'] = np.repeat(np.array(analyses), session_info.n_units)
+                            session_scores['session'] = session_info.session
+                            session_scores['subject'] = session_info.subject
+                            session_scores['session_unit_id'] = np.tile(np.arange(session_info.n_units), n_analyses)
+                            session_scores['unit_id'] = np.tile(np.arange(session_info.n_units),
+                                                                n_analyses) + unit_count
+                            session_scores['unit_type'] = [v[0] for k, v in
+                                                           session_info.cluster_ids.items()] * n_analyses
+                            session_scores['tt'] = [v[1] for k, v in session_info.cluster_ids.items()] * n_analyses
+                            session_scores['tt_cl'] = [v[2] for k, v in
+                                                       session_info.cluster_ids.items()] * n_analyses
+
+                            behav = session_info.get_track_data()
+                            # noinspection PyTypeChecker
+                            coverage = np.around(behav['pos_valid_mask'].mean(), 2)
+                            session_scores['session_pct_cov'] = coverage
+                            session_scores['session_valid'] = coverage >= self.min_pct_coverage
+
+                            cl_names = []
+                            for k, v in session_info.cluster_ids.items():
+                                tt = v[1]
+                                cl = v[2]
+                                depth = subject_info.sessions_tt_positions.loc[session, f"tt_{tt}"]
+                                cl_name = f"{session}-tt{tt}_d{depth}_cl{cl}"
+                                cl_names.append(cl_name)
+
+                            session_scores['cl_name'] = cl_names * n_analyses
+
+                            unit_count += session_info.n_units
+                            try:
+                                for ii, analysis in enumerate(analyses):
+                                    indices = np.arange(session_info.n_units) + ii * session_info.n_units
+                                    session_scores.at[indices, 'sig'] = temp[analysis + '_sig'].values
+
+                                    if analysis == 'stability':
+                                        session_scores.at[indices, 'score'] = temp[analysis + '_corr'].values
+                                    else:
+                                        session_scores.at[indices, 'score'] = temp[analysis + '_score'].values
+
+                            except:
+                                print(f'Error Processing Session {session}')
+                                traceback.print_exc(file=sys.stdout)
+                                pass
+
+                            session_scores[output_scores_names] = session_scores[output_scores_names].astype(float)
+                            metric_scores = metric_scores.append(session_scores)
+
+            metric_scores = metric_scores.reset_index(drop=True)
+            metric_scores.to_csv(self.paths['of_metric_scores'])
+        else:
+            metric_scores = pd.read_csv(self.paths['of_metric_scores'], index_col=0)
+        return metric_scores
+
+    def _get_of_models_scores(self):
+
+        models = ['speed', 'hd', 'border', 'grid', 'pos', 'agg_all', 'agg_sdp', 'agg_sdbg']
+        metrics = ['r2', 'map_r', 'n_err', 'coef', 'agg_all_coef', 'agg_sdbg_coef', 'agg_sdp_coef']
+        splits = ['train', 'test']
+
+        unit_count = 0
+        model_scores = pd.DataFrame()
+        for subject in self.subjects:
+            subject_info = SubjectInfo(subject)
+            for session in subject_info.sessions:
+                if 'OF' in session:
+                    session_info = SubjectSessionInfo(subject, session)
+                    n_session_units = session_info.n_units
+                    if n_session_units > 0:
+                        try:
+
+                            temp = session_info.get_encoding_models_scores()
+                            if temp.empty:
+                                continue
+                            # noinspection PyTypeChecker
+                            mask = (temp['metric'].isin(metrics)) & (temp['model'].isin(models))
+
+                            session_models_scores = pd.DataFrame(index=range(mask.sum()),
+                                                                 columns=['unit_id', 'subject', 'session',
+                                                                          'session_unit_id',
+                                                                          'unit_type', 'session_pct_cov',
+                                                                          'session_valid',
+                                                                          'tt', 'tt_cl', 'model', 'split', 'metric',
+                                                                          'value'])
+
+                            session_models_scores.loc[:, ['model', 'split', 'metric', 'value']] = \
+                                temp.loc[mask, ['model', 'split', 'metric', 'value']].values
+
+                            session_models_scores['session'] = session_info.session
+                            session_models_scores['subject'] = session_info.subject
+                            session_models_scores['session_unit_id'] = temp.loc[mask, 'unit_id'].values
+
+                            session_models_scores['unit_id'] = session_models_scores['session_unit_id'] + unit_count
+
+                            for session_unit_id, cluster_info in session_info.cluster_ids.items():
+                                mask = session_models_scores.session_unit_id == int(session_unit_id)
+
+                                tt = cluster_info[1]
+                                cl = cluster_info[2]
+                                depth = subject_info.sessions_tt_positions.loc[session, f"tt_{tt}"]
+                                cl_name = f"{session}-tt{tt}_d{depth}_cl{cl}"
+
+                                session_models_scores.loc[mask, 'unit_type'] = cluster_info[0]
+                                session_models_scores.loc[mask, 'tt'] = tt
+                                session_models_scores.loc[mask, 'tt_cl'] = cl
+                                session_models_scores.loc[mask, 'cl_name'] = cl_name
+
+                            behav = session_info.get_track_data()
+
+                            # noinspection PyTypeChecker
+                            coverage = np.around(behav['pos_valid_mask'].mean(), 2)
+                            session_models_scores['session_pct_cov'] = coverage
+                            session_models_scores['session_valid'] = coverage >= self.min_pct_coverage
+
+                            #
+                            model_scores = model_scores.append(session_models_scores)
+                            unit_count += n_session_units
+
+                        except ValueError:
+                            traceback.print_exc(file=sys.stdout)
+                            pass
+        #
+        model_scores = model_scores.reset_index(drop=True)
+        model_scores = model_scores.astype({"value": float})
+        model_scores = model_scores.to_csv(self.paths['of_model_scores'])
+
+        return model_scores
+
+    def _match_unit_ids(self, metric_scores, model_scores):
+
+        session_unit_id_array = metric_scores[['session', 'session_unit_id']].values
+        session_unit_id_tuple = [tuple(ii) for ii in session_unit_id_array]
+        sid_2_uid = {}
+        uid_2_sid = {}
+
+        used_ids = []
+        unique_id_cnt = 0
+        for suid in session_unit_id_tuple:
+            if not suid in used_ids:
+                sid_2_uid[suid] = unique_id_cnt
+                uid_2_sid[unique_id_cnt] = suid
+
+                unique_id_cnt += 1
+                used_ids += [suid]
+
+        session_unit_id_array = model_scores[['session', 'session_unit_id']].values
+        session_unit_id_tuple = [tuple(ii) for ii in session_unit_id_array]
+        model_scores['unit_id'] = [sid_2_uid[suid] for suid in session_unit_id_tuple]
+
+        metric_scores.to_csv(self.paths['of_metric_scores'])
+        model_scores = model_scores.to_csv(self.paths['of_model_scores'])
+
+        return metric_scores, model_scores
+
+    def get_unit_table(self, overwrite=False):
+        if not self.paths['units'].exists() or overwrite:
+            raise NotImplementedError
+        else:
+            unit_table = pd.read_csv(self.paths['units'], index_col=0)
+        return unit_table
+
+    def plot(self, which, save=False, dpi=1000, root_dir=None):
+        if which == 'f1':
+            f1 = pf.Fig1()
+            f = f1.plot_all()
+        else:
+            return
+        if save:
+            if root_dir is None:
+                f.savefig(self.paths[which], dpi=dpi, bbox_inches='tight')
+            else:
+                if root_dir in self._root_paths.keys():
+                    paths = self._get_paths(self._root_paths[root_dir])
+                    f.savefig(paths[which], dpi=dpi, bbox_inches='tight')
+        return f
+
+
+class SubjectInfo:
 
     def __init__(self, subject, sorter='KS2', data_root='BigPC', overwrite=False, time_step=0.02,
                  samp_rate=32000, n_tetrodes=16, fr_temporal_smoothing=0.125, spk_outlier_thr=None,
@@ -383,7 +715,7 @@ class SubjectInfo:
 
         return cluster_dists
 
-    def match_clusters(self, overwrite=False, require_subsets=True,  **kwargs):
+    def match_clusters(self, overwrite=False, require_subsets=True, **kwargs):
         params = {'dist_metric': 'pe', 'dist_metric_thr': 0.5, 'select_lower': True}
         params.update(kwargs)
 
@@ -400,7 +732,7 @@ class SubjectInfo:
             cluster_dists = self.get_cluster_dists()
 
             matching_analyses = self.get_session_match_analysis()
-            #[cluster_dists[k]['analysis'] for k in cluster_dists.keys()]
+            # [cluster_dists[k]['analysis'] for k in cluster_dists.keys()]
             cluster_match_results = {k: {} for k in np.arange(len(matching_analyses))}
             for analysis_id, analysis in matching_analyses.items():
                 dist_mat = cluster_dists[analysis_id]['dists_mats'][dist_metric]
@@ -514,7 +846,7 @@ class SubjectInfo:
 
                                     subject_units_table.loc[unit_cnt, "snr"] = session_clusters["clusters_snr"][tt][cl]
                                     subject_units_table.loc[unit_cnt, "fr"] = session_clusters["clusters_fr"][tt][cl]
-                                    subject_units_table.loc[unit_cnt, "isi_viol_rate"] =\
+                                    subject_units_table.loc[unit_cnt, "isi_viol_rate"] = \
                                         session_clusters["clusters_isi_viol_rate"][tt][cl]
 
                                     if unit_type == 'cell':
@@ -523,14 +855,14 @@ class SubjectInfo:
                                         if cl_name in matches_con_dict.keys():
                                             cl_matches = matches_con_dict[cl_name][0]
                                             subject_units_table.loc[unit_cnt, "n_matches_con"] = len(cl_matches)
-                                            subject_units_table.loc[unit_cnt, "subject_cl_match_con_id"] =\
+                                            subject_units_table.loc[unit_cnt, "subject_cl_match_con_id"] = \
                                                 matches_con_set_num[cl_name]
 
                                         # add fields of liberal cluster matching ( does not require subset matching)
                                         if cl_name in matches_lib_dict.keys():
                                             cl_matches = matches_lib_dict[cl_name][0]
                                             subject_units_table.loc[unit_cnt, "n_matches_lib"] = len(cl_matches)
-                                            subject_units_table.loc[unit_cnt, "subject_cl_match_lib_id"] =\
+                                            subject_units_table.loc[unit_cnt, "subject_cl_match_lib_id"] = \
                                                 matches_lib_set_num[cl_name]
 
                                     unit_cnt += 1
@@ -590,43 +922,51 @@ class SubjectInfo:
 
         paths['cluster_spike_maps'] = paths['Results'] / 'spike_maps.npy'
         paths['cluster_fr_maps'] = paths['Results'] / 'maps.npy'
-        paths['cluster_OF_metrics'] = paths['Results'] / 'OF_metrics.csv'
-        paths['cluster_OF_encoding_models'] = paths['Results'] / 'OF_encoding.csv'
-        paths['cluster_OF_encoding_agg_coefs'] = paths['Results'] / 'OF_encoding_agg_coefs.csv'
 
-        paths['ZoneAnalyses'] = paths['Results'] / 'ZoneAnalyses.pkl'
+        if task == 'OF':
+            paths['cluster_OF_metrics'] = paths['Results'] / 'OF_metrics.csv'
+            paths['cluster_OF_encoding_models'] = paths['Results'] / 'OF_encoding.csv'
+            paths['cluster_OF_encoding_agg_coefs'] = paths['Results'] / 'OF_encoding_agg_coefs.csv'
+        else:
 
-        paths['TrialInfo'] = paths['Results'] / 'TrInfo.pkl'
-        paths['TrialCondMat'] = paths['Results'] / 'TrialCondMat.csv'
-        paths['TrLongPosMat'] = paths['Results'] / 'TrLongPosMat.csv'
-        paths['TrLongPosFRDat'] = paths['Results'] / 'TrLongPosFRDat.csv'
-        paths['TrModelFits'] = paths['Results'] / 'TrModelFits.csv'
-        paths['TrModelFits2'] = paths['Results'] / 'TrModelFits2.csv'
+            paths['trial_table'] = paths['Results'] / 'trial_table.csv'
+            paths['event_table'] = paths['Results'] / 'event_table.csv'
+            paths['track_table'] = paths['Results'] / 'track_table.csv'
+            paths['event_time_series'] = paths['Results'] / 'event_time_series.csv'
+            paths['not_valid_pos_samps'] = paths['Results'] / 'not_valid_pos_samps.npy'
+            paths['pos_zones'] = paths['Results'] / 'pos_zones.npy'
 
-        paths['CueDesc_SegUniRes'] = paths['Results'] / 'CueDesc_SegUniRes.csv'
-        paths['CueDesc_SegDecRes'] = paths['Results'] / 'CueDesc_SegDecRes.csv'
-        paths['CueDesc_SegDecSumRes'] = paths['Results'] / 'CueDesc_SegDecSumRes.csv'
-        paths['PopCueDesc_SegDecSumRes'] = paths['Results'] / 'PopCueDesc_SegDecSumRes.csv'
+            paths['zone_analyses'] = paths['Results'] / 'ZoneAnalyses.pkl'
+            paths['TrialInfo'] = paths['Results'] / 'TrInfo.pkl'
+            paths['TrialCondMat'] = paths['Results'] / 'TrialCondMat.csv'
+            paths['TrLongPosMat'] = paths['Results'] / 'TrLongPosMat.csv'
+            paths['TrLongPosFRDat'] = paths['Results'] / 'TrLongPosFRDat.csv'
+            paths['TrModelFits2'] = paths['Results'] / 'TrModelFits2.csv'
+
+            paths['CueDesc_SegUniRes'] = paths['Results'] / 'CueDesc_SegUniRes.csv'
+            paths['CueDesc_SegDecRes'] = paths['Results'] / 'CueDesc_SegDecRes.csv'
+            paths['CueDesc_SegDecSumRes'] = paths['Results'] / 'CueDesc_SegDecSumRes.csv'
+            paths['PopCueDesc_SegDecSumRes'] = paths['Results'] / 'PopCueDesc_SegDecSumRes.csv'
 
         # plots directories
-        paths['Plots'] = paths['Results'] / 'Plots'
-        # paths['Plots'].mkdir(parents=True, exist_ok=True)
-        paths['SampCountsPlots'] = paths['Plots'] / 'SampCountsPlots'
-        # paths['SampCountsPlots'].mkdir(parents=True, exist_ok=True)
-
-        paths['ZoneFRPlots'] = paths['Plots'] / 'ZoneFRPlots'
-        # paths['ZoneFRPlots'].mkdir(parents=True, exist_ok=True)
-
-        paths['ZoneCorrPlots'] = paths['Plots'] / 'ZoneCorrPlots'
-        # paths['ZoneCorrPlots'].mkdir(parents=True, exist_ok=True)
-        paths['SIPlots'] = paths['Plots'] / 'SIPlots'
-        # paths['SIPlots'].mkdir(parents=True, exist_ok=True)
-
-        paths['TrialPlots'] = paths['Plots'] / 'TrialPlots'
-        # paths['TrialPlots'].mkdir(parents=True, exist_ok=True)
-
-        paths['CueDescPlots'] = paths['Plots'] / 'CueDescPlots'
-        # paths['CueDescPlots'].mkdir(parents=True, exist_ok=True)
+        # paths['Plots'] = paths['Results'] / 'Plots'
+        # # paths['Plots'].mkdir(parents=True, exist_ok=True)
+        # paths['SampCountsPlots'] = paths['Plots'] / 'SampCountsPlots'
+        # # paths['SampCountsPlots'].mkdir(parents=True, exist_ok=True)
+        #
+        # paths['ZoneFRPlots'] = paths['Plots'] / 'ZoneFRPlots'
+        # # paths['ZoneFRPlots'].mkdir(parents=True, exist_ok=True)
+        #
+        # paths['ZoneCorrPlots'] = paths['Plots'] / 'ZoneCorrPlots'
+        # # paths['ZoneCorrPlots'].mkdir(parents=True, exist_ok=True)
+        # paths['SIPlots'] = paths['Plots'] / 'SIPlots'
+        # # paths['SIPlots'].mkdir(parents=True, exist_ok=True)
+        #
+        # paths['TrialPlots'] = paths['Plots'] / 'TrialPlots'
+        # # paths['TrialPlots'].mkdir(parents=True, exist_ok=True)
+        #
+        # paths['CueDescPlots'] = paths['Plots'] / 'CueDescPlots'
+        # # paths['CueDescPlots'].mkdir(parents=True, exist_ok=True)
 
         return paths
 
@@ -651,7 +991,6 @@ class SubjectInfo:
                     cluster_stats = pd.read_csv(_cluster_stats_fn2, index_col=0)
                 except:
                     cluster_stats = pd.DataFrame(columns=['cl_num'])
-                #cluster_stats = pd.DataFrame(columns=['cl_num'])
 
                 # get units and units already with computed stats
                 valid_units = cluster_groups.cluster_id.values
@@ -679,7 +1018,7 @@ class SubjectInfo:
                         hp_data_info = pickle.load(f)
 
                     cluster_stats_missing = sort_funcs.get_cluster_stats(spike_times_dict, hp_data, hp_data_info)
-                    #cluster_stats2 = cluster_stats_missing
+                    # cluster_stats2 = cluster_stats_missing
                     cluster_stats2 = cluster_stats2.append(cluster_stats_missing)
                     cluster_stats2 = cluster_stats2.sort_values('cl_num')
                     cluster_stats2 = cluster_stats2.drop_duplicates()
@@ -720,24 +1059,14 @@ class SubjectInfo:
                 for st in _cluster_stats_names:
                     if st == 'valid':
                         table['clusters_valid'][int(tt)] = {int(d.loc[k, 'cl_num']):
-                                                            int(d.loc[k, 'valid']) for k in keys}
+                                                                int(d.loc[k, 'valid']) for k in keys}
                     else:
                         try:
                             table['clusters_' + st][int(tt)] = {int(d.loc[k, 'cl_num']):
-                                                                np.around(d.loc[k, st], 2) for k in keys}
+                                                                    np.around(d.loc[k, st], 2) for k in keys}
                         except TypeError:
                             print(st, keys, tt, session)
                             sys.exit()
-
-                # for st in _cluster_stats_names:
-                #     table['clusters_' + st][int(tt)] = {}
-                #
-                #     for k in keys:
-                #         cl = d.loc[k, 'cl_num'].astype(int)
-                #         if st == 'valid':
-                #             table['clusters_' + st][int(tt)][cl] = int(d.loc[k, st])
-                #         else:
-                #             table['clusters_' + st][int(tt)][cl] = np.around(d.loc[k, st], 2)
 
             if _cluster_groups_file.exists():
                 d = pd.read_csv(_cluster_groups_file, delimiter='\t')
@@ -824,7 +1153,10 @@ class SubjectSessionInfo(SubjectInfo):
         self.subject = self.subject.capitalize()
 
         self.task_params = get_task_params(self)
-        self.n_units = self.clusters['n_cell'] + self.clusters['n_mua']
+        self.n_cells = self.clusters['n_cell']
+        self.n_mua = self.clusters['n_mua']
+        self.n_units = self.n_cells + self.n_mua
+
         if self.paths['cluster_spikes_ids'].exists():
             with self.paths['cluster_spikes_ids'].open('r') as f:
                 self.cluster_ids = json.load(f)
@@ -872,15 +1204,15 @@ class SubjectSessionInfo(SubjectInfo):
             }
         elif self.task[:2] == 'T3':
             analyses = {
-                'track_data': (self.get_track_data, self.paths['behav_track_data'].exists()),
+                'track_data': (self.get_track_data, self.paths['track_table'].exists()),
+                'pos_zones': (self.get_pos_zones, self.paths['pos_zones'].exists()),
+                'event_table': (self.get_event_behavior, self.paths['event_table'].exists()),
                 'time': (self.get_time, True),
                 'spikes': (self.get_spikes, self.paths['cluster_spikes'].exists()),
                 'binned_spikes': (self.get_binned_spikes, self.paths['cluster_binned_spikes'].exists()),
                 'fr': (self.get_fr, self.paths['cluster_fr'].exists()),
                 'spike_maps': (self.get_spike_maps, self.paths['cluster_spike_maps'].exists()),
                 'maps': (self.get_fr_maps, self.paths['cluster_fr_maps'].exists()),
-                'scores': (self.get_scores, self.paths['cluster_OF_metrics'].exists()),
-                'encoding_models': (self.get_encoding_models, self.paths['cluster_OF_encoding_models'].exists())
             }
         else:
             return NotImplementedError
@@ -985,7 +1317,7 @@ class SubjectSessionInfo(SubjectInfo):
             return None
 
     # behavioral methods
-    def get_track_data(self, overwrite=False):
+    def get_track_data(self, return_nan_idx=False, overwrite=False):
         if self.task == 'OF':
             if not self.paths['behav_track_data'].exists() or overwrite:
                 print('Open Field Track Data not Found or Overwrite= True, creating them.')
@@ -997,6 +1329,65 @@ class SubjectSessionInfo(SubjectInfo):
                     of_track_dat = pickle.load(f)
             return of_track_dat
         else:
+            if not self.paths['track_table'].exists() or overwrite:
+                print("Tree Maze Track Data Not Found or Overwrite = True, processing...")
+                t1 = time.time()
+                t_rs = self.get_time()
+                t_vt, x_vt, y_vt, ha_vt = self.get_raw_track_data()
+                x, y, ha, nan_idx = tmf.pre_process_track_data(x_vt, y_vt, ha_vt, t_vt, t_rs, self.task_params)
+
+                df = pd.DataFrame(columns=['t', 'x', 'y', 'ha'])
+                df['x'] = x
+                df['y'] = y
+                df['ha'] = ha
+                df['t'] = t_rs
+
+                df.to_csv(self.paths['track_table'])
+                np.save(self.paths['not_valid_pos_samps'], nan_idx)
+                print(f"Processing Completed: {time.time() - t1:0.2f} seconds")
+            else:
+                df = pd.read_csv(self.paths['track_table'], index_col=0)
+                nan_idx = np.load(self.paths['not_valid_pos_samps'])
+
+            if return_nan_idx:
+                return df, nan_idx
+            else:
+                return df
+
+    def get_pos_zones(self, overwrite=False):
+
+        if self.task[:2] == 'T3':
+            if not self.paths['pos_zones'].exists() or overwrite:
+                track_data = self.get_track_data()
+                tree_maze = tmf.TreeMazeZones()
+                pos_zones = tree_maze.get_pos_zone_ts(track_data.x, track_data.y)
+                np.save(self.paths['pos_zones'], pos_zones)
+            else:
+                pos_zones = np.load(self.paths['pos_zones'])
+            return pos_zones
+        else:
+            raise NotImplementedError
+
+    def get_pos_zones_mat(self):
+        if self.task[:2] == 'T3':
+            tree_maze = tmf.TreeMazeZones()
+            pos_zones = self.get_pos_zones()
+            return tree_maze.get_pos_zone_mat(pos_zones)
+        else:
+            raise NotImplementedError
+
+    def get_raw_events(self):
+        if self.task[:2] == 'T3':
+            return pp_funcs.get_events(self.paths['Raw'] / 'Events.nev')
+        else:
+            print("Method not available for this task")
+            return None
+
+    def get_event_behavior(self, overwrite=False):
+        if self.task[:2] == 'T3':
+            return tmf.BehaviorData(self, overwrite)
+        else:
+            print("Method not available for this task")
             return None
 
     # methods from spike functions
@@ -1405,17 +1796,19 @@ def get_task_params(session_info):
                 'x_pix_bias': -380,  # factor for centering the x pixel position
                 'y_pix_bias': -280,  # factor for centering the y pixel position
                 'vt_rate': 1.0 / 60.0,  # video acquisition frame rate
-                'xy_pix_rot_rad': np.pi / 2 + 0.08,  # rotation of original xy pix camera to experimenter xy
+                'xy_pix_rot_rad': np.pi / 2 + 0.05,  # rotation of original xy pix camera to experimenter xy
 
                 # conversion params
-                'x_pix_mm': 1300.0 / 344.0,  # pixels to mm for the x axis [pix/mm]
-                'y_pix_mm': 1450.0 / 444.0,  # pixels to mm for the y axis [pix/mm]
-                'x_mm_bias': 20,  # factor for centering the x mm position
+                'x_pix_mm': 1358 / 269.0,  # pixels to mm for the x axis [pix/mm]
+                'y_pix_mm': 1308 / 300.0,  # pixels to mm for the y axis [pix/mm]
+                'x_neg_warp_factor': 1.05,  # warping for the left side
+                'x_pos_warp_factor': 0.93,  # warping for the left side
+                'x_mm_bias': 35,  # factor for centering the x mm position
                 'y_mm_bias': 650,  # factor for centering the y mm position
                 'x_mm_lims': [-630, 630],  # limits on the x axis of the maze [mm]
-                'y_mm_lims': [-60, 1350],  # limits on the y axis of the maze [mm]
+                'y_mm_lims': [-60, 1400],  # limits on the y axis of the maze [mm]
                 'x_cm_lims': [-63, 63],  # limits on the x axis of the maze [cm]
-                'y_cm_lims': [-6, 135],  # limits on the y axis of the maze [cm]
+                'y_cm_lims': [-6, 14],  # limits on the y axis of the maze [cm]
             }
         elif subject in ['Mi']:
             conv_params = {

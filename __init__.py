@@ -3,4 +3,4 @@
 # import Utils
 # import Analyses
 
-from .Analyses.subject_info import SubjectInfo
+from .Analyses.experiment_info import SubjectInfo
