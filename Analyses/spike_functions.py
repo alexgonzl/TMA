@@ -78,20 +78,12 @@ def get_session_fr(session_info, bin_spikes=None):
     """
 
     time_step = session_info.params['time_step']
-    temporal_smoothing = session_info.params['fr_temporal_smoothing']
 
     if bin_spikes is None:
         bin_spikes = session_info.get_binned_spikes()
 
-    # define filter.
-    filter_len = np.round(temporal_smoothing / time_step).astype(int)
-    filt_coeff = signal.windows.hann(filter_len)  # banishing filter
-    filt_coeff /= filt_coeff.sum()  # normalize to conserve signal energy
-
-    n_units, n_timebins = bin_spikes.shape
-    fr = np.zeros((n_units, n_timebins))
-    for unit in np.arange(n_units):
-        fr[unit] = signal.filtfilt(filt_coeff, 1, bin_spikes[unit] / time_step)
+    sos_coefs = signal.tf2sos(session_info.task_params['filter_coef_'], 1)
+    fr = signal.sosfiltfilt(sos_coefs, bin_spikes / time_step, axis=1)
 
     return fr
 

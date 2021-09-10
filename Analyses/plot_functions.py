@@ -34,26 +34,30 @@ from Analyses import tree_maze_functions as tmf
 class Fig1:
     fontsize = 7
 
-    fig_w = 6.5
+    fig_w = 6.2
     fig_ratio = 1.7
 
     wspace = 0.02
     hspace = 0.08
-    ax_w = 0.3
-    ax_h = 0.45
 
-    row2_h = 0.35
-    row2_y0 = 0.1
+    a_x0 = 0.02
+    abc_w = 0.3
+    abc_h = 0.45
+
+    c_x0 = 0.05 + a_x0
+    c_h = 0.35
+    c_y0 = 0.1
 
     de_h = 0.33
     de_w = 0.22
-    de_x0 = ax_w * 2 + wspace * 5
+    d_y0 = 0.12
+    de_x0 = abc_w * 2 + wspace * 5
 
-    panel_locs = dict(a=[0, ax_h + hspace, ax_w, ax_h],
-                      b=[ax_w + wspace, ax_h + hspace, ax_w, ax_h],
-                      c=[0.05, row2_y0, ax_w * 2 - 0.05, row2_h],
-                      d=[de_x0, ax_h + hspace * 2, de_w, de_h],
-                      e=[de_x0, row2_y0 + 0.02, de_w, de_h])
+    panel_locs = dict(a=[0, abc_h + hspace, abc_w, abc_h],
+                      b=[abc_w + wspace, abc_h + hspace, abc_w, abc_h],
+                      c=[c_x0, c_y0, abc_w * 2 - c_x0, c_h],
+                      d=[de_x0, abc_h + hspace * 2, de_w, de_h],
+                      e=[de_x0, d_y0, de_w, de_h])
 
     label_fontsize = 9
     label_base_loc_x = 0.02
@@ -111,10 +115,10 @@ class Fig1:
 
         label_ax = f.add_axes([0, 0, 1, 1])
         label_locs = dict(a=(self.label_base_loc_x, self.label_base_loc_y),
-                          b=(self.label_base_loc_x + self.ax_w + self.wspace, self.label_base_loc_y),
+                          b=(self.label_base_loc_x + self.abc_w + self.wspace, self.label_base_loc_y),
                           c=(self.label_base_loc_x, self.label_row2_y),
-                          d=(self.label_base_loc_x + self.ax_w * 2 + self.wspace, self.label_base_loc_y),
-                          e=(self.label_base_loc_x + self.ax_w * 2 + self.wspace, self.label_row2_y)
+                          d=(self.label_base_loc_x + self.abc_w * 2 + self.wspace, self.label_base_loc_y),
+                          e=(self.label_base_loc_x + self.abc_w * 2 + self.wspace, self.label_row2_y)
                           )
         for label in labels:
             label_ax.text(label_locs[label][0], label_locs[label][1], label, transform=label_ax.transAxes,

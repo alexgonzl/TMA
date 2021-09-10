@@ -8,6 +8,7 @@ import h5py
 import sys
 import traceback
 import Analyses.spike_functions as spike_funcs
+import Analyses.spatial_functions as spatial_funcs
 import Analyses.open_field_functions as of_funcs
 import Analyses.cluster_match_functions as cmf
 import Pre_Processing.pre_process_functions as pp_funcs
@@ -53,8 +54,10 @@ class SummaryInfo:
         self.main_path = self._root_paths[data_root]
         self.paths = self._get_paths()
         self.unit_table = self.get_unit_table()
+        self.analyses_table = self.get_analyses_table()
+        self.valid_track_table = self.get_track_validity_table()
 
-    def run_analyses(self, overwrite, task='all', verbose=False):
+    def run_analyses(self, overwrite, task='all', which='all', verbose=False):
         interrupt_flag = False
         for subject in self.subjects:
             if not interrupt_flag:
@@ -72,7 +75,7 @@ class SummaryInfo:
                             t0 = time.time()
                             print(f'Processing Session {session}')
                         session_info = SubjectSessionInfo(subject, session)
-                        session_info.run_analyses(overwrite=overwrite)
+                        session_info.run_analyses(overwrite=overwrite, which=which)
                         if verbose:
                             t1 = time.time()
                             print(f"Session Processing Completed: {t1 - t0:0.2f}s")
@@ -90,6 +93,31 @@ class SummaryInfo:
                         pass
             if verbose:
                 print(f"Subject {subject} Analyses Completed.")
+
+    def get_analyses_table(self, overwrite=False):
+
+        if not self.paths['analyses_table'].exists() or overwrite:
+            analyses_table = pd.DataFrame()
+            for subject in self.subjects:
+                analyses_table = analyses_table.append(SubjectInfo(subject).analyses_table)
+
+            analyses_table.to_csv(self.paths['analyses_table'])
+        else:
+            analyses_table = pd.read_csv(self.paths['analyses_table'], index_col=0)
+
+        return analyses_table
+
+    def get_track_validity_table(self, overwrite=False):
+        if not self.paths['valid_track_table'].exists() or overwrite:
+            valid_track_table = pd.DataFrame()
+            for subject in self.subjects:
+                valid_track_table = valid_track_table.append(SubjectInfo(subject).valid_track_table)
+
+            valid_track_table.to_csv(self.paths['valid_track_table'])
+        else:
+            valid_track_table = pd.read_csv(self.paths['valid_track_table'], index_col=0)
+
+        return valid_track_table
 
     def get_behav_perf(self, overwrite=False):
         if not self.paths['behavior'].exists() or overwrite:
@@ -125,6 +153,8 @@ class SummaryInfo:
             figures_path = root_path / 'Figures'
 
         paths = dict(
+            analyses_table=results_path / 'analyses_table.csv',
+            valid_track_table=results_path / 'valid_track_table.csv',
             behavior=results_path / 'behavior_session_perf.csv',
             units=results_path / 'all_units_table.csv',
             of_metric_scores=results_path / 'of_metric_scores_summary_table.csv',
@@ -132,9 +162,6 @@ class SummaryInfo:
         )
         paths['results'] = results_path
         paths['figures'] = figures_path
-
-        for k in self.figure_names:
-            paths[k] = paths['figures'] / f"{k}.jpg"
 
         return paths
 
@@ -353,19 +380,20 @@ class SummaryInfo:
             unit_table = pd.read_csv(self.paths['units'], index_col=0)
         return unit_table
 
-    def plot(self, which, save=False, dpi=1000, root_dir=None):
-        if which == 'f1':
+    def plot(self, fig_id, save=False, dpi=1000, root_dir=None, fig_format='jpg'):
+        if fig_id == 'f1':
             f1 = pf.Fig1()
             f = f1.plot_all()
         else:
             return
         if save:
+            fn = f"{fig_id}.{fig_format}"
             if root_dir is None:
-                f.savefig(self.paths[which], dpi=dpi, bbox_inches='tight')
+                f.savefig(self.paths['figures'] / fn, dpi=dpi, bbox_inches='tight')
             else:
                 if root_dir in self._root_paths.keys():
                     paths = self._get_paths(self._root_paths[root_dir])
-                    f.savefig(paths[which], dpi=dpi, bbox_inches='tight')
+                    f.savefig(paths['figures'] / fn, dpi=dpi, bbox_inches='tight')
         return f
 
 
@@ -373,7 +401,7 @@ class SubjectInfo:
 
     def __init__(self, subject, sorter='KS2', data_root='BigPC', overwrite=False, time_step=0.02,
                  samp_rate=32000, n_tetrodes=16, fr_temporal_smoothing=0.125, spk_outlier_thr=None,
-                 overwrite_cluster_stats=False):
+                 overwrite_cluster_stats=False, overwrite_session_clusters=False):
 
         subject = str(subject.title())
         self.subject = subject
@@ -439,8 +467,8 @@ class SubjectInfo:
                     self.update_clusters()
                 else:
                     # load tables
-                    self.session_clusters = self.get_session_clusters(overwrite=overwrite)
-                    self.sort_tables = self.get_sort_tables(overwrite=overwrite)
+                    self.session_clusters = self.get_session_clusters(overwrite=overwrite_session_clusters)
+                    self.sort_tables = self.get_sort_tables(overwrite=overwrite_session_clusters)
             except:
                 print("Error obtaining clusters.")
                 print(sys.exc_info()[0], sys.exc_info()[1], sys.exc_info()[2].tb_lineno)
@@ -450,8 +478,42 @@ class SubjectInfo:
             self.sessions_tt_positions = self.get_sessions_tt_position()
             self.tt_depth_match = self.get_tetrode_depth_match()
 
+            # check analyses table
+            self.analyses_table = self.get_sessions_analyses()
+            self.valid_track_table = self.check_track_data_validty()
+
             self.save_subject_info()
 
+    def load_subject_info(self):
+        with self.subject_info_file.open(mode='rb') as f:
+            loaded_self = pickle.load(f)
+            self.__dict__.update(loaded_self.__dict__)
+            return self
+
+    def save_subject_info(self):
+        with self.subject_info_file.open(mode='wb') as f:
+            pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def get_sessions_analyses(self):
+
+        analyses_table = pd.DataFrame()
+        for session in self.sessions:
+            session_info = SubjectSessionInfo(self.subject, session)
+            analyses_table = analyses_table.append(session_info.session_analyses_table)
+
+        analyses_table.fillna(-1, inplace=True)
+        return analyses_table
+
+    def check_track_data_validty(self):
+        df = pd.DataFrame(index=self.sessions, columns=['task', 'validity'])
+        for session in self.sessions:
+            if self.analyses_table.loc[session, 'track_data'] == 1:
+                session_info = SubjectSessionInfo(self.subject, session)
+                df.loc[session, 'task'] = session_info.task
+                df.loc[session, 'validity'] = session_info.check_track_data_validity()
+        return df
+
+    # tetrode methods
     def update_clusters(self):
         self.session_clusters = self.get_session_clusters(overwrite=True)
         self.sort_tables = self.get_sort_tables(overwrite=True)
@@ -490,67 +552,6 @@ class SubjectInfo:
 
     def get_depth_wf(self):
         raise NotImplementedError
-
-    def get_tetrode_depth_match(self):
-
-        tt_pos = self.sessions_tt_positions
-
-        try:
-            tt_depth_matchs = {tt: {} for tt in self.tetrodes}
-            for tt in self.tetrodes:
-                tt_str = 'tt_' + str(tt)
-                tt_depths = tt_pos[tt_str].unique()
-                for depth in tt_depths:
-                    tt_depth_matchs[tt][depth] = list(tt_pos[tt_pos[tt_str] == depth].index)
-            return tt_depth_matchs
-
-        except:
-            print("Error Matching Sessions based on tetrode depth")
-            print(sys.exc_info()[0], sys.exc_info()[1], sys.exc_info()[2].tb_lineno)
-            traceback.print_exc(file=sys.stdout)
-        return None
-
-    def load_subject_info(self):
-        with self.subject_info_file.open(mode='rb') as f:
-            loaded_self = pickle.load(f)
-            self.__dict__.update(loaded_self.__dict__)
-            return self
-
-    def save_subject_info(self):
-        with self.subject_info_file.open(mode='wb') as f:
-            pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-    def get_session_clusters(self, overwrite=False):
-        _clusters_file = self.sorted_path / ('clusters_{}_{}.json'.format(self.sorter, self.subject))
-        if _clusters_file.exists() and not overwrite:  # load
-            with _clusters_file.open(mode='r') as f:
-                session_clusters = json.load(f)
-        else:  # create
-            session_clusters = {}
-            for session in self.sessions:
-                self._cluster_stats(session)
-                session_clusters[session] = self._session_clusters(session)
-
-            try:
-                with _clusters_file.open(mode='w') as f:
-                    json.dump(session_clusters, f, indent=4)
-            except TypeError:
-                print(session)
-        return session_clusters
-
-    def get_sort_tables(self, overwrite=False):
-        _sort_table_ids = ['tt', 'valid', 'curated', 'summary']
-        _sort_table_files = {ii: Path(self.sorted_path, 'sort_{}_{}_{}'.format(ii, self.sorter, self.subject))
-                             for ii in _sort_table_ids}
-        if _sort_table_files['summary'].exists() and not overwrite:
-            sort_tables = {ii: [] for ii in _sort_table_ids}
-            for ii in _sort_table_ids:
-                sort_tables[ii] = pd.read_csv(_sort_table_files[ii], index_col=0)
-        else:
-            sort_tables = self._sort_tables()
-            for ii in _sort_table_ids:
-                sort_tables[ii].to_csv(_sort_table_files[ii])
-        return sort_tables
 
     def get_session_tt_wf(self, session, tt, cluster_ids=None, wf_lims=None, n_wf=200):
 
@@ -593,6 +594,44 @@ class SubjectInfo:
                 out[cl_idx, wf_idx] = hp_data[:, wf_samps + samp_spk].flatten()
 
         return out
+
+    def get_session_clusters(self, overwrite=False):
+        _clusters_file = self.sorted_path / ('clusters_{}_{}.json'.format(self.sorter, self.subject))
+        if _clusters_file.exists() and not overwrite:  # load
+            with _clusters_file.open(mode='r') as f:
+                session_clusters = json.load(f)
+        else:  # create
+            session_clusters = {}
+            for session in self.sessions:
+                self._cluster_stats(session)
+                session_clusters[session] = self._session_clusters(session)
+
+            try:
+                with _clusters_file.open(mode='w') as f:
+                    json.dump(session_clusters, f, indent=4)
+            except TypeError:
+                print(session)
+        return session_clusters
+
+    # cluster matching methods
+    def get_tetrode_depth_match(self):
+
+        tt_pos = self.sessions_tt_positions
+
+        try:
+            tt_depth_matchs = {tt: {} for tt in self.tetrodes}
+            for tt in self.tetrodes:
+                tt_str = 'tt_' + str(tt)
+                tt_depths = tt_pos[tt_str].unique()
+                for depth in tt_depths:
+                    tt_depth_matchs[tt][depth] = list(tt_pos[tt_pos[tt_str] == depth].index)
+            return tt_depth_matchs
+
+        except:
+            print("Error Matching Sessions based on tetrode depth")
+            print(sys.exc_info()[0], sys.exc_info()[1], sys.exc_info()[2].tb_lineno)
+            traceback.print_exc(file=sys.stdout)
+        return None
 
     def get_session_match_analysis(self):
         # # determine sessions/tt to match based on depth
@@ -757,6 +796,21 @@ class SubjectInfo:
                 cluster_match_results = pickle.load(f)
 
         return cluster_match_results
+
+    # sort/unit tables methods
+    def get_sort_tables(self, overwrite=False):
+        _sort_table_ids = ['tt', 'valid', 'curated', 'summary']
+        _sort_table_files = {ii: Path(self.sorted_path, 'sort_{}_{}_{}'.format(ii, self.sorter, self.subject))
+                             for ii in _sort_table_ids}
+        if _sort_table_files['summary'].exists() and not overwrite:
+            sort_tables = {ii: [] for ii in _sort_table_ids}
+            for ii in _sort_table_ids:
+                sort_tables[ii] = pd.read_csv(_sort_table_files[ii], index_col=0)
+        else:
+            sort_tables = self._sort_tables()
+            for ii in _sort_table_ids:
+                sort_tables[ii].to_csv(_sort_table_files[ii])
+        return sort_tables
 
     def get_units_table(self, overwrite=False):
 
@@ -1152,6 +1206,15 @@ class SubjectSessionInfo(SubjectInfo):
             self.subject, self.task, self.date, self.sub_session_id = session.split('_')
         self.subject = self.subject.capitalize()
 
+        self.valid_tetrodes = np.where(self.channel_table.loc[session])[0] + 1
+        self.n_orig_samps = 0
+        self.tB = 0
+        if len(self.valid_tetrodes) > 0:
+            tt_info = self.get_tt_info(self.valid_tetrodes[0])
+            if tt_info is not None:
+                self.n_orig_samps = tt_info['n_samps']
+                self.tB = tt_info['tB']
+
         self.task_params = get_task_params(self)
         self.n_cells = self.clusters['n_cell']
         self.n_mua = self.clusters['n_mua']
@@ -1164,7 +1227,9 @@ class SubjectSessionInfo(SubjectInfo):
             self.cell_ids = np.array([v[0] == 'cell' for k, v in self.cluster_ids.items()])
             self.mua_ids = ~self.cell_ids
 
+        self.session_analyses_table = pd.DataFrame(index=[self.session])
         self._analyses = self._check_analyses()
+        self._analyses_names = list(self._analyses.keys())
 
         self.enc_models = None
 
@@ -1193,7 +1258,6 @@ class SubjectSessionInfo(SubjectInfo):
             # include the method and if it has been run (file exists)
             analyses = {
                 'track_data': (self.get_track_data, self.paths['behav_track_data'].exists()),
-                'time': (self.get_time, True),
                 'spikes': (self.get_spikes, self.paths['cluster_spikes'].exists()),
                 'binned_spikes': (self.get_binned_spikes, self.paths['cluster_binned_spikes'].exists()),
                 'fr': (self.get_fr, self.paths['cluster_fr'].exists()),
@@ -1202,37 +1266,53 @@ class SubjectSessionInfo(SubjectInfo):
                 'scores': (self.get_scores, self.paths['cluster_OF_metrics'].exists()),
                 'encoding_models': (self.get_encoding_models, self.paths['cluster_OF_encoding_models'].exists())
             }
+            for k in analyses:
+                self.session_analyses_table[k] = analyses[k][1]
         elif self.task[:2] == 'T3':
             analyses = {
                 'track_data': (self.get_track_data, self.paths['track_table'].exists()),
-                'pos_zones': (self.get_pos_zones, self.paths['pos_zones'].exists()),
-                'event_table': (self.get_event_behavior, self.paths['event_table'].exists()),
-                'time': (self.get_time, True),
                 'spikes': (self.get_spikes, self.paths['cluster_spikes'].exists()),
                 'binned_spikes': (self.get_binned_spikes, self.paths['cluster_binned_spikes'].exists()),
                 'fr': (self.get_fr, self.paths['cluster_fr'].exists()),
                 'spike_maps': (self.get_spike_maps, self.paths['cluster_spike_maps'].exists()),
                 'maps': (self.get_fr_maps, self.paths['cluster_fr_maps'].exists()),
+                'pos_zones': (self.get_pos_zones, self.paths['pos_zones'].exists()),
+                'event_table': (self.get_event_behavior, self.paths['event_table'].exists()),
             }
+
+            for k in analyses:
+                self.session_analyses_table[k] = analyses[k][1]
         else:
             return NotImplementedError
 
         return analyses
 
-    def run_analyses(self, overwrite=False):
+    def run_analyses(self, which='all', overwrite=False):
         """
         Method to execute all analyses in the analyses list.
+        :param which: str or list. which analysis to perform, if 'all', runs all analyses for that task
         :param bool overwrite: overwrite flag.
         :return: None
         """
+
         if self.n_units > 0:
-            for a, m in self._analyses.items():
+            if which == 'all':
+                analyses_to_perfom = self._analyses_names
+            elif which in self._analyses_names:
+                analyses_to_perfom = list(which)
+            else:
+                print("Invalid analysis.")
+                return
+
+            for a in analyses_to_perfom:
+                method = self._analyses[a][0]
+                file_exists_flag = self._analyses[a][1]
                 if a == 'time':
                     continue
-                if not m[1] or overwrite:
+                if not file_exists_flag or overwrite:
                     try:
                         # calls methods in _analyses
-                        _ = m[0](overwrite=True)
+                        _ = method(overwrite=True)
                         print(f'Analysis {a} completed.')
                     except NotImplementedError:
                         print(f'Analysis {a} not implemented.')
@@ -1246,7 +1326,7 @@ class SubjectSessionInfo(SubjectInfo):
             # update analyses
             self._analyses = self._check_analyses()
         else:
-            print('This session does not have units. No analyses were ran. ')
+            print(f"{self.session} This session does not have units. No analyses were ran.")
 
     #  default methods
     def get_time(self, which='resamp'):
@@ -1258,9 +1338,8 @@ class SubjectSessionInfo(SubjectInfo):
         samp_rate = self.params['samp_rate']
         time_step = self.params['time_step']
 
-        tt_info = self.get_tt_info(1)
-        n_samps = tt_info['n_samps']
-        tB = tt_info['tB']
+        n_samps = self.n_orig_samps
+        tB = self.tB
 
         # get time vector with original sampling rate
         if which == 'orig':
@@ -1301,12 +1380,13 @@ class SubjectSessionInfo(SubjectInfo):
     def get_sorted_tt_dir(self, tt):
         return self.paths['Sorted'] / f'tt_{tt}' / self.sorter
 
-    def get_tt_info(self, tt):
+    def get_tt_info(self, tt, verbose=False):
         try:
             with (self.paths['PreProcessed'] / f'tt_{tt}_info.pickle').open(mode='rb') as f:
                 return pickle.load(f)
         except FileNotFoundError:
-            print(f'Tetrode {tt} information not found.')
+            if verbose:
+                print(f'Tetrode {tt} information not found.')
             return None
 
     def get_tt_data(self, tt):
@@ -1332,8 +1412,8 @@ class SubjectSessionInfo(SubjectInfo):
             if not self.paths['track_table'].exists() or overwrite:
                 print("Tree Maze Track Data Not Found or Overwrite = True, processing...")
                 t1 = time.time()
-                t_rs = self.get_time()
                 t_vt, x_vt, y_vt, ha_vt = self.get_raw_track_data()
+                t_rs = self.get_time()
                 x, y, ha, nan_idx = tmf.pre_process_track_data(x_vt, y_vt, ha_vt, t_vt, t_rs, self.task_params)
 
                 df = pd.DataFrame(columns=['t', 'x', 'y', 'ha'])
@@ -1344,6 +1424,7 @@ class SubjectSessionInfo(SubjectInfo):
 
                 df.to_csv(self.paths['track_table'])
                 np.save(self.paths['not_valid_pos_samps'], nan_idx)
+
                 print(f"Processing Completed: {time.time() - t1:0.2f} seconds")
             else:
                 df = pd.read_csv(self.paths['track_table'], index_col=0)
@@ -1389,6 +1470,17 @@ class SubjectSessionInfo(SubjectInfo):
         else:
             print("Method not available for this task")
             return None
+
+    def check_track_data_validity(self):
+        if self.task == 'OF':
+            behav = self.get_track_data()
+            # noinspection PyTypeChecker
+            coverage = np.around(behav['pos_valid_mask'].mean(), 2)
+            return coverage
+        else:
+            df, nan_idx = self.get_track_data(return_nan_idx=True)
+            pct_nan = len(nan_idx) / len(df)
+            return 1 - pct_nan
 
     # methods from spike functions
     def get_spikes(self, return_numpy=True, save_spikes_dict=False, overwrite=False):
@@ -1536,8 +1628,8 @@ class SubjectSessionInfo(SubjectInfo):
             print('No units.')
             return None
 
-        if self.task == 'OF':
-            if not self.paths['cluster_fr_maps'].exists() or overwrite:
+        if not self.paths['cluster_fr_maps'].exists() or overwrite:
+            if self.task=='OF':
                 print('Open Field Firing Rate Maps not Found or Overwrite= True, creating them.')
                 if traditional:
                     fr_maps = of_funcs.get_session_fr_maps(self)
@@ -1546,10 +1638,36 @@ class SubjectSessionInfo(SubjectInfo):
 
                 np.save(self.paths['cluster_fr_maps'], fr_maps)
             else:
-                fr_maps = np.load(self.paths['cluster_fr_maps'])
-            return fr_maps
+
+                # get firing rate and track data
+                fr = self.get_fr()
+                track_data = self.get_track_data()
+
+                # get environment bins
+                x_edges = self.task_params['x_bin_edges_']
+                y_edges = self.task_params['y_bin_edges_']
+                n_x_bins = len(x_edges)-1
+                n_y_bins = len(y_edges)-1
+
+                # get occupancy map
+                pos_count_map = spatial_funcs.histogram_2d(track_data.x, track_data.y, x_edges, y_edges)
+
+                # pre-allocate and set up the map function to be looped
+                fr_maps = np.zeros((self.n_units, n_y_bins, n_x_bins))
+                fr_map_function = spatial_funcs.firing_rate_2_rate_map
+                args = dict(x=track_data.x, y=track_data.y,
+                            x_bin_edges=x_edges, y_bin_edges=y_edges, pos_count_map=pos_count_map,
+                            occ_num_thr=self.task_params['occ_num_thr'],
+                            spatial_window_size=self.task_params['spatial_window_size'],
+                            spatial_sigma=self.task_params['spatial_sigma'])
+                for unit in range(self.n_units):
+                    fr_maps[unit] = fr_map_function(fr[unit], **args)
+
+                np.save(self.paths['cluster_fr_maps'], fr_maps)
         else:
-            return None
+            fr_maps = np.load(self.paths['cluster_fr_maps'])
+
+        return fr_maps
 
     def get_scores(self, overwrite=False):
         """

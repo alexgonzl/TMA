@@ -223,14 +223,17 @@ def w_histogram_2d(x, y, w, x_bin_edges, y_bin_edges):
     return pos_sum_2d
 
 
-def firing_rate_2_rate_map(fr, x, y, x_bin_edges, y_bin_edges,
+def firing_rate_2_rate_map(fr, x, y, x_bin_edges, y_bin_edges, pos_counts_map=None, mask=None,
                            occ_num_thr=3, spatial_window_size=5, spatial_sigma=2, **kwargs):
     fr_sum_2d = w_histogram_2d(x, y, fr, x_bin_edges, y_bin_edges)
-    pos_counts_map = histogram_2d(x, y, x_bin_edges, y_bin_edges)
+
+    if pos_counts_map is None:
+        pos_counts_map = histogram_2d(x, y, x_bin_edges, y_bin_edges)
+    if mask is None:
+        mask = pos_counts_map >= occ_num_thr
 
     fr_avg_pos = np.zeros_like(fr_sum_2d)
-    fr_avg_pos[pos_counts_map > occ_num_thr] = fr_sum_2d[pos_counts_map > occ_num_thr] \
-                                               / pos_counts_map[pos_counts_map > occ_num_thr]
+    fr_avg_pos[mask] = fr_sum_2d[mask] / pos_counts_map[mask]
 
     sm_fr_map = smooth_2d_map(fr_avg_pos, n_bins=spatial_window_size, sigma=spatial_sigma, **kwargs)
     return sm_fr_map
