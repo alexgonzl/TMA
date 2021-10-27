@@ -174,6 +174,18 @@ class PointsOF:
 
 # ------------------------------------------------- Spatial Functions --------------------------------------------------
 
+def spatial_information(pos_prob, fr_map):
+    """
+    returns spatial information in bits/spatial_bin
+    :param pos_prob: position probability (position counts divided by sum)
+    :param fr_map: resulting firing rate map for each position
+    :return:
+    spatial information
+    """
+    nfr = fr_map/np.nansum(fr_map) # normalized map
+    info_mat = nfr*np.log2(nfr/pos_prob) # information matrix
+    return np.nansum(info_mat)
+
 def smooth_2d_map(bin_map, n_bins=5, sigma=2, apply_median_filt=True, **kwargs):
     """
     :param bin_map: map to be smooth.
@@ -239,14 +251,18 @@ def firing_rate_2_rate_map(fr, x, y, x_bin_edges, y_bin_edges, pos_counts_map=No
     return sm_fr_map
 
 
-def spikes_2_rate_map(spikes, x, y, x_bin_edges, y_bin_edges,
+def spikes_2_rate_map(spikes, x, y, x_bin_edges, y_bin_edges, pos_counts_map=None, mask=None,
                       time_step=0.02, occ_time_thr=0.06, spatial_window_size=5, spatial_sigma=2, **kwargs):
     spk_sum_2d = w_histogram_2d(x, y, spikes, x_bin_edges, y_bin_edges)
-    pos_sec_map = histogram_2d(x, y, x_bin_edges, y_bin_edges) * time_step
+
+    if pos_counts_map is None:
+        pos_counts_map = histogram_2d(x, y, x_bin_edges, y_bin_edges)
+    pos_sec_map = pos_counts_map * time_step
+    if mask is None:
+        mask = pos_sec_map >= occ_time_thr
 
     fr_avg_pos = np.zeros_like(spk_sum_2d)
-    fr_avg_pos[pos_sec_map > occ_time_thr] = spk_sum_2d[pos_sec_map > occ_time_thr] \
-                                             / pos_sec_map[pos_sec_map > occ_time_thr]
+    fr_avg_pos[mask] = spk_sum_2d[mask] / pos_sec_map[mask]
 
     sm_fr_map = smooth_2d_map(fr_avg_pos, n_bins=spatial_window_size, sigma=spatial_sigma, **kwargs)
     return sm_fr_map

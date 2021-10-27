@@ -7,12 +7,13 @@ import json
 import h5py
 import sys
 import traceback
+import warnings
+
 import Analyses.spike_functions as spike_funcs
 import Analyses.spatial_functions as spatial_funcs
 import Analyses.open_field_functions as of_funcs
-import Analyses.cluster_match_functions as cmf
+
 import Pre_Processing.pre_process_functions as pp_funcs
-import Sorting.sort_functions as sort_funcs
 from Utils.robust_stats import robust_zscore
 import Analyses.tree_maze_functions as tmf
 import Analyses.plot_functions as pf
@@ -57,7 +58,7 @@ class SummaryInfo:
         self.analyses_table = self.get_analyses_table()
         self.valid_track_table = self.get_track_validity_table()
 
-    def run_analyses(self, overwrite, task='all', which='all', verbose=False):
+    def run_analyses(self, task='all', which='all', verbose=False, overwrite=False):
         interrupt_flag = False
         for subject in self.subjects:
             if not interrupt_flag:
@@ -74,8 +75,10 @@ class SummaryInfo:
                         if verbose:
                             t0 = time.time()
                             print(f'Processing Session {session}')
+
                         session_info = SubjectSessionInfo(subject, session)
-                        session_info.run_analyses(overwrite=overwrite, which=which)
+                        session_info.run_analyses(overwrite=overwrite, which=which, verbose=verbose)
+
                         if verbose:
                             t1 = time.time()
                             print(f"Session Processing Completed: {t1 - t0:0.2f}s")
@@ -99,12 +102,13 @@ class SummaryInfo:
         if not self.paths['analyses_table'].exists() or overwrite:
             analyses_table = pd.DataFrame()
             for subject in self.subjects:
-                analyses_table = analyses_table.append(SubjectInfo(subject).analyses_table)
+                analyses_table = analyses_table.append(SubjectInfo(subject).get_sessions_analyses())
 
             analyses_table.to_csv(self.paths['analyses_table'])
         else:
             analyses_table = pd.read_csv(self.paths['analyses_table'], index_col=0)
 
+        self.analyses_table = analyses_table
         return analyses_table
 
     def get_track_validity_table(self, overwrite=False):
@@ -126,17 +130,20 @@ class SummaryInfo:
                 subject_info = SubjectInfo(subject)
                 for session in subject_info.sessions:
                     if 'T3' in session:
-                        session_info = SubjectSessionInfo(subject, session)
-                        b = session_info.get_event_behavior(overwrite)
-                        sp = b.get_session_perf()
+                        try:
+                            session_info = SubjectSessionInfo(subject, session)
+                            b = session_info.get_event_behavior()
+                            sp = b.get_session_perf()
 
-                        sp['session'] = session
-                        sp['task'] = session_info.task
-                        sp['subject'] = subject
-                        sp['n_units'] = session_info.n_units
-                        sp['n_cells'] = session_info.n_cells
-                        sp['n_mua'] = session_info.n_mua
-                        perf = pd.concat((perf, sp), ignore_index=True)
+                            sp['session'] = session
+                            sp['task'] = session_info.task
+                            sp['subject'] = subject
+                            sp['n_units'] = session_info.n_units
+                            sp['n_cells'] = session_info.n_cells
+                            sp['n_mua'] = session_info.n_mua
+                            perf = pd.concat((perf, sp), ignore_index=True)
+                        except:
+                            pass
 
             perf.to_csv(self.paths['behavior'])
         else:
@@ -159,6 +166,7 @@ class SummaryInfo:
             units=results_path / 'all_units_table.csv',
             of_metric_scores=results_path / 'of_metric_scores_summary_table.csv',
             of_model_scores=results_path / 'of_model_scores_summary_table_agg.csv',
+            zone_rates_comps=results_path / 'zone_rates_comps_summary_table.csv',
         )
         paths['results'] = results_path
         paths['figures'] = figures_path
@@ -169,15 +177,92 @@ class SummaryInfo:
         for subject in self.subjects:
             _ = SubjectInfo(subject, overwrite=True)
 
+    def get_zone_rates_comps(self, overwrite=False):
+        """
+        Aggregates tables across sessions and adds unit information.
+        Note, that overwrite only overwrites the aggregate table and does not perform the analysis on each session.
+        :param overwrite:
+        :return:
+        pandas data frame with n_units as index
+
+        """
+
+        if not self.paths['zone_rates_comps'].exists() or overwrite:
+            sessions_validity = self.get_track_validity_table()
+            zone_rates = pd.DataFrame()
+            unit_count = 0
+
+            valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_rates_comps==True].index)
+            for subject in self.subjects:
+                subject_info = SubjectInfo(subject)
+                for session in subject_info.sessions:
+                    if session in valid_sessions:
+                        session_info = SubjectSessionInfo(subject, session)
+                        n_session_units = session_info.n_units
+                        if n_session_units > 0:
+                            try:
+                                session_zone_rate_comp_table = session_info.get_zone_rates_comps()
+                                comp_table_columns = session_zone_rate_comp_table.columns
+
+                                session_table = pd.DataFrame(index=np.arange(n_session_units),
+                                                              columns=['unit_id', 'subject', 'session',
+                                                                       'session_pct_cov', 'session_valid',
+                                                                       'session_unit_id', 'unit_type', 'tt', 'tt_cl',
+                                                                       'cl_name'])
+
+                                session_table['session'] = session
+                                session_table['subject'] = session_info.subject
+                                session_table['session_unit_id'] = np.arange(n_session_units)
+
+                                session_table['unit_id'] = np.arange(n_session_units) + unit_count
+                                session_table['unit_type'] = [v[0] for k, v in  session_info.cluster_ids.items()]
+                                session_table['tt'] = [v[1] for k, v in session_info.cluster_ids.items()]
+                                session_table['tt_cl'] = [v[2] for k, v in session_info.cluster_ids.items()]
+
+                                if session in sessions_validity.columns:
+                                    session_table['session_pct_cov'] = sessions_validity[session]
+                                    session_table['session_valid'] = 1
+                                else:
+                                    session_table['session_pct_cov'] = 0
+                                    session_table['session_valid'] = 0
+
+                                cl_names = []
+                                for k, v in session_info.cluster_ids.items():
+                                    tt = v[1]
+                                    cl = v[2]
+                                    depth = subject_info.sessions_tt_positions.loc[session, f"tt_{tt}"]
+                                    cl_name = f"{session}-tt{tt}_d{depth}_cl{cl}"
+                                    cl_names.append(cl_name)
+
+                                session_table['cl_name'] = cl_names
+
+                                unit_count += n_session_units
+
+                                session_table = session_table.join(session_zone_rate_comp_table)
+                            except:
+                                print(f'Error Processing Session {session}')
+                                traceback.print_exc(file=sys.stdout)
+                                continue
+                            zone_rates = zone_rates.append(session_table)
+
+            zone_rates = zone_rates.reset_index(drop=True)
+            zone_rates.to_csv(self.paths['zone_rates_comps'])
+        else:
+            zone_rates = pd.read_csv(self.paths['zone_rates_comps'], index_col=0)
+
+        return zone_rates
+
     def get_of_results(self, overwrite=False):
 
         curate_flag = False
+        # get metrics
         if not self.paths['of_metric_scores'].exists() or overwrite:
             metric_scores = self._get_of_metric_scores()
             curate_flag = True
         else:
             metric_scores = pd.read_csv(self.paths['of_metric_scores'], index_col=0)
 
+        # get models
         if not self.paths['of_model_scores'].exists() or overwrite:
             model_scores = self._get_of_models_scores()
             curate_flag = True
@@ -478,6 +563,11 @@ class SubjectInfo:
             self.sessions_tt_positions = self.get_sessions_tt_position()
             self.tt_depth_match = self.get_tetrode_depth_match()
 
+            #hack because get sessions analyses calls subjects info before it saves,
+            # so need to save it first. alternative is to feed subject session info the subject_info object instead.
+            # TO DO #
+            self.save_subject_info()
+
             # check analyses table
             self.analyses_table = self.get_sessions_analyses()
             self.valid_track_table = self.check_track_data_validty()
@@ -554,6 +644,7 @@ class SubjectInfo:
         raise NotImplementedError
 
     def get_session_tt_wf(self, session, tt, cluster_ids=None, wf_lims=None, n_wf=200):
+        import Sorting.sort_functions as sort_funcs
 
         if wf_lims is None:
             wf_lims = [-12, 20]
@@ -596,6 +687,7 @@ class SubjectInfo:
         return out
 
     def get_session_clusters(self, overwrite=False):
+
         _clusters_file = self.sorted_path / ('clusters_{}_{}.json'.format(self.sorter, self.subject))
         if _clusters_file.exists() and not overwrite:  # load
             with _clusters_file.open(mode='r') as f:
@@ -683,6 +775,7 @@ class SubjectInfo:
         return matching_analyses
 
     def get_cluster_dists(self, overwrite=False, **kwargs):
+        import Analyses.cluster_match_functions as cmf
         params = {'dim_reduc_method': 'umap', 'n_wf': 1000, 'zscore_wf': True}
         params.update(kwargs)
 
@@ -755,6 +848,7 @@ class SubjectInfo:
         return cluster_dists
 
     def match_clusters(self, overwrite=False, require_subsets=True, **kwargs):
+        import Analyses.cluster_match_functions as cmf
         params = {'dist_metric': 'pe', 'dist_metric_thr': 0.5, 'select_lower': True}
         params.update(kwargs)
 
@@ -989,6 +1083,9 @@ class SubjectInfo:
             paths['event_time_series'] = paths['Results'] / 'event_time_series.csv'
             paths['not_valid_pos_samps'] = paths['Results'] / 'not_valid_pos_samps.npy'
             paths['pos_zones'] = paths['Results'] / 'pos_zones.npy'
+            paths['pos_zones_invalid_samps'] = paths['Results'] / 'pos_zones_invalid_samps.npy'
+            paths['trial_zone_rates'] = paths['Results'] / 'trial_zone_rates.npy'
+            paths['zone_rates_comps'] = paths['Results'] / 'zone_rates_comps.csv'
 
             paths['zone_analyses'] = paths['Results'] / 'ZoneAnalyses.pkl'
             paths['TrialInfo'] = paths['Results'] / 'TrInfo.pkl'
@@ -1025,6 +1122,8 @@ class SubjectInfo:
         return paths
 
     def _cluster_stats(self, session):
+        import Sorting.sort_functions as sort_funcs
+
         sort_path = self.session_paths[session]['Sorted']
 
         for tt in self.tetrodes:
@@ -1219,6 +1318,7 @@ class SubjectSessionInfo(SubjectInfo):
         self.n_cells = self.clusters['n_cell']
         self.n_mua = self.clusters['n_mua']
         self.n_units = self.n_cells + self.n_mua
+        self.n_samps = len(self.get_time())
 
         if self.paths['cluster_spikes_ids'].exists():
             with self.paths['cluster_spikes_ids'].open('r') as f:
@@ -1261,33 +1361,32 @@ class SubjectSessionInfo(SubjectInfo):
                 'spikes': (self.get_spikes, self.paths['cluster_spikes'].exists()),
                 'binned_spikes': (self.get_binned_spikes, self.paths['cluster_binned_spikes'].exists()),
                 'fr': (self.get_fr, self.paths['cluster_fr'].exists()),
-                'spike_maps': (self.get_spike_maps, self.paths['cluster_spike_maps'].exists()),
-                'maps': (self.get_fr_maps, self.paths['cluster_fr_maps'].exists()),
                 'scores': (self.get_scores, self.paths['cluster_OF_metrics'].exists()),
                 'encoding_models': (self.get_encoding_models, self.paths['cluster_OF_encoding_models'].exists())
             }
-            for k in analyses:
-                self.session_analyses_table[k] = analyses[k][1]
         elif self.task[:2] == 'T3':
             analyses = {
                 'track_data': (self.get_track_data, self.paths['track_table'].exists()),
                 'spikes': (self.get_spikes, self.paths['cluster_spikes'].exists()),
                 'binned_spikes': (self.get_binned_spikes, self.paths['cluster_binned_spikes'].exists()),
                 'fr': (self.get_fr, self.paths['cluster_fr'].exists()),
-                'spike_maps': (self.get_spike_maps, self.paths['cluster_spike_maps'].exists()),
-                'maps': (self.get_fr_maps, self.paths['cluster_fr_maps'].exists()),
                 'pos_zones': (self.get_pos_zones, self.paths['pos_zones'].exists()),
                 'event_table': (self.get_event_behavior, self.paths['event_table'].exists()),
+                'trial_zone_rates': (self.get_trial_zone_rates, self.paths['trial_zone_rates'].exists()),
+                'zone_rates_comps': (self.get_zone_rates_comps, self.paths['zone_rates_comps'].exists())
             }
-
-            for k in analyses:
-                self.session_analyses_table[k] = analyses[k][1]
         else:
             return NotImplementedError
 
+        for k in analyses:
+            if analyses[k][1]:
+                self.session_analyses_table[k] = 1
+            else:
+                self.session_analyses_table[k] = 0
+
         return analyses
 
-    def run_analyses(self, which='all', overwrite=False):
+    def run_analyses(self, which='all', overwrite=False, verbose=False):
         """
         Method to execute all analyses in the analyses list.
         :param which: str or list. which analysis to perform, if 'all', runs all analyses for that task
@@ -1299,7 +1398,7 @@ class SubjectSessionInfo(SubjectInfo):
             if which == 'all':
                 analyses_to_perfom = self._analyses_names
             elif which in self._analyses_names:
-                analyses_to_perfom = list(which)
+                analyses_to_perfom = list([which])
             else:
                 print("Invalid analysis.")
                 return
@@ -1309,11 +1408,12 @@ class SubjectSessionInfo(SubjectInfo):
                 file_exists_flag = self._analyses[a][1]
                 if a == 'time':
                     continue
-                if not file_exists_flag or overwrite:
+                if (not file_exists_flag) or overwrite:
                     try:
                         # calls methods in _analyses
                         _ = method(overwrite=True)
-                        print(f'Analysis {a} completed.')
+                        if verbose:
+                            print(f'Analysis {a} completed.')
                     except NotImplementedError:
                         print(f'Analysis {a} not implemented.')
                     except FileNotFoundError:
@@ -1326,7 +1426,8 @@ class SubjectSessionInfo(SubjectInfo):
             # update analyses
             self._analyses = self._check_analyses()
         else:
-            print(f"{self.session} This session does not have units. No analyses were ran.")
+            if verbose:
+                print(f"{self.session} This session does not have units. No analyses were ran.")
 
     #  default methods
     def get_time(self, which='resamp'):
@@ -1435,17 +1536,25 @@ class SubjectSessionInfo(SubjectInfo):
             else:
                 return df
 
-    def get_pos_zones(self, overwrite=False):
+    def get_pos_zones(self, overwrite=False, return_invalid_pz = False):
 
         if self.task[:2] == 'T3':
             if not self.paths['pos_zones'].exists() or overwrite:
                 track_data = self.get_track_data()
                 tree_maze = tmf.TreeMazeZones()
-                pos_zones = tree_maze.get_pos_zone_ts(track_data.x, track_data.y)
+                pos_zones, invalid_pz_samps = tree_maze.get_pos_zone_ts(track_data.x, track_data.y)
                 np.save(self.paths['pos_zones'], pos_zones)
+                np.save(self.paths['pos_zones_invalid_samps'], invalid_pz_samps)
             else:
-                pos_zones = np.load(self.paths['pos_zones'])
-            return pos_zones
+                pos_zones = np.load(self.paths['pos_zones'], allow_pickle=True)
+
+                if return_invalid_pz:
+                    invalid_pz_samps = np.load(self.paths['pos_zones_invalid_samps'])
+
+            if return_invalid_pz:
+                return pos_zones, invalid_pz_samps
+            else:
+                return pos_zones
         else:
             raise NotImplementedError
 
@@ -1615,7 +1724,7 @@ class SubjectSessionInfo(SubjectInfo):
         else:
             return None
 
-    def get_fr_maps(self, overwrite=False, traditional=False):
+    def get_fr_maps(self, traditional=False):
         """
         obtains 2 dimensional representation of the firing rate across the spatial positions.
         :param bool traditional: if true: computes firing rate map through spike counts at each spatial position
@@ -1628,47 +1737,43 @@ class SubjectSessionInfo(SubjectInfo):
             print('No units.')
             return None
 
-        if not self.paths['cluster_fr_maps'].exists() or overwrite:
-            if self.task=='OF':
-                print('Open Field Firing Rate Maps not Found or Overwrite= True, creating them.')
-                if traditional:
-                    fr_maps = of_funcs.get_session_fr_maps(self)
-                else:
-                    fr_maps = of_funcs.get_session_fr_maps_cont(self)
-
-                np.save(self.paths['cluster_fr_maps'], fr_maps)
+        if self.task == 'OF':
+            print('Open Field Firing Rate Maps not Found or Overwrite= True, creating them.')
+            if traditional:
+                fr_maps = of_funcs.get_session_fr_maps(self)
             else:
+                fr_maps = of_funcs.get_session_fr_maps_cont(self)
 
-                # get firing rate and track data
-                fr = self.get_fr()
-                track_data = self.get_track_data()
-
-                # get environment bins
-                x_edges = self.task_params['x_bin_edges_']
-                y_edges = self.task_params['y_bin_edges_']
-                n_x_bins = len(x_edges)-1
-                n_y_bins = len(y_edges)-1
-
-                # get occupancy map
-                pos_count_map = spatial_funcs.histogram_2d(track_data.x, track_data.y, x_edges, y_edges)
-
-                # pre-allocate and set up the map function to be looped
-                fr_maps = np.zeros((self.n_units, n_y_bins, n_x_bins))
-                fr_map_function = spatial_funcs.firing_rate_2_rate_map
-                args = dict(x=track_data.x, y=track_data.y,
-                            x_bin_edges=x_edges, y_bin_edges=y_edges, pos_count_map=pos_count_map,
-                            occ_num_thr=self.task_params['occ_num_thr'],
-                            spatial_window_size=self.task_params['spatial_window_size'],
-                            spatial_sigma=self.task_params['spatial_sigma'])
-                for unit in range(self.n_units):
-                    fr_maps[unit] = fr_map_function(fr[unit], **args)
-
-                np.save(self.paths['cluster_fr_maps'], fr_maps)
+            np.save(self.paths['cluster_fr_maps'], fr_maps)
         else:
-            fr_maps = np.load(self.paths['cluster_fr_maps'])
+
+            # get firing rate and track data
+            fr = self.get_fr()
+            track_data = self.get_track_data()
+
+            # get environment bins
+            x_edges = self.task_params['x_bin_edges_']
+            y_edges = self.task_params['y_bin_edges_']
+            n_x_bins = len(x_edges) - 1
+            n_y_bins = len(y_edges) - 1
+
+            # get occupancy map
+            pos_count_map = spatial_funcs.histogram_2d(track_data.x, track_data.y, x_edges, y_edges)
+
+            # pre-allocate and set up the map function to be looped
+            fr_maps = np.zeros((self.n_units, n_y_bins, n_x_bins))
+            fr_map_function = spatial_funcs.firing_rate_2_rate_map
+            args = dict(x=track_data.x, y=track_data.y,
+                        x_bin_edges=x_edges, y_bin_edges=y_edges, pos_count_map=pos_count_map,
+                        occ_num_thr=self.task_params['occ_num_thr'],
+                        spatial_window_size=self.task_params['spatial_window_size'],
+                        spatial_sigma=self.task_params['spatial_sigma'])
+            for unit in range(self.n_units):
+                fr_maps[unit] = fr_map_function(fr[unit], **args)
 
         return fr_maps
 
+    # analyses methods
     def get_scores(self, overwrite=False):
         """
         obtains a series of pandas data frames quantifying the extent of coding to environmental variables
@@ -1756,6 +1861,30 @@ class SubjectSessionInfo(SubjectInfo):
             raise NotImplementedError
 
         return scores
+
+    def get_trial_zone_rates(self, overwrite=False):
+        if self.task[:2] == 'T3':
+            if not self.paths['trial_zone_rates'].exists() or overwrite:
+                trial_analyses = tmf.TrialAnalyses(self)
+                fr_tz = trial_analyses.get_all_trial_zone_rates(occupation_thr=self.task_params['occ_trial_zone_thr'])
+                np.save(self.paths['trial_zone_rates'], fr_tz['out'])
+            else:
+                fr_tz = np.load(self.paths['trial_zone_rates'], allow_pickle=True)
+            return fr_tz
+        else:
+            raise NotImplementedError
+
+    def get_zone_rates_comps(self, overwrite=False):
+        if self.task[:2] == 'T3':
+            if not self.paths['zone_rates_comps'].exists() or overwrite:
+                trial_analyses = tmf.TrialAnalyses(self)
+                df = trial_analyses.all_zone_remapping_analyses()
+                df.to_csv(self.paths['zone_rates_comps'])
+            else:
+                df = pd.read_csv(self.paths['zone_rates_comps'], index_col=0)
+            return df
+        else:
+            raise NotImplementedError
 
 
 def get_task_params(session_info):
@@ -1923,10 +2052,10 @@ def get_task_params(session_info):
                 'x_pos_warp_factor': 0.93,  # warping for the left side
                 'x_mm_bias': 35,  # factor for centering the x mm position
                 'y_mm_bias': 650,  # factor for centering the y mm position
-                'x_mm_lims': [-630, 630],  # limits on the x axis of the maze [mm]
+                'x_mm_lims': [-650, 650],  # limits on the x axis of the maze [mm]
                 'y_mm_lims': [-60, 1400],  # limits on the y axis of the maze [mm]
-                'x_cm_lims': [-63, 63],  # limits on the x axis of the maze [cm]
-                'y_cm_lims': [-6, 14],  # limits on the y axis of the maze [cm]
+                'x_cm_lims': [-65, 65],  # limits on the x axis of the maze [cm]
+                'y_cm_lims': [-6, 140],  # limits on the y axis of the maze [cm]
             }
         elif subject in ['Mi']:
             conv_params = {
@@ -1961,6 +2090,7 @@ def get_task_params(session_info):
             'rad_bin': np.deg2rad(10),  # angle radians per bin [rad]
             'occ_num_thr': 3,  # number of occupation times threshold [bins
             'occ_time_thr': time_step * 3,  # time occupation threshold [sec]
+            'occ_trial_zone_thr': 2,  # number of instances for a zone to be included
             'speed_bin': 2,  # speed bin size [cm/s]
 
             # filtering parameters

@@ -504,6 +504,90 @@ def reduce_ax(ax, scale):
 
     ax.set_position([x0p, y0p, wp, hp])
     return ax
+
+
+# noinspection PyTypeChecker
+def get_colors_from_data(data, **args):
+    """
+    provides an ordered colored array for the data.
+    returns an array with colors codes of the same length as data.
+    :param data: array of data
+    :param n_color_bins: number of color bins to discretize the data
+    :param color_map: colormap
+    :param nans_2_zeros: if true, converts nan values to zero
+    :param div: if true, colors go from -max to max
+    :param max_value:
+    :param min_value:
+    :param color_values_array:
+    :return:
+    """
+    data = np.copy(data)
+
+    nan_idx = np.isnan(data)
+    data[nan_idx] = 0
+
+    params = dict(color_map='RdBu_r',
+                  n_color_bins=25, nans_2_zeros=True, div=False,
+                  max_value=None, min_value=None, color_values_array=None)
+
+    params.update(args)
+    if params['color_values_array'] is not None:
+        color_values_array = params['color_values_array']
+        params['n_color_bins'] = len(color_values_array)
+    else:
+        if params['div']:
+            if params['max_value'] is None:
+                max_value = np.ceil(np.max(np.abs(data)) * 100) / 100
+                min_value = -max_value
+            else:
+                max_value = params['max_value']
+                min_value = params['min_value']
+        else:
+            if params['max_value'] is None:
+                max_value = np.ceil(np.max(data) * 100) / 100
+            else:
+                max_value = params['max_value']
+
+            if params['min_value'] is None:
+                min_value = np.ceil(np.min(data) * 100) / 100
+            else:
+                min_value = params['min_value']
+        color_values_array = np.linspace(min_value, max_value, params['n_color_bins'] - 1)
+
+    color_val_idx = np.digitize(data, color_values_array).astype(int)
+    color_map = np.array(sns.color_palette(params['color_map'], params['n_color_bins']))
+
+    data_colors = color_map[color_val_idx]
+
+    if not params['nans_2_zeros']:
+        data_colors[nan_idx] = np.ones(3) * np.nan
+
+    return data_colors, color_values_array
+
+def get_color_bar_axis(cax, color_array, color_map='cividis', **args):
+    params = dict(tick_fontsize=7,
+                  label_fontsize=7)
+
+    params.update(args)
+
+    color_norm = mpl.colors.Normalize(vmin=color_array[0], vmax=color_array[-1])#, clip=True)
+    sm = plt.cm.ScalarMappable(cmap=color_map, norm=color_norm)
+    sm.set_array([])
+
+    color_bar = plt.colorbar(sm, cax=cax)
+    color_bar.set_ticks([0, color_array[-1]])
+    cax.set_yticklabels(['', int(color_array[-1])], fontsize=params['tick_fontsize'], ha='center')
+    cax.tick_params(pad=5, length=0, grid_linewidth=0)
+
+    if 'label' in params:
+        # cax.set_ylabel(params['label'], rotation='horizontal', va='top', ha='right',
+        #                fontsize=params['label_fontsize'], labelpad=0)
+        cax.text(1.05, 0, params['label'], fontsize=params['label_fontsize'], ha='left', va='center', transform=cax.transAxes)
+
+    for pos in ['right', 'top', 'bottom', 'left']:
+        cax.spines[pos].set_visible(False)
+    color_bar.outline.set_color("None")
+
 # def plotCounts(counts, names,ax):
 #     nX = len(names)
 #     ab=sns.barplot(x=np.arange(nX),y=counts,ax=ax, ci=[],facecolor=(0.4, 0.6, 0.7, 1))

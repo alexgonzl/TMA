@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 from scipy import stats
 from joblib import delayed, Parallel
 import warnings
@@ -150,6 +151,36 @@ def rzscore(x, axis=None):
 
     return (x - m) / (mad * 1.4826)
 
+
+def mannwhitney_z(x, y, return_all=False):
+    "only operates on axis=1"
+
+    assert x.ndim == y.ndim
+    x = pd.DataFrame(x)
+    y = pd.DataFrame(y)
+
+    n_comps = x.shape[1]
+    u = np.zeros(n_comps)
+    n1 = np.zeros(n_comps)
+    n2 = np.zeros(n_comps)
+
+    for ii in range(n_comps):
+        xii = x.iloc[:, ii].dropna()
+        yii = y.iloc[:, ii].dropna()
+        n1[ii] = len(xii)
+        n2[ii] = len(yii)
+        u[ii] = stats.mannwhitneyu(xii, yii)[0]
+
+    m = n1 * n2 / 2
+    s = np.sqrt(n1 * n2 * (n1 + n2 + 1) / 12)
+
+    if return_all:
+        return (u-m)/s, u, n1, n2
+    else:
+        return (u-m)/s
+
+def mannwhitney_u(x,y, axis=None):
+    return stats.mannwhitneyu(x, y, axis=axis)[0]
 
 def sig_stats(signal):
     """ sig_stats
@@ -724,6 +755,47 @@ def split_timeseries_data(data, n_splits=2, samp_rate=0.02, split_interval=30):
 
     return split_data
 
+
+def kendall2pearson(tau):
+    return np.sin(np.pi*tau*0.5)
+
+
+def fisher_r2z(r):
+    return np.arctanh(r)
+
+
+def bootstrap_corr(x, y, n_boot=100, corr_method='kendall'):
+    n = len(x)
+    assert n == len(y)
+
+    if corr_method == 'kendall':
+        r_func = kendall
+    elif corr_method == 'spearman':
+        r_func = spearman()
+    else:
+        r_func = pearson
+
+    r = np.zeros(n_boot)
+    for b in range(n_boot):
+        b_idx = np.random.choice(n, n)
+        r[b] = r_func(x[b_idx], y[b_idx])
+
+    return r
+
+
+def compare_corrs(r1, r2, n1, n2, corr_method='kendall'):
+    """
+    takes pairs of correlations sets and compures a z statistic
+    :param r1: array, first correlation array
+    :param r2: array, second correlation array
+    :param n1: int, # of entries used to compute r1
+    :param n2: int, # of entries used to compute r2
+    :param corr_method: str, correlation method
+    """
+    if corr_method == 'kendall':
+        r1 = kendall2pearson(r1)
+        r2 = kendall2pearson(r2)
+    return (fisher_r2z(r1)-fisher_r2z(r2))/np.sqrt(1/(n1-3)+1/(n2-3))
 # def getDirZoneSpikeMaps(spikes, PosDat, sp_thr=[5, 2000]):
 #     SegSeq = PosDat['SegDirSeq']
 #

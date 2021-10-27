@@ -508,7 +508,7 @@ def getSegmentDirs(PosZones, t):
 ################################################################################
 
 def isnear(X, Y, thr, ):
-    '''Find x,y points within the thr'''
+    """Find x,y points within the thr"""
     x_out = np.full_like(X, -1)
     y_out = np.full_like(Y, -1)
     match_cnt = 1
@@ -526,7 +526,7 @@ def isnear(X, Y, thr, ):
 
 
 def isClosest(t, X):
-    '''Find closest sample in t that matches X'''
+    """Find closest sample in t that matches X"""
     t_out = np.full_like(t, -1)
     cnt1 = 1
     for x in X:
@@ -540,7 +540,7 @@ def isClosest(t, X):
 
 
 def isbefore(X, Y, thr, minTime=0):
-    '''Find x,y points within the thr and such that x happens before y'''
+    """Find x,y points within the thr and such that x happens before y"""
     x_out = np.full_like(X, -1)
     y_out = np.full_like(Y, -1)
     match_cnt = 0
@@ -548,7 +548,7 @@ def isbefore(X, Y, thr, minTime=0):
     for x in X:
         cnt2 = 0
         for y in Y:
-            if y - x <= thr and y - x >= minTime:
+            if (y - x <= thr) and (y - x >= minTime):
                 x_out[cnt1] = match_cnt
                 y_out[cnt2] = match_cnt
                 match_cnt += 1

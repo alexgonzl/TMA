@@ -7,13 +7,15 @@ from types import SimpleNamespace
 
 import Analyses.spatial_functions as spatial_funcs
 import Utils.filter_functions as filt_funcs
+import Utils.robust_stats as rs
 
 import matplotlib.pyplot as plt
 from shapely.geometry import Point
 from shapely.geometry.polygon import Polygon
 import Analyses.plot_functions as pf
-import Analyses.experiment_info as si
 import Utils.filter_functions as filter_funcs
+from scipy.stats import ttest_ind, ttest_1samp
+from joblib import delayed, Parallel
 
 
 class Points2D:
@@ -257,10 +259,10 @@ class TreeMazeZones:
                     'f': [(-50, 1190), (-450, 1260), (-450, 1180), (-220, 990)],
                     'g': [(-520, 1180), (-560, 800), (-329, 900), (-450, 1180)],
 
-                    'G1': [(520, 1180.5), (800, 1180.5), (800, 800), (560, 800)],
+                    'G1': [(520, 1180), (800, 1180.5), (800, 800), (560, 800)],
                     'G2': [(50, 1190), (50, 1450), (450, 1450), (450, 1260)],
                     'G3': [(-50, 1190), (-50, 1450), (-450, 1450), (-450, 1260)],
-                    'G4': [(-520, 1180.5), (-800, 1180.5), (-800, 800), (-560, 800)],
+                    'G4': [(-520, 1180), (-800, 1180.5), (-800, 800), (-560, 800)],
 
                     'i1': [(220, 990), (450, 1180), (329, 900)],
                     'i2': [(-329, 900), (-450, 1180), (-220, 990)],
@@ -284,7 +286,7 @@ class TreeMazeZones:
                          'i1': (305, 992),
                          'i2': (-305, 992),
                          }
-
+    zone_numbers = {zone: ii for ii, zone in enumerate(zone_names)}
     zones_geom = {}
     for zo in zone_names:
         zones_geom[zo] = Polygon(zones_coords[zo])
@@ -304,16 +306,12 @@ class TreeMazeZones:
     linear_segs = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
     stem_seg = ['a']
 
-    split_segs = {'right': {'goals': ['G1', 'G2'],
-                            'segs': ['b', 'c', 'd'],
-                            'intersection': ['i1']},
-                  'left': {'goals': ['G3', 'G4'],
-                           'segs': ['e', 'f', 'g'],
-                           'intersection': ['i2']},
-                  'stem': {'goals': ['H', 'D'],
-                           'segs': ['a'],
-                           'intersection': ['i2']}
-                  }
+    wells = ['H', 'D', 'G1', 'G2', 'G3', 'G4']
+
+    bigseg_names = ['left', 'stem', 'right']
+    split_segs = {'right': ['b', 'c', 'd', 'i1', 'G1', 'G2'],
+                  'left': ['e', 'f', 'g', 'i2', 'G3', 'G4'],
+                  'stem': ['H', 'a', 'D']}
 
     seg_splits = {'H': 'stem',
                   'D': 'stem',
@@ -355,56 +353,44 @@ class TreeMazeZones:
 
     _poly_funcs = Lines2Polygons()
 
+    maze_union = Polygon()
+    for z, geom in zones_geom.items():
+        maze_union = maze_union.union(geom)
+
     def __init__(self):
         self.seg_orig_line = {k: np.asarray(self.zones_coords[k][slice(2)]) for k in self.linear_segs}
         self.sub_segs = self.divide_segs()
 
-    # def divide_seg_orig(self, seg_name, direction='out'):
-    #
-    #     seg_dir = self.dirs[direction][seg_name]
-    #     seg_dir_num = self._dir_num_dict[seg_dir]
-    #
-    #     # bounding rectangle coords
-    #     seg_geom = self.zones_geom[seg_name]
-    #     xx, yy = seg_geom.minimum_rotated_rectangle.exterior.xy
-    #     pp = Points2D(xx, yy)
-    #
-    #     # get ccw line vectors for bounding rect
-    #     l_segs = np.diff(pp.xy, axis=0)
-    #     l_segs_v = Points2D(l_segs[:, 0], l_segs[:, 1])
-    #
-    #     # get direction
-    #     l_segs_dirs = np.digitize(l_segs_v.ang, np.arange(-np.pi / 4, 2 * np.pi + np.pi / 4 + 0.001, np.pi / 2))
-    #     l_segs_dirs[l_segs_dirs == 5] = 1
-    #
-    #     l_dir_id = np.where(l_segs_dirs == seg_dir_num)[0][0]
-    #
-    #     L = l_segs[l_dir_id]
-    #     L = Points2D(L[0], L[1])
-    #
-    #     a = pp.xy[:4][l_dir_id - 1]
-    #     a = Points2D(a[0], a[1])
-    #     b = pp.xy[:4][l_dir_id]
-    #     b = Points2D(b[0], b[1])
-    #
-    #     n_subsegs = int(L.r // self.sub_seg_length)
-    #
-    #     delta = L.r / n_subsegs
-    #     sub_segs = np.zeros(n_subsegs, dtype=object)
-    #
-    #     for ii in range(n_subsegs):
-    #         p0 = Points2D(ii * delta, L.ang, polar=True) + a
-    #         p1 = Points2D((ii + 1) * delta, L.ang, polar=True) + a
-    #         p2 = Points2D((ii + 1) * delta, L.ang, polar=True) + b
-    #         p3 = Points2D(ii * delta, L.ang, polar=True) + b
-    #
-    #         sub_seg = Polygon([p0.xy[0],
-    #                            p1.xy[0],
-    #                            p2.xy[0],
-    #                            p3.xy[0]])
-    #
-    #         sub_segs[ii] = seg_geom.intersection(sub_seg)
-    #     return sub_segs
+        self.sub_segs_names = {}
+        for seg in self.linear_segs:
+            self.sub_segs_names[seg] = list(self.sub_segs[seg].keys())
+
+        self.all_segs_names = []
+        for zo in self.zone_names:
+            if zo in self.linear_segs:
+                self.all_segs_names += self.sub_segs_names[zo]
+            else:
+                self.all_segs_names.append(zo)
+        self.n_all_segs = len(self.all_segs_names)
+
+        self.split_zones_all = {}
+        for split, zones in self.split_segs.items():
+            split_zones = []
+            for zone in zones:
+                if zone in self.linear_segs:
+                    subsegs = list(self.sub_segs[zone].keys())
+                    split_zones += subsegs
+                else:
+                    split_zones.append(zone)
+            self.split_zones_all[split] = split_zones
+
+        self.valid_transition_mat = self.get_valid_transition_mat()
+
+        self.subseg2seg = self._subseg2seg()
+        self.seg2bigseg = self._seg2bigseg()
+        self.subseg2bigseg = self.subseg2seg @ self.seg2bigseg
+        self.subseg2wells = self._subseg2wells()
+        self.subseg2bigseg_nowells = self._subseg2bigseg_nowells()
 
     def divide_segs(self):
 
@@ -455,7 +441,102 @@ class TreeMazeZones:
                     print(seg_name)
                     break
 
-        return sub_segs
+        # make it a dictionary
+        sub_segs_dict = {}
+        for zo, subsegs_geom in sub_segs.items():
+            sub_segs_dict[zo] = {}
+            for ii, subseg_geom in enumerate(subsegs_geom):
+                sub_segs_dict[zo][f"{zo}_{ii}"] = subseg_geom
+
+        return sub_segs_dict
+
+    def _subseg2seg(self):
+        subsegs = self.all_segs_names
+        segs = self.zone_names
+
+        df = pd.DataFrame(0, index=subsegs, columns=segs)
+
+        for seg in segs:
+            if seg in self.linear_segs:
+                df.loc[self.sub_segs_names[seg], seg] = 1
+            else:
+                df.loc[seg, seg] = 1
+        return df
+
+    def _seg2bigseg(self):
+        segs = self.zone_names
+        bigsegs = self.bigseg_names
+        df = pd.DataFrame(0, index=segs, columns=bigsegs)
+        for bigseg in bigsegs:
+            df.loc[self.split_segs[bigseg], bigseg] = 1
+        return df
+
+    def _subseg2wells(self):
+        subsegs = self.all_segs_names
+        wells = self.wells
+        df = pd.DataFrame(0, index=subsegs, columns=wells)
+
+        for seg in subsegs:
+            if seg in wells:
+                df.loc[seg, seg] = 1
+
+        return df
+
+    def _subseg2bigseg_nowells(self):
+
+        bigsegs = self.bigseg_names
+        df = pd.DataFrame(0, index=self.all_segs_names, columns=bigsegs)
+        for bigseg in bigsegs:
+            idx = np.setdiff1d(self.split_segs[bigseg], self.wells)
+            for seg in idx:
+                if seg in self.linear_segs:
+                    df.loc[self.sub_segs_names[seg], bigseg] = 1
+                else:  # intersections
+                    df.loc[seg, bigseg] = 1
+        return df
+
+    def subseg_pz_mat_transform(self, subseg_zone_mat, segment_type):
+        """
+        converts input matrix subseg_zone_mat [n x n_subsegs] to [n x n_segments], where n_segments is the number
+        of segments for segment_type
+        """
+
+        if segment_type == 'subseg':
+            return subseg_zone_mat
+        elif segment_type == 'bigseg':
+            return subseg_zone_mat @ self.subseg2bigseg
+        elif segment_type == 'seg':
+            return subseg_zone_mat @ self.subseg2seg
+        elif segment_type == 'wells':
+            return subseg_zone_mat @ self.subseg2wells
+        elif segment_type == 'bigseg_nowells':
+            return subseg_zone_mat @ self.subseg2bigseg_nowells
+        else:
+            raise NotImplementedError
+
+    def subseg_pz_mat_segment_norm(self, subseg_zone_mat, segment_type, seg_mat=None):
+        """
+        primarely used to appropriate scale firing rates on single trials.
+        normalizes subseg_zone_mat by the number of samples in a region to be transformed.
+        :param subseg_zone_mat: [n x n_subsegs]
+        :param seg_mat: [n x n_segs], where the segments contain subsegs
+        :param segment_type:
+        :return:
+            [n x n_subsegs] matrix re-scaled by the number of samples in the semgent that contain the subsegs
+        """
+
+        if seg_mat is None:
+            seg_mat = self.subseg_pz_mat_transform(subseg_zone_mat,segment_type)
+        if segment_type == 'bigseg':
+            transform_mat = self.subseg2bigseg
+        elif segment_type == 'bigseg_nowells':
+            transform_mat = self.subseg2bigseg_nowells
+        elif segment_type == 'seg':
+            transform_mat = self.subseg2wells
+        else:
+            raise NotImplementedError
+
+        return subseg_zone_mat / (seg_mat @ transform_mat.T)
 
     def get_pos_zone_ts(self, x, y):
         """ 
@@ -469,39 +550,190 @@ class TreeMazeZones:
         assert n_samps == len(y)
 
         # Get zones that contains each x,y point
-        pos_zones = np.zeros(n_samps, dtype=int)
+        pos_zones = np.zeros(n_samps, dtype=object)
+        invalid_pz = []
         p_cnt = -1
         for xp, yp in zip(x, y):
             p_cnt += 1
             if not np.isnan(xp):
-                p_zone_dist = np.zeros(self.n_zones)
+                p_zone_dist = {z: 0 for z in self.all_segs_names}
+
                 p = Point(xp, yp)
-                for z_cnt, zo in enumerate(self.zone_names):
+                for zo, z_cnt in self.zone_numbers.items():
                     # get point distance to zone
-                    p_zone_dist[z_cnt] = self.zones_geom[zo].distance(p)
+                    p_zone_dist[zo] = self.zones_geom[zo].distance(p)
 
                     # check if point is in zone
                     if self.zones_geom[zo].contains(p):
-                        pos_zones[p_cnt] = z_cnt
-                        break
+                        if zo in self.linear_segs:
+                            zone_subsegs = self.sub_segs[zo]
+                            for subseg_name, subseg_geom in zone_subsegs.items():
+                                p_zone_dist[zo] = subseg_geom.distance(p)
+                                if subseg_geom.contains(p):
+                                    pos_zones[p_cnt] = subseg_name
+                                    break  # break the subseg loop
+                        else:
+                            pos_zones[p_cnt] = zo
+                        break  # break the zone loop
                 else:  # didn't find a match
+                    invalid_pz.append(p_cnt)
                     # option1. assign to closest zone
-                    if np.min(p_zone_dist) < self.pos_dist_thr:
-                        pos_zones[p_cnt] = np.argmin(p_zone_dist)
+                    min_dist_zone = min(p_zone_dist, key=p_zone_dist.get)
+                    if p_zone_dist[min_dist_zone] < self.pos_dist_thr:
+                        pos_zones[p_cnt] = min_dist_zone
                     # option 2. assign to previous zone
                     else:
                         pos_zones[p_cnt] = pos_zones[p_cnt - 1]
             else:  # in the case of a nan, assign to previous
                 pos_zones[p_cnt] = pos_zones[p_cnt - 1]
+                invalid_pz.append(p_cnt)
+        return pos_zones, np.array(invalid_pz)
 
-        return pos_zones
+    def get_inmaze_samps(self, x, y):
 
-    def get_pos_zone_mat(self, pos_zone_ts):
-        M = np.full((len(pos_zone_ts), self.n_zones), 0)
-        for z in np.arange(self.n_zones):
-            M[pos_zone_ts == z, z] = 1
-        M = pd.DataFrame(M, columns=self.zone_names)
+        cnt = 0
+        in_maze_samps = np.ones(len(x), dtype=bool)
+        for xi, yi in zip(x, y):
+            p = Point(xi, yi)
+            in_maze_samps[cnt] = self.maze_union.contains(p)
+            cnt += 1
+        return in_maze_samps
+
+    def get_pos_zone_mat(self, pos_zones, segment_type='subseg'):
+
+        M = pd.DataFrame(np.full((len(pos_zones), self.n_all_segs), 0, dtype=int),
+                         columns=self.all_segs_names)
+        for z in self.all_segs_names:
+            M.loc[pos_zones == z, z] = 1
+        M = self.subseg_pz_mat_transform(M, segment_type=segment_type)
+
         return M
+
+    def pz_subsegs_to_pz(self, pz):
+        pz2 = pz.copy()
+        for z in self.all_segs_names:
+            if z.split("_")[0] in self.linear_segs:
+                pz2[pz == z] = z.split("_")[0]
+
+        return pz2
+
+    def get_valid_transition_mat(self, subsegs=True):
+        """
+        :param subsegs, bool, if true uses and expects subsegs in pz
+        :return:
+            pd.dataframe of transition bools by zones/segs. rows sample n, columns sample n+1.
+            entry at i,j, if True, indicates zone j coming from zone i is valid.
+        """
+
+        if subsegs:
+            valid_transition_mat = pd.DataFrame(np.eye(self.n_all_segs, dtype=bool),
+                                                index=self.all_segs_names, columns=self.all_segs_names)
+
+            ssn = self.sub_segs_names
+            # within linear seg
+            for seg, subsegs in ssn.items():
+                valid_transition_mat.loc[subsegs, subsegs] = True
+
+            # outward trajectories
+            valid_transition_mat.loc['H', ssn['a']] = True
+            valid_transition_mat.loc[ssn['a'], 'D'] = True
+            valid_transition_mat.loc['D', ssn['b']] = True
+
+            valid_transition_mat.loc[ssn['b'], 'i1'] = True
+            valid_transition_mat.loc['i1', ssn['c']] = True
+            valid_transition_mat.loc[ssn['c'], 'G1'] = True
+            valid_transition_mat.loc['i1', ssn['d']] = True
+            valid_transition_mat.loc[ssn['d'], 'G2'] = True
+
+            valid_transition_mat.loc['D', ssn['e']] = True
+            valid_transition_mat.loc[ssn['e'], 'i2'] = True
+            valid_transition_mat.loc['i2', ssn['f']] = True
+            valid_transition_mat.loc[ssn['f'], 'G3'] = True
+            valid_transition_mat.loc['i2', ssn['g']] = True
+            valid_transition_mat.loc[ssn['g'], 'G4'] = True
+
+            valid_transition_mat.loc[ssn['f'], ssn['g']] = True
+            valid_transition_mat.loc[ssn['c'], ssn['d']] = True
+            valid_transition_mat.loc[ssn['a'], ssn['b']] = True
+            valid_transition_mat.loc[ssn['a'], ssn['e']] = True
+        else:
+            valid_transition_mat = pd.DataFrame(np.eye(self.n_zones, dtype=bool), index=self.zone_names,
+                                                columns=self.zone_names)
+
+            # outward trajectories
+            valid_transition_mat.loc['H', 'a'] = True
+            valid_transition_mat.loc['a', 'D'] = True
+            valid_transition_mat.loc['D', 'b'] = True
+
+            valid_transition_mat.loc['b', 'i1'] = True
+            valid_transition_mat.loc['i1', 'c'] = True
+            valid_transition_mat.loc['c', 'G1'] = True
+            valid_transition_mat.loc['i1', 'd'] = True
+            valid_transition_mat.loc['d', 'G2'] = True
+
+            valid_transition_mat.loc['D', 'e'] = True
+            valid_transition_mat.loc['e', 'i2'] = True
+            valid_transition_mat.loc['i2', 'f'] = True
+            valid_transition_mat.loc['f', 'G3'] = True
+            valid_transition_mat.loc['i2', 'g'] = True
+            valid_transition_mat.loc['g', 'G4'] = True
+
+            valid_transition_mat.loc['f', 'g'] = True
+            valid_transition_mat.loc['c', 'd'] = True
+
+        sym_mat = np.triu(valid_transition_mat.values) + np.triu(valid_transition_mat.values, 1).T
+        for ii, col in enumerate(valid_transition_mat.columns):
+            valid_transition_mat[col].values[:] = sym_mat[:, ii]
+
+        return valid_transition_mat
+
+    def get_transition_counts(self, pz, subsegs=True):
+        """
+
+        :param pz: array, position zones
+        :param subsegs, bool, if true uses and expects subsegs in pz
+        :return:
+            pd.dataframe of transition counts by zones/segs. rows sample n, columns sample n+1.
+            entry at i,j, indicates the # of times zone j came from zone i.
+        """
+        if subsegs:
+            zone_transition_counts = pd.DataFrame(np.zeros((self.n_zones, self.n_zones), dtype=int),
+                                                  index=self.all_segs_names, columns=self.all_segs_names)
+            zn = self.all_segs_names
+        else:
+            zone_transition_counts = pd.DataFrame(np.zeros((self.n_zones, self.n_zones), dtype=int),
+                                                  index=self.zone_names, columns=self.zone_names)
+
+            zn = self.zone_names
+
+        for z in zn:
+            for z1 in zn:
+                zone_transition_counts.loc[z, z1] = ((pz[:-1] == z) & (pz[1:] == z1)).sum()
+
+        return zone_transition_counts
+
+    def check_valid_pos_zones_transitions(self, pz, subsegs=True):
+        """
+        returns a time series of booleans indicating if the transition of the position
+        from the previous sample was valid
+        :param pz: array, position zones
+        :param subsegs, bool, if true uses and expects subsegs in pz
+        :return:
+            array of boolean indicating if the each sample comes from a valid transition
+        """
+        if subsegs:
+            valid_transition_mat = self.valid_transition_mat
+        else:
+            valid_transition_mat = self.get_valid_transition_mat(subsegs=False)
+
+        valid_transitions = np.ones(len(pz), dtype=bool)
+        cnt = 1
+        for z, z1 in zip(pz[:-1], pz[1:]):
+            if not valid_transition_mat.loc[z, z1]:
+                valid_transitions[cnt] = False
+            cnt += 1
+
+        return valid_transitions
 
     def plot_segs(self, segment_polygons, alpha=0.2, color='white', lw=1, axis=None):
         if axis is None:
@@ -511,7 +743,7 @@ class TreeMazeZones:
             pf.plot_poly(seg, axis, alpha=alpha, color=color, lw=lw)
 
     def plot_maze(self, axis=None, sub_segs=None, seg_dir=None, zone_labels=False, tm_layout=False, plot_cue=False,
-                  seg_color='powderblue', seg_alpha=0.3, lw=1.5, line_alpha=1, line_color='0.5',
+                  seg_color='powderblue', seg_alpha=0.3, lw=1, line_alpha=1, line_color='0.5',
                   sub_seg_color=None, sub_seg_lw=0.1, cue_color=None, fontsize=10):
         """
         method to plot the maze with various aesthetic options
@@ -541,7 +773,7 @@ class TreeMazeZones:
         plt.rcParams['lines.solid_capstyle'] = 'round'
 
         if axis is None:
-            f, axis = plt.subplots(figsize=(10, 10), dpi=500)
+            f, axis = plt.subplots(figsize=(5, 5), dpi=500)
 
         seg_color_plot = {}
         if seg_color is None:
@@ -633,9 +865,9 @@ class TreeMazeZones:
                     col = sub_seg_color[zone]
 
                 if inout == 'in':
-                    sub_seg = self.sub_segs[zone][::-1]
+                    sub_seg = list(self.sub_segs[zone].values()[::-1])
                 else:
-                    sub_seg = self.sub_segs[zone]
+                    sub_seg = list(self.sub_segs[zone].values())
 
                 n_sub_segs = len(sub_seg)
                 if seg_dir is not None:
@@ -779,57 +1011,63 @@ class TreeMazeZones:
 
         return f, ax
 
-    # def fig1_layout(self, ax=None, **params):
-    #     if ax is None:
-    #         f, ax = plt.subplots(figsize=(1, 1), dpi=600)
-    #     else:
-    #         f = ax.figure
-    #
-    #     fig_params = dict(seg_color='None', seg_alpha=0.2, zone_labels=True, seg_dir='in', fontsize=3, lw=0.1,
-    #                       sub_segs=None, sub_seg_lw=0.01, sub_seg_color='None', tm_layout=True, plot_cue=True)
-    #
-    #     fig_params.update(params)
-    #
-    #     ax = self.plot_maze(axis=ax, **fig_params)
-    #
-    #     leg_ax = f.add_axes(ax.get_position())
-    #     leg_ax.axis("off")
-    #
-    #     cue_w = 0.1
-    #     cue_h = 0.1
-    #
-    #     cues_p0 = dict(right=np.array([0.65, 0.15]),
-    #                    left=np.array([0.25, 0.15]))
-    #
-    #     text_strs = dict(right=r"$H \rightarrow D \rightarrow G_{1,2}$",
-    #                      left=r"$G_{3,4} \leftarrow D \leftarrow H$")
-    #
-    #     txt_ha = dict(right='left', left='right')
-    #
-    #     txt_hspace = 0.05
-    #     txt_pos = dict(right=cues_p0['right'] + np.array((0, -txt_hspace)),
-    #                    left=cues_p0['left'] + np.array((cue_w, -txt_hspace)))
-    #
-    #     for cue in ['right', 'left']:
-    #         cue_p0 = cues_p0[cue]
-    #         cue_coords = np.array([cue_p0, cue_p0 + np.array((0, cue_h)),
-    #                                cue_p0 + np.array((cue_w, cue_h)), cue_p0 + np.array((cue_w, 0)), ])
-    #         cue_poly = Polygon(cue_coords)
-    #         pf.plotPoly(cue_poly, ax=leg_ax, lw=0, alpha=0.9, color=self.split_colors[cue])
-    #
-    #         leg_ax.text(txt_pos[cue][0], txt_pos[cue][1], text_strs[cue], fontsize=fig_params['fontsize'],
-    #                     horizontalalignment=txt_ha[cue], verticalalignment='center')
-    #     leg_ax.set_xlim(0, 1)
-    #     leg_ax.set_ylim(0, 1)
-    #
-    #     leg_ax.text(cues_p0['right'][0] + cue_w, cues_p0['right'][1] + cue_h // 2,
-    #                 'Right Cue', fontsize=fig_params['fontsize'],
-    #                 horizontalalignment='left', verticalalignment='bottom')
-    #     leg_ax.text(cues_p0['left'][0], cues_p0['left'][1] + cue_h // 2,
-    #                 'Left Cue', fontsize=fig_params['fontsize'],
-    #                 horizontalalignment='right', verticalalignment='bottom')
-    #
-    #     return f, ax
+    def plot_zone_activity(self, zone_activity, ax=None, plot_cue=False, cue_color=None,
+                           lw=0.2, line_alpha=1, line_color='0.5', **cm_args):
+        if ax is None:
+            f, ax = plt.subplots(figsize=(5, 5), dpi=500)
+        else:
+            f = ax.figure
+
+        cm_params = dict(color_map='YlOrBr_r',
+                         n_color_bins=25, nans_2_zeros=True, div=False,
+                         max_value=None, min_value=None,
+                         label='FR', tick_fontsize=7, label_fontsize=7)
+        cm_params.update(cm_args)
+        print(cm_params)
+        print(cm_args)
+        data_colors, color_array = pf.get_colors_from_data(zone_activity.values, **cm_params)
+
+        cnt = 0
+        for zone, value in zone_activity.items():
+            if zone[0] in self.linear_segs:
+                if zone in self.sub_segs[zone[0]]:
+                    zone_geom = self.sub_segs[zone[0]][zone]
+                else:
+                    zone_geom = self.zones_geom[zone]
+            else:
+                zone_geom = self.zones_geom[zone]
+            pf.plot_poly(zone_geom, ax=ax, alpha=1, color=data_colors[cnt],
+                         lw=lw, line_alpha=line_alpha, line_color=line_color)
+            cnt += 1
+
+        if plot_cue:
+            if cue_color is None:
+                cue_color = 'white'
+                cue_lw = lw
+            elif cue_color in ['L', 'left', 'Left']:
+                cue_color = self.split_colors['left']
+                cue_lw = 0
+            elif cue_color in ['R', 'right', 'Right']:
+                cue_color = self.split_colors['right']
+                cue_lw = 0
+            else:
+                cue_color = 'white'
+                cue_lw = 0
+
+            pf.plot_poly(self.cue_geom, ax, alpha=1,
+                         color=cue_color, lw=cue_lw, line_color=line_color)
+
+        ax.axis('off')
+        ax.axis('equal')
+
+        ax_p = ax.get_position()
+        w, h = ax_p.width, ax_p.height
+        x0, y0 = ax_p.x0, ax_p.y0
+
+        cax_p = [x0 + w * 0.7, y0 + h * 0.1, w * 0.05, h * 0.15]
+        cax = f.add_axes(cax_p)
+
+        pf.get_color_bar_axis(cax, color_array, **cm_params)
 
 
 class BehaviorData:
@@ -837,7 +1075,8 @@ class BehaviorData:
     n_wells = 6
 
     # time durations in seconds
-    reward_dur = 0.5
+    reward_dur = 0.5  # post reward duration
+    reward_null = np.array([-0.04, 0.04])  # blank time around reward for elimination of artifacts
     detection_dur = 0.1
     post_trial_dur = 1.0
     post_trial_correct = 0.3
@@ -890,12 +1129,14 @@ class BehaviorData:
         # compute constants in samples based on time_step.
         self.detection_dur_samps = int(self.detection_dur // self.time_step)
         self.reward_dur_samps = int(self.reward_dur // self.time_step)
+        self.reward_null_samps = (self.reward_null // self.time_step).astype(int)
         self.led_default_dur_samps = int(self.led_default_dur // self.time_step)
         self.post_trial_dur_samps = int(self.post_trial_dur // self.time_step)
         self.post_trial_correct_samps = int(self.post_trial_correct // self.time_step)
         self.post_trial_incorrect_samps = int(self.post_trial_incorrect // self.time_step)
         self.is_near_thr_samps = int(self.is_near_thr // self.time_step)
         self.max_LED_dur_samps = int(self.max_LED_dur // self.time_step)
+        self.min_event_dist_samps = int(self.min_event_dist // self.time_step)
         self.min_event_dist_samps = int(self.min_event_dist // self.time_step)
 
         # get events
@@ -1082,7 +1323,11 @@ class BehaviorData:
             ev = df.loc[ii, 'event']
             t0 = df.loc[ii, 't0']
             trial_num = df.loc[ii, 'trial_num']
-            if ev[0] == 'D':  # Detection Event
+            if ev == 'R_blank':
+                tE = t0 + self.reward_null_samps[1]
+                t0 = t0 + self.reward_null_samps[0]
+                df.loc[ii, 't0'] = t0
+            elif ev[0] == 'D':  # Detection Event
                 tE = t0 + self.detection_dur_samps
             elif ev[0] == 'R':  # Reward Event
                 tE = t0 + self.reward_dur_samps
@@ -1125,7 +1370,9 @@ class BehaviorData:
             dec_trial_table = self.trial_table[self.trial_table.dec == dec].copy()
             trials = np.intersect1d(dec_trial_table.index.values, trials_to_rw2)
             df2.loc[trials, 'event'] = 'D' + dec
-            df2.loc[trials, 't0'] = rw2.loc[rw2.trial_num.isin(trials), 'tE'].values
+            # df2.loc[trials, 't0'] = rw2.loc[rw2.trial_num.isin(trials), 'tE'].values
+            # bug fix. this takes care of multiple instances of rw2 in a trial # 9/24/20 ag
+            df2.loc[trials, 't0'] = rw2.loc[rw2.trial_num.isin(trials)].groupby('trial_num').head(1).tE.values
             df2.loc[trials, 'tE'] = dec_trial_table.loc[trials, 'tE'].values
             df2.loc[trials, 'trial_num'] = trials
 
@@ -1142,6 +1389,8 @@ class BehaviorData:
             detection_matches, reward_matches = \
                 is_near(self.events['DE' + str(well)], self.events['RD'], self.is_near_thr)
             self.events['RW' + str(well)] = self.events['RD'][reward_matches > 0]
+
+        self.events['R_blank'] = self.events['RD']
 
     def get_event_time_series(self):
         """
@@ -1250,6 +1499,1001 @@ class BehaviorData:
         perf['pct_R_correct'] = ((df.cue == 'R') & df.correct).sum() / perf.n_R_trials
 
         return perf
+
+
+class TrialAnalyses:
+    _trial_conditions = {'CL': {'cue': 'L'}, 'CR': {'cue': 'R'}, 'DL': {'dec': 'L'}, 'DR': {'dec': 'R'},
+                         'Co': {'correct': 1}, 'Inco': {'correct': 0},
+                         'CoCL': {'correct': 1, 'cue': 'L'}, 'CoCR': {'correct': 1, 'cue': 'R'},
+                         'IncoCL': {'correct': 0, 'cue': 'L'}, 'IncoCR': {'correct': 0, 'cue': 'R'},
+                         'Sw': {'sw': 1}, 'CoSw': {'correct': 1, 'sw': 1}, 'IncoSw': {'correct': 0, 'sw': 1},
+                         'Even': '', 'Odd': '', 'Out': '', 'In': '', 'All': ''}
+
+    # balanced approached for groups
+    test_null_comps = {'CR-CL': 'Even-Odd',
+                       'Co-Inco': 'Even-Odd',
+                       'CoSw-IncoSw': 'Even-Odd',
+                       'Rw': 'Even-Odd-In'}
+
+    group_cond_sets = {'CR-CL': {'CR': ['Co', 'Inco'], 'CL': ['Co', 'Inco']},
+                       'Co-Inco': {'Co': ['CL', 'CR'], 'Inco': ['CR', 'CL']},
+                       'CoSw-IncoSw': {'CoSw': ['CL', 'CR'], 'IncoSw': ['CL', 'CR']},
+                       'Rw': {'CL': ['Co', 'Inco'], 'CR': ['Co', 'Inco']},
+                       'Even-Odd': {'Even': ['CL', 'CR'], 'Odd': ['CL', 'CR']},
+                       'Even-Odd-In': {'Even': ['CL', 'CR'], 'Odd': ['CL', 'CR']}}
+
+    group_trial_segs = {'CR-CL': ['out', 'out'],
+                        'Co-Inco': ['out', 'out'],
+                        'CoSw-IncoSw': ['out', 'out'],
+                        'Rw': ['in', 'in'],
+                        'Even-Odd': ['out', 'out'],
+                        'Even-Odd-In': ['in', 'in']}
+
+    def __init__(self, session_info, reward_blank=False, not_inzone_blank=True):
+        """
+        class for trialwise analyses on session data
+        :param session_info:
+        :param reward_blank: blank samples near reward period
+        :param not_inzone_blank: blank samples that are not in the defined zones
+        """
+
+        self.si = session_info
+        temp = session_info.get_event_behavior()
+        self.trial_table = temp.trial_table
+        self.event_table = temp.event_table
+
+        self.n_trials = len(self.trial_table)
+        self.all_trials = np.arange(self.n_trials)
+
+        self.n_units = self.si.n_units
+        self.n_total_samps = self.si.n_samps
+
+        self.trial_times, self.outbound_samps, self.inbound_samps = self.get_trial_times()
+
+        self.track_data = self.si.get_track_data()
+        self.pz, self.pz_invalid_samps = self.si.get_pos_zones(return_invalid_pz=True)
+
+        self.fr = self.si.get_fr()
+        self.spikes = self.si.get_binned_spikes()
+
+        if not_inzone_blank and (len(self.pz_invalid_samps) > 0):
+            self.track_data.loc[self.pz_invalid_samps, :] = np.nan
+            self.pz[self.pz_invalid_samps] = np.nan
+            self.fr[:, self.pz_invalid_samps] = np.nan
+            self.spikes[:, self.pz_invalid_samps] = np.nan
+
+        self.x_edges = self.si.task_params['x_bin_edges_'] * 10  # edges are in cm
+        self.y_edges = self.si.task_params['y_bin_edges_'] * 10  # edges are in cm
+
+        self.tmz = TreeMazeZones()
+
+        self.trial_condition_table = self.generate_trial_condition_table()
+
+        self.trial_zones = {k: self.get_trial_zones(trial_seg=k) for k in ['out', 'in']}
+        self.trial_zone_samps_counts_mat = {k: self.get_trial_zones_samps_counts_mat(trial_seg=k) for k in
+                                            ['out', 'in']}
+        self.trial_zones_rates = {k: self.get_all_trial_zone_rates(trial_seg=k) for k in ['out', 'in']}
+
+        self.zones_by_trial = {k: self.trial_zone_samps_counts_mat[k] > 0 for k in ['out', 'in']}
+
+    def generate_trial_condition_table(self):
+
+        n_trials = len(self.trial_table)
+        n_conditions = len(self._trial_conditions)
+
+        temp = np.zeros((n_trials, n_conditions), dtype=bool)
+
+        trial_condition_table = pd.DataFrame(temp, columns=list(self._trial_conditions.keys()))
+
+        for condition in self._trial_conditions:
+            cond_bool = np.ones(n_trials, dtype=bool)
+
+            if condition in ['All']:
+                pass
+            elif condition in ['Out', 'In']:
+                pass
+            elif condition == 'Even':
+                cond_bool[::2] = False
+            elif condition == 'Odd':
+                cond_bool[1::2] = False
+            else:
+                sub_condition = self._trial_conditions[condition]
+                cond_bool = np.ones(n_trials, dtype=bool)
+
+                for sc, val in sub_condition.items():
+                    cond_bool = (cond_bool) & (self.trial_table[sc] == val)
+
+            trial_condition_table.loc[:, condition] = cond_bool
+
+        return trial_condition_table
+
+    def get_condition_trials(self, condition, n_sel_trials=None, seed=None):
+
+        if seed is not None:
+            np.random.seed(seed)
+
+        if condition in self.trial_condition_table.columns:
+            pass
+        else:
+            raise ValueError
+
+        trials = self.trial_condition_table.index[self.trial_condition_table[condition]].values
+
+        if n_sel_trials is not None:
+            trials = np.random.choice(trials, n_sel_trials, replace=False)
+
+        return trials
+
+    def get_trial_times(self, trials=None):
+        if trials is None:
+            n_trials = self.n_trials
+            trials = self.all_trials
+        else:
+            n_trials = len(trials)
+
+        df = pd.DataFrame(np.zeros((n_trials, 3), dtype=int), columns=['t0', 'tE', 'tR'])
+        outbound_samps = np.empty(0, dtype=int)
+        inbound_samps = np.empty(0, dtype=int)
+        for ii, tr in enumerate(trials):
+            df.loc[ii, 't0'] = self.trial_table.loc[tr, 't0']
+            df.loc[ii, 'tE'] = self.trial_table.loc[tr, 'tE']
+            if tr < (self.n_trials - 1):
+
+                return_home_detections = self.event_table.loc[(self.event_table.out_bound == 0) &
+                                                              (self.event_table.trial_num == tr) &
+                                                              (self.event_table.event == 'DE1'), 't0'].values
+                if len(return_home_detections) > 0:
+                    df.loc[ii, 'tR'] = return_home_detections[0]
+                else:
+                    df.loc[ii, 'tR'] = self.trial_table.loc[tr + 1, 't0']
+
+            else:
+                df.loc[ii, 'tR'] = self.n_total_samps - 1
+
+            outbound_samps = np.append(outbound_samps, np.arange(df.t0[ii], df.tE[ii] + 1, dtype=int))
+            inbound_samps = np.append(inbound_samps, np.arange(df.tE[ii], df.tR[ii] + 1, dtype=int))
+
+        return df, outbound_samps, inbound_samps
+
+    def get_trial_track_pos(self, trials=None, trial_seg='out'):
+        if trials is None:
+            n_trials = self.n_trials
+            trials = self.all_trials
+        else:
+            n_trials = len(trials)
+
+        assert trial_seg in ['out', 'in', 'all']
+
+        x = np.zeros(n_trials, dtype=object)
+        y = np.zeros(n_trials, dtype=object)
+
+        track_data = self.si.get_track_data()
+        for ii, tr in enumerate(trials):
+            if trial_seg == 'out':
+                t0 = self.trial_times.t0[tr]
+                tE = self.trial_times.tE[tr]
+            elif trial_seg == 'in':
+                t0 = self.trial_times.tE[tr]
+                tE = self.trial_times.tR[tr]
+            else:
+                t0 = self.trial_times.t0[tr]
+                tE = self.trial_times.tR[tr]
+
+            x[ii] = track_data.loc[t0:tE, 'x']
+            y[ii] = track_data.loc[t0:tE, 'y']
+
+        return x, y
+
+    def get_trial_zones(self, trials=None, trial_seg='out'):
+        if trials is None:
+            n_trials = self.n_trials
+            trials = self.all_trials
+        else:
+            n_trials = len(trials)
+
+        assert trial_seg in ['out', 'in', 'all']
+
+        trial_zones = np.zeros(n_trials, dtype=object)
+        pz = self.pz
+        for ii, tr in enumerate(trials):
+            if trial_seg == 'out':
+                t0 = self.trial_times.t0[tr]
+                tE = self.trial_times.tE[tr]
+            elif trial_seg == 'in':
+                t0 = self.trial_times.tE[tr]
+                tE = self.trial_times.tR[tr]
+            elif trial_seg == 'all':
+                t0 = self.trial_times.t0[tr]
+                tE = self.trial_times.tR[tr]
+
+            trial_zones[ii] = pz[t0:(tE + 1)]
+
+        return trial_zones
+
+    def get_trial_zones_samps_counts_mat(self, trial_seg='out'):
+
+        trial_zones = self.trial_zones[trial_seg]
+
+        df = pd.DataFrame(np.zeros((self.n_trials, self.tmz.n_all_segs)), columns=self.tmz.all_segs_names)
+        for tr in range(self.n_trials):
+            df.loc[tr] = pd.value_counts(trial_zones[tr])
+        df = df.fillna(0)
+        return df
+
+    def get_trial_neural_data(self, trials=None, data_type='fr', trial_seg='out'):
+
+        assert trial_seg in ['out', 'in', 'all']
+
+        if trials is None:
+            n_trials = self.n_trials
+            trials = self.all_trials
+        else:
+            n_trials = len(trials)
+
+        if data_type == 'fr':
+            neural_data = self.fr
+        elif data_type == 'spikes':
+            neural_data = self.spikes
+        else:
+            print("Invalid data type.")
+            return
+
+        trial_data = np.zeros((self.n_units, n_trials), dtype=object)
+
+        for ii, tr in enumerate(trials):
+            if trial_seg == 'out':
+                t0 = self.trial_times.t0[tr]
+                tE = self.trial_times.tE[tr]
+            elif trial_seg == 'in':
+                t0 = self.trial_times.tE[tr]
+                tE = self.trial_times.tR[tr]
+            elif trial_seg == 'all':
+                t0 = self.trial_times.t0[tr]
+                tE = self.trial_times.tR[tr]
+
+            for unit in range(self.n_units):
+                trial_data[unit, ii] = neural_data[unit, t0:(tE + 1)]
+
+        return trial_data
+
+    def get_trial_rate_maps(self, trials=None, data_type='fr', occupation_thr=1, trial_seg='out'):
+
+        if trials is None:
+            trials = self.all_trials
+
+        if data_type in ['fr', 'spikes']:
+            neural_data = self.get_trial_neural_data(data_type=data_type, trial_seg=trial_seg)
+            if data_type == 'fr':
+                rate_map_function = spatial_funcs.firing_rate_2_rate_map
+            else:
+                rate_map_function = spatial_funcs.spikes_2_rate_map
+        else:
+            print("Invalid data type.")
+            return
+
+        x, y = self.get_trial_track_pos(trials)
+        x = np.hstack(x)
+        y = np.hstack(y)
+
+        pos_count_map = self.get_trial_pos_counts_map(trials)
+
+        mask = pos_count_map >= occupation_thr
+
+        args = dict(x=x, y=y, x_bin_edges=self.x_edges, y_bin_edges=self.y_edges,
+                    pos_count_map=pos_count_map, mask=mask,
+                    spatial_window_size=self.si.task_params['spatial_window_size'],
+                    spatial_sigma=self.si.task_params['spatial_sigma'],
+                    time_step=self.si.params['time_step'])
+
+        # pre-allocate and set up the map function to be looped
+        rate_maps = np.zeros((self.n_units, len(self.y_edges) - 1, len(self.x_edges) - 1))
+        for unit in range(self.n_units):
+            rate_maps[unit] = rate_map_function(np.hstack(neural_data[unit]), **args)
+
+        return rate_maps
+
+    def get_trial_pos_counts_map(self, trials=None, trial_seg='out'):
+
+        if trials is None:
+            trials = self.all_trials
+
+        x, y = self.get_trial_track_pos(trials, trial_seg=trial_seg)
+        x = np.hstack(x)
+        y = np.hstack(y)
+
+        # get occupancy map
+        pos_count_map = spatial_funcs.histogram_2d(x, y, self.x_edges, self.y_edges)
+
+        return pos_count_map
+
+    def get_all_trial_zone_rates(self, data_type='fr',
+                                 occupation_trial_samp_thr=1, trial_seg='out'):
+
+        if data_type == 'fr':
+            neural_data = self.get_trial_neural_data(trial_seg=trial_seg)
+        elif data_type == 'spikes':
+            raise NotImplementedError
+        else:
+            print("Invalid data type.")
+            return
+
+        n_segs = self.tmz.n_all_segs
+        seg_names = self.tmz.all_segs_names
+
+        zones_by_trial = self.trial_zones[trial_seg]
+        trial_zone_rates = np.zeros(self.n_units, dtype=object)
+
+        dummy_df = pd.DataFrame(np.zeros((self.n_trials, n_segs)) * np.nan, columns=seg_names)
+        for unit in range(self.n_units):
+            trial_zone_rates[unit] = dummy_df.copy()
+
+        for ii in range(self.n_trials):
+
+            pzm = self.tmz.get_pos_zone_mat(zones_by_trial[ii], segment_type='subseg')
+            pz_counts = pzm.sum()
+            pzmn = (pzm / pz_counts).fillna(0)  # pozitions zones normalized by occupancy
+
+            trial_data = np.nan_to_num(np.array(list(neural_data[:, ii]), dtype=np.float))
+            zone_rates = trial_data @ pzmn
+            zone_rates.loc[:, pz_counts < occupation_trial_samp_thr] = np.nan
+
+            for unit in range(self.n_units):
+                trial_zone_rates[unit].loc[ii] = zone_rates.loc[unit]
+
+        return trial_zone_rates
+
+    def get_trial_segment_rates(self, trials=None, segment_type='subseg', trial_seg='out', occupation_trial_samp_thr=5):
+        if trials is None:
+            trials = np.arange(self.n_trials, dtype=int)
+
+        trial_zone_rates = self.trial_zones_rates[trial_seg]
+
+        trial_segment_rates = np.zeros(self.n_units, dtype=object)
+        for unit in range(self.n_units):
+            trial_segment_rates[unit] = trial_zone_rates[unit].loc[trials].copy().reset_index(drop=True)
+
+        if segment_type != 'subseg':
+            trial_zone_samp_counts = self.trial_zone_samps_counts_mat[trial_seg].loc[trials].fillna(0).reset_index(
+                drop=True)
+            segment_counts = self.tmz.subseg_pz_mat_transform(trial_zone_samp_counts, segment_type)
+
+            trial_zone_samp_seg_norm = self.tmz.subseg_pz_mat_segment_norm(trial_zone_samp_counts,
+                                                                           segment_type, segment_counts)
+
+            for unit in range(self.n_units):
+                norm_zone_rates = (trial_segment_rates[unit] * trial_zone_samp_seg_norm).fillna(0)
+                trial_segment_rates[unit] = self.tmz.subseg_pz_mat_transform(norm_zone_rates, segment_type)
+                trial_segment_rates[unit][segment_counts < occupation_trial_samp_thr] = np.nan
+
+        return trial_segment_rates
+
+    def get_unit_trial_zone_rates(self, unit=0, trials=None, trial_seg='out'):
+        if trials is None:
+            trials = self.all_trials
+
+        return self.trial_zones_rates[trial_seg][unit].loc[trials, :]
+
+    def get_avg_zone_rates(self, trials=None, samps=None, data_type='fr',
+                           segment_type='subseg', occupation_samp_thr=5, trial_seg='out'):
+        """
+        returns the average zone firing rates for the given trials or samps
+        :param trials: array of ints, trials to generate zone maps(ignored if samps are provided)
+        :param samps: array of ints, samples to generate zone maps
+        :param data_type: str ['fr', 'spikes'], firing rate or spikes
+        :param segment_type: string, ['seg', 'subseg', 'bigseg']
+        :param occupation_samp_thr: int, minimun number of samples in a zone, returns nan otherwise for that zone
+        :param trial_seg: str ['out', 'in', 'all'], segment of the trials to use, ignored if samps are provided
+        :return:
+        data frame of n_units x n_zones of rates
+        """
+
+        assert trial_seg in ['out', 'in', 'all']
+
+        if samps is None:
+            if trials is None:
+                if trial_seg == 'out':
+                    samps = self.outbound_samps
+                elif trial_seg == 'in':
+                    samps = self.inbound_samps
+                elif trial_seg == 'all':
+                    out_samps = self.outbound_samps
+                    in_samps = self.inbound_samps
+                    samps = np.concatenate((out_samps, in_samps))
+
+            else:
+                _, out_samps, in_samps = self.get_trial_times(trials)
+                if trial_seg == 'out':
+                    samps = out_samps
+                elif trial_seg == 'in':
+                    samps = in_samps
+                elif trial_seg == 'all':
+                    samps = np.concatenate((out_samps, in_samps))
+
+        if data_type == 'fr':
+            neural_data = self.fr[:, samps]
+        elif data_type == 'spikes':
+            neural_data = self.spikes[:, samps]
+        else:
+            print("Invalid data type.")
+            return
+
+        pz = self.pz[samps]  # position zones
+        pzm = self.tmz.get_pos_zone_mat(pz, segment_type=segment_type)  # position zones matrix
+
+        pz_counts = pzm.sum()
+        pzmn = pzm / pz_counts  # pozitions zones normalized by occupancy
+
+        nan_locs = np.isnan(neural_data)
+        neural_data[nan_locs] = 0
+        zone_rates = neural_data @ pzmn  # matrix multiply
+        zone_rates.loc[:, pz_counts < occupation_samp_thr] = np.nan
+
+        return zone_rates
+
+    def get_avg_trial_zone_rates(self, trials=None, segment_type='subseg', occupation_trial_samp_thr=5,
+                                 trial_seg='out', reweight_by_trial_zone_counts=False):
+        """
+        returns the trial average for the given trial.
+        :param trials: list of trials
+        :param segment_type: 'str', if not subseg, the function will scale the fr data according to the number of
+            sampples for that zone in that trial, according to how many samples were in the segment
+        :param occupation_trial_samp_thr: minimum number of samples to be included in analyses
+        :param trial_seg: what part of the trial.
+        :param reweight_by_trial_zone_counts: if True, this is equivalent to pooling all the samples to avg.
+                if false, the return value will be the mean across trials.
+        :return:
+            n_units x n_segs dataframe
+        """
+
+        trial_segment_rates = self.get_trial_segment_rates(trials=trials,
+                                                           segment_type=segment_type,
+                                                           trial_seg=trial_seg,
+                                                           occupation_trial_samp_thr=occupation_trial_samp_thr)
+
+        # average zone rate
+        segs = list(trial_segment_rates[0].columns)
+        azr = pd.DataFrame(0, index=range(self.n_units), columns=segs)
+
+        if reweight_by_trial_zone_counts:
+            tzc = self.trial_zone_samps_counts_mat['out'].loc[trials].copy().reset_index(drop=True)
+            tsc = self.tmz.subseg_pz_mat_transform(tzc, segment_type=segment_type)
+            tscn = tsc / tsc.sum()
+            for unit in range(self.n_units):
+                azr.loc[unit] = (trial_segment_rates[unit] * tscn).sum()
+        else:
+            for unit in range(self.n_units):
+                azr.loc[unit] = trial_segment_rates[unit].mean()
+
+        return azr
+
+    def get_trials_boot_cond_set(self, cond_set, n_sel_trials=None, n_boot=100):
+        """
+        for a given condition and subconditions (see format below), balances the number of trials across subconditions
+        returns a dictionary for each condition with n_trials x n_bootstaps
+        :param cond_set: {cond: [sub_cond1, sub_cond2,..]}
+        :param n_sel_trials: [None, 'max', 'min', int]
+            None -> balances the max number of sub condition trials and min number
+            max -> takes the max number of trials from a subcondition, and resamples the other subconditions
+                with replacement to match
+            min -> like max, but with min
+        :param n_boot: number of bootstaps
+        :return:
+        dictionary by condition, with a matrix of trials x bootstaps, each entry would be a trial id
+        """
+
+        trial_sets = {}
+        out_trial_sets = {}
+        for cond, sub_conds in cond_set.items():
+
+            cond_trials = self.get_condition_trials(condition=cond)
+            trial_sets[cond] = {}
+            min_set_length = 1000
+            max_set_lenth = 0
+            for sc in sub_conds:
+                sc_trials = self.get_condition_trials(condition=sc)
+                trial_sets[cond][sc] = np.intersect1d(cond_trials, sc_trials)
+                min_set_length = min(len(trial_sets[cond][sc]), min_set_length)
+                max_set_lenth = max(len(trial_sets[cond][sc]), max_set_lenth)
+
+            if n_sel_trials is None:
+                n_sub_cond_trials = int((min_set_length + max_set_lenth) / 2)
+            elif n_sel_trials == 'max':
+                n_sub_cond_trials = int(max_set_lenth)
+            elif n_sel_trials == 'min':
+                n_sub_cond_trials = int(min_set_length)
+            elif type(n_sel_trials) == int:
+                n_sub_cond_trials = n_sel_trials
+            else:
+                raise ValueError
+
+            n_cond_balanced_trials = n_sub_cond_trials * len(sub_conds)
+            out_trial_sets[cond] = np.zeros((n_cond_balanced_trials, n_boot), dtype=int)
+            for boot in range(n_boot):
+                sub_cond_trials = np.zeros(len(sub_conds), dtype=object)
+                for jj, sc in enumerate(sub_conds):
+                    sub_cond_trials[jj] = np.random.choice(trial_sets[cond][sc], n_sub_cond_trials, replace=True)
+                out_trial_sets[cond][:, boot] = np.hstack(sub_cond_trials)
+
+        return out_trial_sets
+
+    def get_boot_zone_rates(self, cond_sets=None, trial_segs=None, segment_type='subseg', n_boot=100, seed=0):
+
+        np.random.seed(seed)
+
+        if cond_sets is None:
+            cond_sets = {'All': ['CL', 'CR']}
+        n_conds = len(cond_sets)
+
+        if trial_segs is None:
+            trial_segs = 'out'
+
+        if trial_segs in ['out', 'in', 'all']:
+            trial_cond_segs = {}
+            for cond, sub_conds in cond_sets.items():
+                trial_cond_segs[cond] = trial_segs
+        else:
+            trial_cond_segs = trial_segs
+            assert len(trial_segs) == n_conds
+
+        trial_sets = self.get_trials_boot_cond_set(cond_sets, n_boot=n_boot)
+
+        if segment_type == 'subseg':
+            n_zones = self.tmz.n_all_segs
+        elif segment_type == 'bigseg':
+            n_zones = len(self.tmz.bigseg_names)
+        else:
+            n_zones = self.tmz.n_zones
+
+        cond_zr = {cond: pd.DataFrame(np.zeros((n_boot, n_zones * self.n_units)))
+                   for cond in cond_sets.keys()}
+
+        for cond in cond_sets.keys():
+            for boot in range(n_boot):
+                cond_zr[cond].loc[boot] = self.get_avg_zone_rates(trials=trial_sets[cond][:, boot],
+                                                                  trial_seg=trial_cond_segs[cond],
+                                                                  segment_type=segment_type).values.flatten()
+
+        return cond_zr
+
+    def zone_rate_trial_quantification(self, cond=None, trials=None, trial_seg='out'):
+        """
+        simple quantification of zone rate maps for a given set of trials or conditions.
+        gets spatial information, mean rate on left, right and stem zones,
+        mean rates on the reward wells. saves standard deviation for each of the mean rates as well.
+        :return:
+        data frame with results, index by unit
+        """
+        if cond is not None:
+            trials = self.get_condition_trials(condition=cond)
+        elif trials is not None:
+            pass
+        else:
+            trials = np.arange(self.n_trials)
+
+        zones_by_trial = self.zones_by_trial[trial_seg].loc[trials]
+        trial_zone_counts = zones_by_trial.sum()
+        trial_zone_prob = trial_zone_counts / trial_zone_counts.sum()
+
+        col_names_root = ['all', 'left', 'right', 'stem', 'H', 'D', 'G1', 'G2', 'G3', 'G4']
+        col_names = ['si']
+
+        for cn in col_names_root:
+            for post_str in ['m', 's', 'n', 'z']:
+                col_names.append(f"{cn}_{post_str}")
+
+        df = pd.DataFrame(np.zeros((self.n_units, len(col_names))), columns=col_names)
+        df[f"all_n"] = trial_zone_counts.max()
+
+        for well in self.tmz.wells:
+            df[f"{well}_n"] = trial_zone_counts[well]
+
+        for split, zones in self.tmz.split_zones_all.items():
+            df[f"{split}_n"] = trial_zone_counts[zones].max()
+
+        for unit in range(self.n_units):
+            zr = self.get_unit_trial_zone_rates(unit, trials, trial_seg=trial_seg)
+            zrm = zr.mean()
+            nzr = zrm / zrm.sum()
+            zrs = zr.std()
+
+            df.loc[unit, f"all_m"] = (zrm * trial_zone_prob).sum()
+            df.loc[unit, f"all_s"] = (zrs * trial_zone_prob).sum()
+            df.loc[unit, 'si'] = spatial_funcs.spatial_information(trial_zone_prob, nzr)
+
+            for well in self.tmz.wells:
+                df.loc[unit, f"{well}_m"] = zrm[well]
+                df.loc[unit, f"{well}_s"] = zrs[well]
+
+            for split, zones in self.tmz.split_zones_all.items():
+                z_p = trial_zone_prob[zones]
+                df.loc[unit, f"{split}_m"] = (zr[zones].mean() * z_p).sum()
+                df.loc[unit, f"{split}_s"] = (zr[zones].std() * z_p).sum()
+
+        for split in col_names_root:
+            df[f"{split}_z"] = df[f"{split}_m"] / df[f"{split}_s"]
+
+        return df
+
+    def zone_rate_maps_corr(self, cond1=None, cond2=None, trials1=None, trials2=None,
+                            samps1=None, samps2=None, trial_seg1='out', trial_seg2='out', corr_method='kendall'):
+        """
+        method for comparing zone rate maps across conditions or time_samps.
+        conditions must be in the list. generates a zone rate maps from the trials, conditions or samples given
+        and correlates the maps across conditions for all units.
+        :param cond1: string trial condition 1
+        :param cond2: string trial condition 2
+        :param trials1:  list of trials
+        :param trials2: list of trials
+        :param samps1: 1st set of samples to create zone rate map
+        :param samps2: 2nd set of samples to create zone rate map
+        :param trial_seg1: str ['out', 'in', 'all'], segment of the trials to use, ignored if samps1 are provided
+        :param trial_seg2: str ['out', 'in', 'all'], segment of the trials to use, ignored if samps2 are provided
+        :param corr_method: method for correlation, valid values ['kendall', 'pearson', 'spearman']
+        :return: array of correlation, with each entry corresponding to a unit
+        """
+
+        if cond1 is not None:
+            trials1 = self.get_condition_trials(condition=cond1)
+            zr1 = self.get_avg_zone_rates(trials=trials1, trial_seg=trial_seg1)
+        elif trials1 is not None:
+            zr1 = self.get_avg_zone_rates(trials=trials1, trial_seg=trial_seg1)
+        else:
+            assert samps1 is not None
+            zr1 = self.get_avg_zone_rates(samps=samps1)
+
+        if cond2 is not None:
+            trials2 = self.get_condition_trials(condition=cond2)
+            zr2 = self.get_avg_zone_rates(trials=trials2, trial_seg=trial_seg2)
+        elif trials1 is not None:
+            zr2 = self.get_avg_zone_rates(trials=trials2, trial_seg=trial_seg2)
+        else:
+            assert samps2 is not None
+            zr2 = self.get_avg_zone_rates(samps=samps2)
+
+        return zr1.corrwith(zr2, axis=1, method=corr_method)
+
+    def zone_rate_maps_t(self, cond1=None, cond2=None, trials1=None, trials2=None,
+                         trial_seg1='out', trial_seg2='out', trial_occupation_thr=2):
+        """
+        method for comparing zone rate maps across trials.
+        conditions must be in the list. generates a zone rate maps from the trials, and compares them to the other
+        condition using a t statistic by zone.
+        :param cond1: string trial condition 1
+        :param cond2: string trial condition 2
+        :param trials1:  list of trials
+        :param trials2: list of trials
+        :param trial_seg1: str ['out', 'in'], segment of the trials to use, ignored if samps1 are provided
+        :param trial_seg2: str ['out', 'in'], segment of the trials to use, ignored if samps2 are provided
+        :param trial_occupation_thr: int,  minimun number of samples in a zone in a trial
+        :return:
+        data frame of n_units x n_zones of t values across the conditions/trial sets
+
+        """
+
+        if cond1 is not None:
+            trials1 = self.get_condition_trials(condition=cond1)
+        else:
+            assert trials1 is not None
+
+        if cond2 is not None:
+            trials2 = self.get_condition_trials(condition=cond2)
+        else:
+            assert trials2 is not None
+
+        out = pd.DataFrame(np.zeros((self.n_units, self.tmz.n_all_segs)),
+                           columns=self.tmz.all_segs_names)
+
+        for unit in range(self.n_units):
+            tzr1 = self.get_unit_trial_zone_rates(unit=unit, trials=trials1, trial_seg=trial_seg1)
+            tzr2 = self.get_unit_trial_zone_rates(unit=unit, trials=trials2, trial_seg=trial_seg2)
+            out.loc[unit] = ttest_ind(tzr1, tzr2, nan_policy='omit')[0].data
+
+        mask1 = self.zones_by_trial[trial_seg1].loc[trials1].sum() < trial_occupation_thr
+        mask2 = self.zones_by_trial[trial_seg2].loc[trials2].sum() < trial_occupation_thr
+        out.loc[:, (mask1 | mask2)] = np.nan
+
+        return out
+
+    def zone_rate_maps_permute_corr(self, cond1=None, cond2=None, trials1=None, trials2=None, n_sel_trials=None,
+                                    trial_seg1='out', trial_seg2='out', n_perm=100, corr_method='kendall',
+                                    min_valid_trials=10, n_jobs=5):
+        """
+        similar to zone_rate_maps corr but resamples each trial set to have balanced trials sets, then repeats for
+        n_perm.
+        :param cond1: str, condition 1
+        :param cond2 str, condition 2
+        :param trials1: array of trials
+        :param trials2: array of trials
+        :param n_sel_trials: int: defaults simply selects the minimum length of trials1 and trials2
+        :param n_perm: int, number of permutations
+        :param corr_method: str, correlation method  ['kendall', 'pearson', 'spearman']
+        :param min_valid_trials: int, minimum valid number of trials to allow comparison
+        :param trial_seg1: str ['out', 'in'], segment of the trials to use
+        :param trial_seg2: str ['out', 'in'], segment of the trials to use
+        :return:
+        pandas data frame with dimensions: n_units x n_perm
+        """
+
+        if cond1 is not None:
+            trials1 = self.get_condition_trials(condition=cond1)
+        else:
+            assert trials1 is not None
+
+        if cond2 is not None:
+            trials2 = self.get_condition_trials(condition=cond2)
+        else:
+            assert trials2 is not None
+
+        if n_sel_trials is None:
+            n_sel_trials = min(len(trials1), len(trials2))
+        else:
+            assert type(n_sel_trials) == int
+
+        if (len(trials1) < min_valid_trials) or (len(trials2) < min_valid_trials):
+            return pd.DataFrame(np.zeros((self.n_units, n_perm)) * np.nan)
+
+        def _worker():
+            p_trials1 = np.random.choice(trials1, n_sel_trials, replace=False)
+            p_trials2 = np.random.choice(trials2, n_sel_trials, replace=False)
+
+            p_zr1 = self.get_avg_zone_rates(trials=p_trials1, trial_seg=trial_seg1)
+            p_zr2 = self.get_avg_zone_rates(trials=p_trials2, trial_seg=trial_seg2)
+
+            return p_zr1.corrwith(p_zr2, axis=1, method=corr_method)
+
+        with Parallel(n_jobs=n_jobs) as parallel:
+            corr = parallel(delayed(_worker)() for _ in range(n_perm))
+
+        return pd.DataFrame(np.array(corr).T)
+
+    def zone_rate_maps_comparison_analyses(self):
+        """
+        :return:
+        """
+
+        group_conds = {'CR-CL': ['CR', 'CL'], 'Even-Odd': ['Even', 'Odd'],
+                       'Co-Inco': ['Co', 'Inco'], 'Out-In': ['Out', 'In'],
+                       'Left': ['CoCL', 'IncoCR'], 'Right': ['CoCR', 'IncoCL'],
+                       'CoSw-IncoSw': ['CoSw', 'IncoSw']}
+        analyses = ['corr', 't_m', 't_var']
+
+        col_names = []
+        for ii in group_conds.keys():
+            for jj in analyses:
+                col_names.append(f"{ii}_{jj}")
+
+        df = pd.DataFrame(np.zeros((self.n_units, len(group_conds) * 3)) * np.nan, columns=col_names)
+
+        for group, conds in group_conds.items():
+
+            if group == 'Out-In':
+                trial_seg1 = 'out'
+                trial_seg2 = 'in'
+            else:
+                trial_seg1 = 'out'
+                trial_seg2 = 'out'
+
+            trials1 = self.get_condition_trials(condition=conds[0])
+            trials2 = self.get_condition_trials(condition=conds[1])
+
+            zc1 = self.zones_by_trial[trial_seg1].loc[trials1].sum()
+            zc2 = self.zones_by_trial[trial_seg2].loc[trials2].sum()
+            zc = (zc1 + zc2) / 2
+            zp = zc / zc.sum()
+
+            df[f"{group}_corr"] = self.zone_rate_maps_corr(trials1=trials1, trials2=trials2,
+                                                           trial_seg1=trial_seg1, trial_seg2=trial_seg2)
+            ts = self.zone_rate_maps_t(trials1=trials1, trials2=trials2,
+                                       trial_seg1=trial_seg1, trial_seg2=trial_seg2)
+
+            # trial counts by zone weighted mean and variance
+            average = (ts * zp).sum(axis=1).values
+            variance = ((ts - average[:, np.newaxis]) ** 2 * zp).sum(axis=1)
+            df[f"{group}_t_m"] = average
+            df[f"{group}_t_var"] = variance
+
+        return df
+
+    def zone_rate_maps_group_trials_perm_bal_corr(self, n_perm=100, n_sel_trials=None,
+                                                  corr_method='kendall', min_valid_trials=10, n_jobs=5,
+                                                  group_cond_sets=None):
+        """
+        this function computes balanced zone rate maps correlations between sets of trials. the main component is the
+        group_cond_sets parameter. it is a nested dictionary (3 levels):
+            group names -> major condition -> balancing conditions
+        See below for example.
+        Returns
+        :param n_perm: number of permutations
+        :param n_sel_trials: int, number of trials to use by condition,
+        :param corr_method: str, correlation method
+        :param min_valid_trials: int, won't perform computation if a trial combinations is less than this #
+        :param n_jobs: int, number of parallel workers for permutations
+        :param group_cond_sets: dict, group name -> major condition - balancing conditions
+                {'Even-Odd': {'Even':['CL','CR'],'Odd':['CL','CR']},
+                 'CR-CL': {'CR':['Co', 'InCo'], 'CL':['Co', 'InCo']} }
+        :return:
+        dict with group names as keys, and pandas data frame with n_units x n_perm as values
+        """
+
+        if group_cond_sets is None:
+            group_cond_sets = {'CR-CL': {'CR': ['Co', 'Inco'], 'CL': ['Co', 'Inco']},
+                               'Even-Odd': {'Even': ['Co', 'Inco'], 'Odd': ['Co', 'Inco']}}
+
+        out_dict = {}
+        n_trials = {}
+        for group, cond_sets in group_cond_sets.items():
+
+            conds = list(cond_sets.keys())
+            trial_sets = {}
+            min_set_length = 1000
+            for cond, sub_conds in cond_sets.items():
+                cond_trials = self.get_condition_trials(condition=cond)
+                trial_sets[cond] = {}
+                for sc in sub_conds:
+                    sc_trials = self.get_condition_trials(condition=sc)
+                    trial_sets[cond][sc] = np.intersect1d(cond_trials, sc_trials)
+                    min_set_length = min(len(trial_sets[cond][sc]), min_set_length)
+
+            if n_sel_trials is None:
+                n_sel_g_trials = min_set_length
+            else:
+                n_sel_g_trials = n_sel_trials
+
+            n_trials[group] = n_sel_g_trials
+
+            if n_sel_g_trials < min_valid_trials:
+                # invalid set partition, skip
+                out_dict[group] = pd.DataFrame(np.zeros((self.n_units, n_perm)) * np.nan)
+                continue
+
+            def _worker():
+                _cond_trial_sets = {}
+
+                for _cond, _sub_conds in cond_sets.items():
+                    _cond_trials = np.zeros(len(_sub_conds), dtype=object)
+
+                    for jj, _sc in enumerate(_sub_conds):
+                        _cond_trials[jj] = np.random.choice(trial_sets[_cond][_sc], n_sel_g_trials, replace=False)
+
+                    _cond_trial_sets[_cond] = np.hstack(_cond_trials)
+
+                return self.zone_rate_maps_corr(trials1=_cond_trial_sets[conds[0]], trials2=_cond_trial_sets[conds[1]],
+                                                corr_method=corr_method)
+
+            with Parallel(n_jobs=n_jobs) as parallel:
+                corr = parallel(delayed(_worker)() for _ in range(n_perm))
+
+            out_dict[group] = pd.DataFrame(np.array(corr).T)
+        return out_dict, n_trials
+
+    def zone_rate_maps_group_trials_boot_bal_corr(self, n_boot=100,
+                                                  corr_method='kendall', min_valid_trials=5, n_jobs=5,
+                                                  group_cond_sets=None, group_trial_segs=None,
+                                                  parallel=None):
+        """
+        this function computes balanced zone rate maps correlations between sets of trials.
+        using bootstrap to equate the samples sizes between groups, size is the mean between the set sizes.
+        the main component is the group_cond_sets parameter.
+         it is a nested dictionary (3 levels):
+            group names -> major condition -> balancing conditions
+        See below for example.
+        Returns
+        :param n_boot: number of permutations
+        :param corr_method: str, correlation method
+        :param min_valid_trials: int, won't perform computation if a trial combinations is less than this #
+        :param n_jobs: int, number of parallel workers for permutations
+        :param group_cond_sets: dict, group name -> major condition - balancing conditions
+                example:
+                {'Even-Odd': {'Even':['CL','CR'],'Odd':['CL','CR']},
+                 'CR-CL': {'CR':['Co', 'InCo'], 'CL':['Co', 'InCo']} }
+        :param group_trial_segs: dict indicating the trial segment for each subcondition in a group:
+                example:
+                {'CR-CL': ['out', 'out'], 'Even-Odd': ['out', 'out']}
+        :return:
+        dict with group names as keys, and pandas data frame with n_units x n_perm as values
+        """
+
+        if group_cond_sets is None:
+            group_cond_sets = {'CR-CL': {'CR': ['Co', 'Inco'], 'CL': ['Co', 'Inco']},
+                               'Even-Odd': {'Even': ['Co', 'Inco'], 'Odd': ['Co', 'Inco']}}
+            group_trial_segs = {'CR-CL': ['out', 'out'],
+                                'Even-Odd': ['out', 'out']}
+
+        out_dict = {}
+        for group, group_set in group_cond_sets.items():
+            trial_segs = group_trial_segs[group]
+            try:
+                trial_sets = self.get_trials_boot_cond_set(group_set, n_boot=n_boot)
+            except ValueError:
+                out_dict[group] = pd.DataFrame(np.zeros((self.n_units, n_boot)) * np.nan)
+                continue
+
+            conds = list(group_set.keys())
+
+            ok_cond_trials_flag = True
+            for cond in conds:
+                if (trial_sets[cond].shape[0]) < min_valid_trials:
+                    ok_cond_trials_flag = False
+                    break
+            if not ok_cond_trials_flag:
+                # invalid set partition, skip
+                out_dict[group] = pd.DataFrame(np.zeros((self.n_units, n_boot)) * np.nan)
+                continue
+
+            def _worker(boot):
+                return self.zone_rate_maps_corr(trials1=trial_sets[conds[0]][:, boot],
+                                                trials2=trial_sets[conds[1]][:, boot],
+                                                trial_seg1=trial_segs[0], trial_seg2=trial_segs[1],
+                                                corr_method=corr_method)
+
+            try:
+                if parallel is None:
+                    with Parallel(n_jobs=n_jobs) as parallel:
+                        corr = parallel(delayed(_worker)(boot) for boot in range(n_boot))
+                else:
+                    corr = parallel(delayed(_worker)(boot) for boot in range(n_boot))
+
+                out_dict[group] = pd.DataFrame(np.array(corr).T)
+            except:
+                out_dict[group] = pd.DataFrame(np.zeros((self.n_units, n_boot)) * np.nan)
+
+        return out_dict
+
+    def all_zone_remapping_analyses(self, corr_method='kendall', n_boot=100, n_jobs=5):
+        """
+        Runs zone_rate_maps_comparison_analyses and zone_rate_maps_group_trials_perm_bcorr and puts them into a single
+        data frame.
+        :param corr_method: string, correlation method to use
+        :return:
+        data frame: n_units x n_analyses
+        """
+        with np.errstate(divide='ignore'):
+            # main analyses
+            df = self.zone_rate_maps_comparison_analyses()
+
+            n_zones = self.tmz.n_all_segs
+            with Parallel(n_jobs=n_jobs) as parallel:
+                bcorrs = self.zone_rate_maps_group_trials_boot_bal_corr(group_cond_sets=self.group_cond_sets,
+                                                                        group_trial_segs=self.group_trial_segs,
+                                                                        corr_method=corr_method,
+                                                                        n_boot=n_boot,
+                                                                        parallel=parallel)
+
+            if corr_method == 'kendall':
+                def _transform_corr(_c):
+                    return rs.fisher_r2z(rs.kendall2pearson(_c))
+            else:
+                def _transform_corr(_c):
+                    return rs.fisher_r2z(_c)
+
+            def _diff(_a, _b):
+                return _a - _b
+
+            for group, corrs in bcorrs.items():
+                df[f"{group}_boot_corr_m"] = corrs.mean(axis=1)
+                z = _transform_corr(corrs)
+                df[f"{group}_boot_corr_z"] = z.mean(axis=1)
+
+            for test, null in self.test_null_comps.items():
+                c = rs.compare_corrs(bcorrs[test], bcorrs[null],
+                                     n_zones, n_zones, corr_method=corr_method)
+
+                c.replace([np.inf, -np.inf], np.nan, inplace=True)
+                df[f"{test}_{null}_boot_corr_zm"] = c.mean(axis=1)
+
+                df[f"{test}_{null}_boot_corr_zz"] = c.mean(axis=1) / c.std(axis=1)
+
+            return df
+
+    def all_zone_rates_comps(self, n_boot=100, n_jobs=5):
+        out_dict = {}
+        for group, group_set in self.group_cond_sets.items():
+            trial_segs = self.group_trial_segs[group]
+            try:
+                trial_sets = self.get_trials_boot_cond_set(group_set, n_boot=n_boot)
+            except ValueError:
+                out_dict[group] = pd.DataFrame
+                continue
 
 
 def pre_process_track_data(x, y, ha, t, t_rs, track_params, return_all=False):
