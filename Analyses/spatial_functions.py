@@ -186,6 +186,7 @@ def spatial_information(pos_prob, fr_map):
     info_mat = nfr*np.log2(nfr/pos_prob) # information matrix
     return np.nansum(info_mat)
 
+
 def smooth_2d_map(bin_map, n_bins=5, sigma=2, apply_median_filt=True, **kwargs):
     """
     :param bin_map: map to be smooth.

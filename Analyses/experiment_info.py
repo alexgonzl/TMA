@@ -58,6 +58,12 @@ class SummaryInfo:
         self.analyses_table = self.get_analyses_table()
         self.valid_track_table = self.get_track_validity_table()
 
+        self.sessions_by_subject = {}
+        self.tasks_by_subject = {}
+        for s in self.subjects:
+            self.sessions_by_subject[s] = self.unit_table[self.unit_table.subject == s].session.unique()
+            self.tasks_by_subject[s] = self.unit_table[self.unit_table.subject == s].task.unique()
+
     def run_analyses(self, task='all', which='all', verbose=False, overwrite=False):
         interrupt_flag = False
         for subject in self.subjects:
@@ -93,6 +99,8 @@ class SummaryInfo:
                     except FileNotFoundError:
                         pass
                     except:
+                        if verbose:
+                            traceback.print_exc(file=sys.stdout)
                         pass
             if verbose:
                 print(f"Subject {subject} Analyses Completed.")
@@ -167,6 +175,8 @@ class SummaryInfo:
             of_metric_scores=results_path / 'of_metric_scores_summary_table.csv',
             of_model_scores=results_path / 'of_model_scores_summary_table_agg.csv',
             zone_rates_comps=results_path / 'zone_rates_comps_summary_table.csv',
+            zone_rates_remap=results_path / 'zone_rates_remap_summary_table.csv',
+            bal_conds_seg_rates=results_path / 'bal_conds_seg_rates_summary_table.csv',
         )
         paths['results'] = results_path
         paths['figures'] = figures_path
@@ -192,7 +202,7 @@ class SummaryInfo:
             zone_rates = pd.DataFrame()
             unit_count = 0
 
-            valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_rates_comps==True].index)
+            valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_rates_comps == True].index)
             for subject in self.subjects:
                 subject_info = SubjectInfo(subject)
                 for session in subject_info.sessions:
@@ -201,21 +211,21 @@ class SummaryInfo:
                         n_session_units = session_info.n_units
                         if n_session_units > 0:
                             try:
-                                session_zone_rate_comp_table = session_info.get_zone_rates_comps()
+                                session_zone_rate_comp_table = session_info.get_zone_rates_remapping()
                                 comp_table_columns = session_zone_rate_comp_table.columns
 
                                 session_table = pd.DataFrame(index=np.arange(n_session_units),
-                                                              columns=['unit_id', 'subject', 'session',
-                                                                       'session_pct_cov', 'session_valid',
-                                                                       'session_unit_id', 'unit_type', 'tt', 'tt_cl',
-                                                                       'cl_name'])
+                                                             columns=['unit_id', 'subject', 'session',
+                                                                      'session_pct_cov', 'session_valid',
+                                                                      'session_unit_id', 'unit_type', 'tt', 'tt_cl',
+                                                                      'cl_name'])
 
                                 session_table['session'] = session
                                 session_table['subject'] = session_info.subject
                                 session_table['session_unit_id'] = np.arange(n_session_units)
 
                                 session_table['unit_id'] = np.arange(n_session_units) + unit_count
-                                session_table['unit_type'] = [v[0] for k, v in  session_info.cluster_ids.items()]
+                                session_table['unit_type'] = [v[0] for k, v in session_info.cluster_ids.items()]
                                 session_table['tt'] = [v[1] for k, v in session_info.cluster_ids.items()]
                                 session_table['tt_cl'] = [v[2] for k, v in session_info.cluster_ids.items()]
 
@@ -249,6 +259,145 @@ class SummaryInfo:
             zone_rates.to_csv(self.paths['zone_rates_comps'])
         else:
             zone_rates = pd.read_csv(self.paths['zone_rates_comps'], index_col=0)
+
+        return zone_rates
+
+    def get_bal_conds_seg_rates(self, segment_type='bigseg', overwrite=False):
+
+        fn = self.paths['bal_conds_seg_rates']
+        if segment_type != 'bigseg':
+            name = fn.name.split('.')
+            name2 = name[0] + segment_type + name[1]
+            fn = fn.parent / name2
+
+        if not fn.exists() or overwrite:
+            sessions_validity = self.get_track_validity_table()
+            seg_rates = pd.DataFrame()
+            unit_count = 0
+
+            valid_sessions = list(self.analyses_table.loc[self.analyses_table.bal_conds_seg_rates == True].index)
+            for subject in self.subjects:
+                subject_info = SubjectInfo(subject)
+                for session in subject_info.sessions:
+                    if session in valid_sessions:
+                        session_info = SubjectSessionInfo(subject, session)
+                        n_session_units = session_info.n_units
+                        if n_session_units > 0:
+                            try:
+                                session_zone_rate_comp_table = session_info.get_bal_conds_seg_rates(segment_type=segment_type)
+                                comp_table_columns = session_zone_rate_comp_table.columns
+
+                                session_table = pd.DataFrame(index=np.arange(n_session_units),
+                                                             columns=['unit_id', 'subject', 'session',
+                                                                      'session_pct_cov', 'session_valid',
+                                                                      'session_unit_id', 'unit_type', 'tt', 'tt_cl',
+                                                                      'cl_name'])
+
+                                session_table['session'] = session
+                                session_table['subject'] = session_info.subject
+                                session_table['session_unit_id'] = np.arange(n_session_units)
+
+                                session_table['unit_id'] = np.arange(n_session_units) + unit_count
+                                session_table['unit_type'] = [v[0] for k, v in session_info.cluster_ids.items()]
+                                session_table['tt'] = [v[1] for k, v in session_info.cluster_ids.items()]
+                                session_table['tt_cl'] = [v[2] for k, v in session_info.cluster_ids.items()]
+
+                                if session in sessions_validity.columns:
+                                    session_table['session_pct_cov'] = sessions_validity[session]
+                                    session_table['session_valid'] = 1
+                                else:
+                                    session_table['session_pct_cov'] = 0
+                                    session_table['session_valid'] = 0
+
+                                cl_names = []
+                                for k, v in session_info.cluster_ids.items():
+                                    tt = v[1]
+                                    cl = v[2]
+                                    depth = subject_info.sessions_tt_positions.loc[session, f"tt_{tt}"]
+                                    cl_name = f"{session}-tt{tt}_d{depth}_cl{cl}"
+                                    cl_names.append(cl_name)
+
+                                session_table['cl_name'] = cl_names
+
+                                unit_count += n_session_units
+
+                                session_table = session_table.join(session_zone_rate_comp_table)
+                            except:
+                                print(f'Error Processing Session {session}')
+                                traceback.print_exc(file=sys.stdout)
+                                continue
+                            seg_rates = seg_rates.append(session_table)
+
+            seg_rates = seg_rates.reset_index(drop=True)
+            seg_rates.to_csv(fn)
+        else:
+            seg_rates = pd.read_csv(fn, index_col=0)
+
+        return seg_rates
+
+    def get_zone_rates_remap(self, overwrite=False):
+        if not self.paths['zone_rates_remap'].exists() or overwrite:
+            sessions_validity = self.get_track_validity_table()
+            zone_rates = pd.DataFrame()
+            unit_count = 0
+
+            valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_rates_comps == True].index)
+            for subject in self.subjects:
+                subject_info = SubjectInfo(subject)
+                for session in subject_info.sessions:
+                    if session in valid_sessions:
+                        session_info = SubjectSessionInfo(subject, session)
+                        n_session_units = session_info.n_units
+                        if n_session_units > 0:
+                            try:
+                                session_zone_rate_comp_table = session_info.get_zone_rates_remap()
+                                comp_table_columns = session_zone_rate_comp_table.columns
+
+                                session_table = pd.DataFrame(index=np.arange(n_session_units),
+                                                             columns=['unit_id', 'subject', 'session',
+                                                                      'session_pct_cov', 'session_valid',
+                                                                      'session_unit_id', 'unit_type', 'tt', 'tt_cl',
+                                                                      'cl_name'])
+
+                                session_table['session'] = session
+                                session_table['subject'] = session_info.subject
+                                session_table['session_unit_id'] = np.arange(n_session_units)
+
+                                session_table['unit_id'] = np.arange(n_session_units) + unit_count
+                                session_table['unit_type'] = [v[0] for k, v in session_info.cluster_ids.items()]
+                                session_table['tt'] = [v[1] for k, v in session_info.cluster_ids.items()]
+                                session_table['tt_cl'] = [v[2] for k, v in session_info.cluster_ids.items()]
+
+                                if session in sessions_validity.columns:
+                                    session_table['session_pct_cov'] = sessions_validity[session]
+                                    session_table['session_valid'] = 1
+                                else:
+                                    session_table['session_pct_cov'] = 0
+                                    session_table['session_valid'] = 0
+
+                                cl_names = []
+                                for k, v in session_info.cluster_ids.items():
+                                    tt = v[1]
+                                    cl = v[2]
+                                    depth = subject_info.sessions_tt_positions.loc[session, f"tt_{tt}"]
+                                    cl_name = f"{session}-tt{tt}_d{depth}_cl{cl}"
+                                    cl_names.append(cl_name)
+
+                                session_table['cl_name'] = cl_names
+
+                                unit_count += n_session_units
+
+                                session_table = session_table.join(session_zone_rate_comp_table)
+                            except:
+                                print(f'Error Processing Session {session}')
+                                traceback.print_exc(file=sys.stdout)
+                                continue
+                            zone_rates = zone_rates.append(session_table)
+
+            zone_rates = zone_rates.reset_index(drop=True)
+            zone_rates.to_csv(self.paths['zone_rates_remap'])
+        else:
+            zone_rates = pd.read_csv(self.paths['zone_rates_remap'], index_col=0)
 
         return zone_rates
 
@@ -563,7 +712,7 @@ class SubjectInfo:
             self.sessions_tt_positions = self.get_sessions_tt_position()
             self.tt_depth_match = self.get_tetrode_depth_match()
 
-            #hack because get sessions analyses calls subjects info before it saves,
+            # hack because get sessions analyses calls subjects info before it saves,
             # so need to save it first. alternative is to feed subject session info the subject_info object instead.
             # TO DO #
             self.save_subject_info()
@@ -1086,6 +1235,8 @@ class SubjectInfo:
             paths['pos_zones_invalid_samps'] = paths['Results'] / 'pos_zones_invalid_samps.npy'
             paths['trial_zone_rates'] = paths['Results'] / 'trial_zone_rates.npy'
             paths['zone_rates_comps'] = paths['Results'] / 'zone_rates_comps.csv'
+            paths['zone_rates_remap'] = paths['Results'] / 'zone_rates_remap.csv'
+            paths['bal_conds_seg_rates'] = paths['Results'] / 'bal_conds_seg_rates.csv'
 
             paths['zone_analyses'] = paths['Results'] / 'ZoneAnalyses.pkl'
             paths['TrialInfo'] = paths['Results'] / 'TrInfo.pkl'
@@ -1373,7 +1524,9 @@ class SubjectSessionInfo(SubjectInfo):
                 'pos_zones': (self.get_pos_zones, self.paths['pos_zones'].exists()),
                 'event_table': (self.get_event_behavior, self.paths['event_table'].exists()),
                 'trial_zone_rates': (self.get_trial_zone_rates, self.paths['trial_zone_rates'].exists()),
-                'zone_rates_comps': (self.get_zone_rates_comps, self.paths['zone_rates_comps'].exists())
+                'zone_rates_comps': (self.get_zone_rates_comps, self.paths['zone_rates_comps'].exists()),
+                'zone_rates_remap': (self.get_zone_rates_remap, self.paths['zone_rates_remap'].exists()),
+                'bal_conds_seg_rates': (self.get_bal_conds_seg_rates, self.paths['bal_conds_seg_rates'].exists())
             }
         else:
             return NotImplementedError
@@ -1422,6 +1575,7 @@ class SubjectSessionInfo(SubjectInfo):
                         print('Keyboard Interrupt')
                         break
                     except:
+                        traceback.print_exc(file=sys.stdout)
                         print(f'Analysis {a} failed.')
             # update analyses
             self._analyses = self._check_analyses()
@@ -1536,7 +1690,7 @@ class SubjectSessionInfo(SubjectInfo):
             else:
                 return df
 
-    def get_pos_zones(self, overwrite=False, return_invalid_pz = False):
+    def get_pos_zones(self, overwrite=False, return_invalid_pz=False):
 
         if self.task[:2] == 'T3':
             if not self.paths['pos_zones'].exists() or overwrite:
@@ -1876,12 +2030,49 @@ class SubjectSessionInfo(SubjectInfo):
 
     def get_zone_rates_comps(self, overwrite=False):
         if self.task[:2] == 'T3':
-            if not self.paths['zone_rates_comps'].exists() or overwrite:
-                trial_analyses = tmf.TrialAnalyses(self)
-                df = trial_analyses.all_zone_remapping_analyses()
-                df.to_csv(self.paths['zone_rates_comps'])
+            fn = self.paths['zone_rates_comps']
+            if not fn.exists() or overwrite:
+                raise NotImplementedError
+                # df.to_csv(fn)
             else:
-                df = pd.read_csv(self.paths['zone_rates_comps'], index_col=0)
+                df = pd.read_csv(fn, index_col=0)
+            return df
+        else:
+            raise NotImplementedError
+
+    def get_zone_rates_remap(self, overwrite=False, zr_method='trial'):
+
+        if self.task[:2] == 'T3':
+            fn = self.paths['zone_rates_remap']
+            if zr_method != 'trial':
+                name = fn.name.split('.')
+                name2 = name[0] + zr_method + name[1]
+                fn = fn.parent / name2
+
+            if not fn.exists() or overwrite:
+                trial_analyses = tmf.TrialAnalyses(self)
+                df = trial_analyses.all_zone_remapping_analyses(zr_method=zr_method)
+                df.to_csv(fn)
+            else:
+                df = pd.read_csv(fn, index_col=0)
+            return df
+        else:
+            raise NotImplementedError
+
+    def get_bal_conds_seg_rates(self, overwrite=False, segment_type='bigseg'):
+        if self.task[:2] == 'T3':
+            fn = self.paths['bal_conds_seg_rates']
+            if segment_type != 'bigseg':
+                name = fn.name.split('.')
+                name2 = name[0] + segment_type + name[1]
+                fn = fn.parent / name2
+
+            if not fn.exists() or overwrite:
+                trial_analyses = tmf.TrialAnalyses(self)
+                df = trial_analyses.bal_conds_segment_rate_analyses(segment_type=segment_type)
+                df.to_csv(fn)
+            else:
+                df = pd.read_csv(fn, index_col=0)
             return df
         else:
             raise NotImplementedError

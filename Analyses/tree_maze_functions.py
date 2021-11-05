@@ -1,5 +1,7 @@
 import os
 from pathlib import Path
+import sys
+import traceback
 
 import numpy as np
 import pandas as pd
@@ -495,6 +497,19 @@ class TreeMazeZones:
                     df.loc[seg, bigseg] = 1
         return df
 
+    def get_segment_type_names(self, segment_type):
+
+        if segment_type == 'bigseg':
+            return self.bigseg_names
+        elif segment_type == 'subseg':
+            return self.all_segs_names
+        elif segment_type == 'seg':
+            return self.zone_names
+        elif segment_type == 'bigseg_nowells':
+            return self.bigseg_names
+        elif segment_type == 'wells':
+            return self.wells
+
     def subseg_pz_mat_transform(self, subseg_zone_mat, segment_type):
         """
         converts input matrix subseg_zone_mat [n x n_subsegs] to [n x n_segments], where n_segments is the number
@@ -526,7 +541,7 @@ class TreeMazeZones:
         """
 
         if seg_mat is None:
-            seg_mat = self.subseg_pz_mat_transform(subseg_zone_mat,segment_type)
+            seg_mat = self.subseg_pz_mat_transform(subseg_zone_mat, segment_type)
         if segment_type == 'bigseg':
             transform_mat = self.subseg2bigseg
         elif segment_type == 'bigseg_nowells':
@@ -723,14 +738,17 @@ class TreeMazeZones:
         """
         if subsegs:
             valid_transition_mat = self.valid_transition_mat
+
         else:
             valid_transition_mat = self.get_valid_transition_mat(subsegs=False)
 
+        zones = valid_transition_mat.columns
         valid_transitions = np.ones(len(pz), dtype=bool)
         cnt = 1
         for z, z1 in zip(pz[:-1], pz[1:]):
-            if not valid_transition_mat.loc[z, z1]:
-                valid_transitions[cnt] = False
+            if (z in zones) and (z1 in zones):
+                if not valid_transition_mat.loc[z, z1]:
+                    valid_transitions[cnt] = False
             cnt += 1
 
         return valid_transitions
@@ -1023,8 +1041,6 @@ class TreeMazeZones:
                          max_value=None, min_value=None,
                          label='FR', tick_fontsize=7, label_fontsize=7)
         cm_params.update(cm_args)
-        print(cm_params)
-        print(cm_args)
         data_colors, color_array = pf.get_colors_from_data(zone_activity.values, **cm_params)
 
         cnt = 0
@@ -1058,7 +1074,7 @@ class TreeMazeZones:
                          color=cue_color, lw=cue_lw, line_color=line_color)
 
         ax.axis('off')
-        ax.axis('equal')
+        # ax.axis('equal')
 
         ax_p = ax.get_position()
         w, h = ax_p.width, ax_p.height
@@ -1502,34 +1518,45 @@ class BehaviorData:
 
 
 class TrialAnalyses:
-    _trial_conditions = {'CL': {'cue': 'L'}, 'CR': {'cue': 'R'}, 'DL': {'dec': 'L'}, 'DR': {'dec': 'R'},
-                         'Co': {'correct': 1}, 'Inco': {'correct': 0},
-                         'CoCL': {'correct': 1, 'cue': 'L'}, 'CoCR': {'correct': 1, 'cue': 'R'},
-                         'IncoCL': {'correct': 0, 'cue': 'L'}, 'IncoCR': {'correct': 0, 'cue': 'R'},
-                         'Sw': {'sw': 1}, 'CoSw': {'correct': 1, 'sw': 1}, 'IncoSw': {'correct': 0, 'sw': 1},
-                         'Even': '', 'Odd': '', 'Out': '', 'In': '', 'All': ''}
+    trial_conditions = {'CL': {'cue': 'L'}, 'CR': {'cue': 'R'}, 'DL': {'dec': 'L'}, 'DR': {'dec': 'R'},
+                        'Co': {'correct': 1}, 'Inco': {'correct': 0},
+                        'CoCL': {'correct': 1, 'cue': 'L'}, 'CoCR': {'correct': 1, 'cue': 'R'},
+                        'IncoCL': {'correct': 0, 'cue': 'L'}, 'IncoCR': {'correct': 0, 'cue': 'R'},
+                        'Sw': {'sw': 1}, 'CoSw': {'correct': 1, 'sw': 1}, 'IncoSw': {'correct': 0, 'sw': 1},
+                        'Even': '', 'Odd': '', 'Out': '', 'In': '', 'All': ''}
+
+    cond_pairs = ['CR-CL',
+                  'Co-Inco',
+                  'Co-Inco',
+                  'Even-Odd',
+                  'Even-Odd']
 
     # balanced approached for groups
-    test_null_comps = {'CR-CL': 'Even-Odd',
-                       'Co-Inco': 'Even-Odd',
-                       'CoSw-IncoSw': 'Even-Odd',
-                       'Rw': 'Even-Odd-In'}
+    bal_cond_pairs = ['CR_bo-CL_bo',
+                      'Co_bo-Inco_bo',
+                      'Co_bi-Inco_bi',
+                      'Even_bo-Odd_bo',
+                      'Even_bi-Odd_bi']
 
-    group_cond_sets = {'CR-CL': {'CR': ['Co', 'Inco'], 'CL': ['Co', 'Inco']},
-                       'Co-Inco': {'Co': ['CL', 'CR'], 'Inco': ['CR', 'CL']},
-                       'CoSw-IncoSw': {'CoSw': ['CL', 'CR'], 'IncoSw': ['CL', 'CR']},
-                       'Rw': {'CL': ['Co', 'Inco'], 'CR': ['Co', 'Inco']},
-                       'Even-Odd': {'Even': ['CL', 'CR'], 'Odd': ['CL', 'CR']},
-                       'Even-Odd-In': {'Even': ['CL', 'CR'], 'Odd': ['CL', 'CR']}}
+    # bal_conds_sets = { 'CR_bo': {'cond': 'CR', 'sub_conds': ['Co', 'Inco'], 'trial_seg': 'out'},
+    #                 'CL_bo': {'cond':'CL', 'sub_conds': ['Co', 'Inco'], 'trial_seg': 'out'},
+    #                 'Co_bo': {'cond':'Co', 'sub_conds': ['CL','CR'], 'trial_seg': 'out'},
+    #                 'Co_bi': {'cond': 'Co', 'sub_conds': ['CL', 'CR'], 'trial_seg': 'in'},
+    #                 'Inco_bo': {'cond':'Inco', 'sub_conds': ['CL','CR'], 'trial_seg': 'out'},
+    #                 'Inco_bi': {'cond': 'Inco', 'sub_conds': ['CL', 'CR'], 'trial_seg': 'in'},
+    #                 'Even_bo': {'cond':'Even', 'sub_conds': ['CL','CR'], 'trial_seg': 'out'},
+    #                 'Even_bi': {'cond': 'Even', 'sub_conds': ['CL', 'CR'], 'trial_seg': 'in'},
+    #                 'Odd_bo': {'cond': 'Odd', 'sub_conds': ['CL', 'CR'], 'trial_seg': 'out'},
+    #                 'Odd_bi': {'cond': 'Odd', 'sub_conds': ['CL', 'CR'], 'trial_seg': 'in'},
+    #                 }
 
-    group_trial_segs = {'CR-CL': ['out', 'out'],
-                        'Co-Inco': ['out', 'out'],
-                        'CoSw-IncoSw': ['out', 'out'],
-                        'Rw': ['in', 'in'],
-                        'Even-Odd': ['out', 'out'],
-                        'Even-Odd-In': ['in', 'in']}
+    test_null_bal_cond_pairs = {'CR_bo-CL_bo': 'Even_bo-Odd_bo',
+                                'Co_bo-Inco_bo': 'Even_bo-Odd_bo',
+                                'Co_bi-Inco_bi': 'Even_bi-Odd_bi'}
 
-    def __init__(self, session_info, reward_blank=False, not_inzone_blank=True):
+    occupation_thrs = {'bigseg': 5, 'seg': 2, 'subseg': 1, 'bigseg_nowells': 5, 'wells': 2}
+
+    def __init__(self, session_info, reward_blank=False, not_inzone_blank=True, valid_transitions_blank=True):
         """
         class for trialwise analyses on session data
         :param session_info:
@@ -1538,6 +1565,8 @@ class TrialAnalyses:
         """
 
         self.si = session_info
+        self.tmz = TreeMazeZones()
+
         temp = session_info.get_event_behavior()
         self.trial_table = temp.trial_table
         self.event_table = temp.event_table
@@ -1556,18 +1585,22 @@ class TrialAnalyses:
         self.fr = self.si.get_fr()
         self.spikes = self.si.get_binned_spikes()
 
-        if not_inzone_blank and (len(self.pz_invalid_samps) > 0):
-            self.track_data.loc[self.pz_invalid_samps, :] = np.nan
-            self.pz[self.pz_invalid_samps] = np.nan
-            self.fr[:, self.pz_invalid_samps] = np.nan
-            self.spikes[:, self.pz_invalid_samps] = np.nan
+        if not_inzone_blank:
+            self._blank_data(self.pz_invalid_samps)
+
+        if valid_transitions_blank:
+            self.valid_transitions_samps = self.tmz.check_valid_pos_zones_transitions(self.pz)
+            self._blank_data(~self.valid_transitions_samps)
 
         self.x_edges = self.si.task_params['x_bin_edges_'] * 10  # edges are in cm
         self.y_edges = self.si.task_params['y_bin_edges_'] * 10  # edges are in cm
 
-        self.tmz = TreeMazeZones()
-
         self.trial_condition_table = self.generate_trial_condition_table()
+
+        self.bal_cond_sets = {}
+        for bal_cond_pair in self.bal_cond_pairs:
+            for bc in bal_cond_pair.split('-'):
+                self.bal_cond_sets[bc] = self._decode_cond(bc)
 
         self.trial_zones = {k: self.get_trial_zones(trial_seg=k) for k in ['out', 'in']}
         self.trial_zone_samps_counts_mat = {k: self.get_trial_zones_samps_counts_mat(trial_seg=k) for k in
@@ -1576,16 +1609,49 @@ class TrialAnalyses:
 
         self.zones_by_trial = {k: self.trial_zone_samps_counts_mat[k] > 0 for k in ['out', 'in']}
 
+    def _decode_cond(self, cond_code):
+
+        if cond_code in self.bal_cond_sets.keys():
+            return self.bal_cond_sets[cond_code]
+
+        split = cond_code.split('_')
+
+        cond = split[0]
+        sub_conds = []
+        trial_seg = 'out'
+
+        if len(split) > 1:
+            b_seg = split[1]
+            if 'b' in b_seg:
+                if cond in ['CL', 'CR']:
+                    sub_conds = ['Co', 'Inco']
+                else:
+                    sub_conds = ['CL', 'CR']
+
+            if 'o' in b_seg:
+                trial_seg = 'out'
+            elif 'i' in b_seg:
+                trial_seg = 'in'
+
+        return {'cond': cond, 'sub_conds': sub_conds, 'trial_seg': trial_seg, 'cond_set': {cond: sub_conds}}
+
+    def _blank_data(self, samps):
+        if len(samps) > 0:
+            self.track_data.loc[samps, :] = np.nan
+            self.pz[samps] = np.nan
+            self.fr[:, samps] = np.nan
+            self.spikes[:, samps] = np.nan
+
     def generate_trial_condition_table(self):
 
         n_trials = len(self.trial_table)
-        n_conditions = len(self._trial_conditions)
+        n_conditions = len(self.trial_conditions)
 
         temp = np.zeros((n_trials, n_conditions), dtype=bool)
 
-        trial_condition_table = pd.DataFrame(temp, columns=list(self._trial_conditions.keys()))
+        trial_condition_table = pd.DataFrame(temp, columns=list(self.trial_conditions.keys()))
 
-        for condition in self._trial_conditions:
+        for condition in self.trial_conditions:
             cond_bool = np.ones(n_trials, dtype=bool)
 
             if condition in ['All']:
@@ -1597,7 +1663,7 @@ class TrialAnalyses:
             elif condition == 'Odd':
                 cond_bool[1::2] = False
             else:
-                sub_condition = self._trial_conditions[condition]
+                sub_condition = self.trial_conditions[condition]
                 cond_bool = np.ones(n_trials, dtype=bool)
 
                 for sc, val in sub_condition.items():
@@ -1667,7 +1733,7 @@ class TrialAnalyses:
         x = np.zeros(n_trials, dtype=object)
         y = np.zeros(n_trials, dtype=object)
 
-        track_data = self.si.get_track_data()
+        track_data = self.track_data
         for ii, tr in enumerate(trials):
             if trial_seg == 'out':
                 t0 = self.trial_times.t0[tr]
@@ -1756,7 +1822,7 @@ class TrialAnalyses:
 
         return trial_data
 
-    def get_trial_rate_maps(self, trials=None, data_type='fr', occupation_thr=1, trial_seg='out'):
+    def get_trial_rate_maps(self, trials=None, data_type='fr', occupation_thr=1, trial_seg='out', occ_rate_mask=False):
 
         if trials is None:
             trials = self.all_trials
@@ -1787,8 +1853,15 @@ class TrialAnalyses:
 
         # pre-allocate and set up the map function to be looped
         rate_maps = np.zeros((self.n_units, len(self.y_edges) - 1, len(self.x_edges) - 1))
+
+        if occ_rate_mask:
+            sm_mask = spatial_funcs.smooth_2d_map(pos_count_map, n_bins=args['spatial_window_size'],
+                                                  sigma=args['spatial_sigma'])
+            sm_nan_mask = sm_mask < occupation_thr
         for unit in range(self.n_units):
             rate_maps[unit] = rate_map_function(np.hstack(neural_data[unit]), **args)
+            if occ_rate_mask:
+                rate_maps[unit][sm_nan_mask] = np.nan
 
         return rate_maps
 
@@ -1842,9 +1915,12 @@ class TrialAnalyses:
 
         return trial_zone_rates
 
-    def get_trial_segment_rates(self, trials=None, segment_type='subseg', trial_seg='out', occupation_trial_samp_thr=5):
+    def get_trial_segment_rates(self, trials=None, segment_type='subseg', trial_seg='out', occ_thr=None):
         if trials is None:
             trials = np.arange(self.n_trials, dtype=int)
+
+        if occ_thr is None:
+            occ_thr = self.occupation_thrs[segment_type]
 
         trial_zone_rates = self.trial_zones_rates[trial_seg]
 
@@ -1863,7 +1939,7 @@ class TrialAnalyses:
             for unit in range(self.n_units):
                 norm_zone_rates = (trial_segment_rates[unit] * trial_zone_samp_seg_norm).fillna(0)
                 trial_segment_rates[unit] = self.tmz.subseg_pz_mat_transform(norm_zone_rates, segment_type)
-                trial_segment_rates[unit][segment_counts < occupation_trial_samp_thr] = np.nan
+                trial_segment_rates[unit][segment_counts < occ_thr] = np.nan
 
         return trial_segment_rates
 
@@ -1931,7 +2007,7 @@ class TrialAnalyses:
         return zone_rates
 
     def get_avg_trial_zone_rates(self, trials=None, segment_type='subseg', occupation_trial_samp_thr=5,
-                                 trial_seg='out', reweight_by_trial_zone_counts=False):
+                                 trial_seg='out', reweight_by_trial_zone_counts=False, return_z=False):
         """
         returns the trial average for the given trial.
         :param trials: list of trials
@@ -1948,7 +2024,7 @@ class TrialAnalyses:
         trial_segment_rates = self.get_trial_segment_rates(trials=trials,
                                                            segment_type=segment_type,
                                                            trial_seg=trial_seg,
-                                                           occupation_trial_samp_thr=occupation_trial_samp_thr)
+                                                           occ_thr=occupation_trial_samp_thr)
 
         # average zone rate
         segs = list(trial_segment_rates[0].columns)
@@ -1962,11 +2038,15 @@ class TrialAnalyses:
                 azr.loc[unit] = (trial_segment_rates[unit] * tscn).sum()
         else:
             for unit in range(self.n_units):
-                azr.loc[unit] = trial_segment_rates[unit].mean()
+                m = trial_segment_rates[unit].mean()
+                if return_z:
+                    azr.loc[unit] = m / trial_segment_rates[unit].std()
+                else:
+                    azr.loc[unit] = m
 
         return azr
 
-    def get_trials_boot_cond_set(self, cond_set, n_sel_trials=None, n_boot=100):
+    def get_trials_boot_cond_set(self, cond_set, n_sel_trials=None, n_boot=100, seed=0):
         """
         for a given condition and subconditions (see format below), balances the number of trials across subconditions
         returns a dictionary for each condition with n_trials x n_bootstaps
@@ -1977,10 +2057,12 @@ class TrialAnalyses:
                 with replacement to match
             min -> like max, but with min
         :param n_boot: number of bootstaps
+        :param seed: random seed
         :return:
         dictionary by condition, with a matrix of trials x bootstaps, each entry would be a trial id
         """
 
+        np.random.seed(seed)
         trial_sets = {}
         out_trial_sets = {}
         for cond, sub_conds in cond_set.items():
@@ -2014,7 +2096,10 @@ class TrialAnalyses:
                     sub_cond_trials[jj] = np.random.choice(trial_sets[cond][sc], n_sub_cond_trials, replace=True)
                 out_trial_sets[cond][:, boot] = np.hstack(sub_cond_trials)
 
-        return out_trial_sets
+        if len(out_trial_sets) == 1:
+            return out_trial_sets[cond]
+        else:
+            return out_trial_sets
 
     def get_boot_zone_rates(self, cond_sets=None, trial_segs=None, segment_type='subseg', n_boot=100, seed=0):
 
@@ -2114,8 +2199,9 @@ class TrialAnalyses:
 
         return df
 
-    def zone_rate_maps_corr(self, cond1=None, cond2=None, trials1=None, trials2=None,
-                            samps1=None, samps2=None, trial_seg1='out', trial_seg2='out', corr_method='kendall'):
+    def zone_rate_maps_corr(self, cond1=None, cond2=None, trials1=None, trials2=None, zr_method='trial',
+                            samps1=None, samps2=None, trial_seg1='out', trial_seg2='out',
+                            corr_method='kendall'):
         """
         method for comparing zone rate maps across conditions or time_samps.
         conditions must be in the list. generates a zone rate maps from the trials, conditions or samples given
@@ -2124,6 +2210,12 @@ class TrialAnalyses:
         :param cond2: string trial condition 2
         :param trials1:  list of trials
         :param trials2: list of trials
+        :param zr_method: str, method of obtaining the zone rates (ignored if samps are provided):
+            1. 'pooled' - all samples from all trials pooled
+            2. 'trial' - trial average of the zones
+            3. 'trial_z' - trial average divided by the means
+            4. 'old' - numerically equivalent to pooled, uses get_avg_zone_rates function (slower than pooled).
+                -> this method is utilized if samps are provided.
         :param samps1: 1st set of samples to create zone rate map
         :param samps2: 2nd set of samples to create zone rate map
         :param trial_seg1: str ['out', 'in', 'all'], segment of the trials to use, ignored if samps1 are provided
@@ -2132,23 +2224,51 @@ class TrialAnalyses:
         :return: array of correlation, with each entry corresponding to a unit
         """
 
-        if cond1 is not None:
-            trials1 = self.get_condition_trials(condition=cond1)
-            zr1 = self.get_avg_zone_rates(trials=trials1, trial_seg=trial_seg1)
-        elif trials1 is not None:
-            zr1 = self.get_avg_zone_rates(trials=trials1, trial_seg=trial_seg1)
-        else:
-            assert samps1 is not None
+        if samps1 is not None:
             zr1 = self.get_avg_zone_rates(samps=samps1)
-
-        if cond2 is not None:
-            trials2 = self.get_condition_trials(condition=cond2)
-            zr2 = self.get_avg_zone_rates(trials=trials2, trial_seg=trial_seg2)
-        elif trials1 is not None:
-            zr2 = self.get_avg_zone_rates(trials=trials2, trial_seg=trial_seg2)
         else:
-            assert samps2 is not None
+            # get trials
+            if cond1 is not None:
+                trials1 = self.get_condition_trials(condition=cond1)
+            elif trials1 is not None:
+                pass
+            else:
+                raise ValueError
+
+            if zr_method == 'pooled':
+                zr1 = self.get_avg_trial_zone_rates(trials=trials1, trial_seg=trial_seg1,
+                                                    reweight_by_trial_zone_counts=True)
+            elif zr_method == 'trial':
+                zr1 = self.get_avg_trial_zone_rates(trials=trials1, trial_seg=trial_seg1)
+            elif zr_method == 'trial_z':
+                zr1 = self.get_avg_trial_zone_rates(trials=trials1, trial_seg=trial_seg1, return_z=True)
+            elif zr_method == 'old':
+                zr1 = self.get_avg_zone_rates(trials=trials1, trial_seg=trial_seg1)
+            else:
+                raise ValueError
+
+        if samps2 is not None:
             zr2 = self.get_avg_zone_rates(samps=samps2)
+        else:
+            # get trials
+            if cond2 is not None:
+                trials2 = self.get_condition_trials(condition=cond2)
+            elif trials2 is not None:
+                pass
+            else:
+                raise ValueError
+
+            if zr_method == 'pooled':
+                zr2 = self.get_avg_trial_zone_rates(trials=trials2, trial_seg=trial_seg2,
+                                                    reweight_by_trial_zone_counts=True)
+            elif zr_method == 'trial':
+                zr2 = self.get_avg_trial_zone_rates(trials=trials2, trial_seg=trial_seg2)
+            elif zr_method == 'trial_z':
+                zr2 = self.get_avg_trial_zone_rates(trials=trials2, trial_seg=trial_seg2, return_z=True)
+            elif zr_method == 'old':
+                zr2 = self.get_avg_zone_rates(trials=trials2, trial_seg=trial_seg1)
+            else:
+                raise ValueError
 
         return zr1.corrwith(zr2, axis=1, method=corr_method)
 
@@ -2194,9 +2314,9 @@ class TrialAnalyses:
 
         return out
 
-    def zone_rate_maps_permute_corr(self, cond1=None, cond2=None, trials1=None, trials2=None, n_sel_trials=None,
-                                    trial_seg1='out', trial_seg2='out', n_perm=100, corr_method='kendall',
-                                    min_valid_trials=10, n_jobs=5):
+    def _zone_rate_maps_permute_corr(self, cond1=None, cond2=None, trials1=None, trials2=None, n_sel_trials=None,
+                                     trial_seg1='out', trial_seg2='out', n_perm=100, corr_method='kendall',
+                                     min_valid_trials=10, n_jobs=5):
         """
         similar to zone_rate_maps corr but resamples each trial set to have balanced trials sets, then repeats for
         n_perm.
@@ -2283,20 +2403,24 @@ class TrialAnalyses:
 
             df[f"{group}_corr"] = self.zone_rate_maps_corr(trials1=trials1, trials2=trials2,
                                                            trial_seg1=trial_seg1, trial_seg2=trial_seg2)
-            ts = self.zone_rate_maps_t(trials1=trials1, trials2=trials2,
-                                       trial_seg1=trial_seg1, trial_seg2=trial_seg2)
 
-            # trial counts by zone weighted mean and variance
-            average = (ts * zp).sum(axis=1).values
-            variance = ((ts - average[:, np.newaxis]) ** 2 * zp).sum(axis=1)
-            df[f"{group}_t_m"] = average
-            df[f"{group}_t_var"] = variance
+            try:
+                ts = self.zone_rate_maps_t(trials1=trials1, trials2=trials2,
+                                           trial_seg1=trial_seg1, trial_seg2=trial_seg2)
+
+                # trial counts by zone weighted mean and variance
+                average = (ts * zp).sum(axis=1).values
+                variance = ((ts - average[:, np.newaxis]) ** 2 * zp).sum(axis=1)
+                df[f"{group}_t_m"] = average
+                df[f"{group}_t_var"] = variance
+            except:
+                pass
 
         return df
 
-    def zone_rate_maps_group_trials_perm_bal_corr(self, n_perm=100, n_sel_trials=None,
-                                                  corr_method='kendall', min_valid_trials=10, n_jobs=5,
-                                                  group_cond_sets=None):
+    def _zone_rate_maps_group_trials_perm_bal_corr(self, n_perm=100, n_sel_trials=None,
+                                                   corr_method='kendall', min_valid_trials=10, n_jobs=5,
+                                                   group_cond_sets=None):
         """
         this function computes balanced zone rate maps correlations between sets of trials. the main component is the
         group_cond_sets parameter. it is a nested dictionary (3 levels):
@@ -2366,86 +2490,99 @@ class TrialAnalyses:
             out_dict[group] = pd.DataFrame(np.array(corr).T)
         return out_dict, n_trials
 
-    def zone_rate_maps_group_trials_boot_bal_corr(self, n_boot=100,
-                                                  corr_method='kendall', min_valid_trials=5, n_jobs=5,
-                                                  group_cond_sets=None, group_trial_segs=None,
-                                                  parallel=None):
+    def zone_rate_maps_bal_conds_boot_corr(self, n_boot=100,
+                                           corr_method='kendall', min_valid_trials=5, n_jobs=5,
+                                           bal_cond_pair=None, zr_method='trial',
+                                           parallel=None):
         """
         this function computes balanced zone rate maps correlations between sets of trials.
         using bootstrap to equate the samples sizes between groups, size is the mean between the set sizes.
-        the main component is the group_cond_sets parameter.
-         it is a nested dictionary (3 levels):
-            group names -> major condition -> balancing conditions
+        the main component is the bal_cond_pair parameter, a pair of conditions that must be in bal_cond_pairs.
+        bal_cond_pairs is a class parameter that indicates valid comparisons.
         See below for example.
         Returns
         :param n_boot: number of permutations
         :param corr_method: str, correlation method
         :param min_valid_trials: int, won't perform computation if a trial combinations is less than this #
         :param n_jobs: int, number of parallel workers for permutations
-        :param group_cond_sets: dict, group name -> major condition - balancing conditions
-                example:
-                {'Even-Odd': {'Even':['CL','CR'],'Odd':['CL','CR']},
-                 'CR-CL': {'CR':['Co', 'InCo'], 'CL':['Co', 'InCo']} }
-        :param group_trial_segs: dict indicating the trial segment for each subcondition in a group:
-                example:
-                {'CR-CL': ['out', 'out'], 'Even-Odd': ['out', 'out']}
+        :param bal_cond_pair: list of the balanced pair to use, entry must be in bal_cond_pairs
+        :param zr_method: str, see zone_rate_maps_corr for details
+        :param parallel: parallel object to avoid multiple instantiations of workers.
+
         :return:
         dict with group names as keys, and pandas data frame with n_units x n_perm as values
         """
 
-        if group_cond_sets is None:
-            group_cond_sets = {'CR-CL': {'CR': ['Co', 'Inco'], 'CL': ['Co', 'Inco']},
-                               'Even-Odd': {'Even': ['Co', 'Inco'], 'Odd': ['Co', 'Inco']}}
-            group_trial_segs = {'CR-CL': ['out', 'out'],
-                                'Even-Odd': ['out', 'out']}
+        if bal_cond_pair is None:
+            bal_conds = self.bal_cond_pairs[0].split('-')
+        else:
+            bal_conds = bal_cond_pair.split('-')
 
-        out_dict = {}
-        for group, group_set in group_cond_sets.items():
-            trial_segs = group_trial_segs[group]
+        df = pd.DataFrame(np.nan, index=range(self.n_units), columns=range(n_boot))
+
+        trial_sets = {}
+        trial_segs = {}
+        for bal_cond in bal_conds:
+            if bal_cond in self.bal_cond_sets:
+                bal_cond_set = self.bal_cond_sets[bal_cond]
+            else:
+                bal_cond_set = self._decode_cond(bal_cond)
+
+            cond = bal_cond_set['cond']
+            sub_conds = bal_cond_set['sub_conds']
+
+            cond_set = {cond: sub_conds}
+            trial_segs[bal_cond] = bal_cond_set['trial_seg']
+
             try:
-                trial_sets = self.get_trials_boot_cond_set(group_set, n_boot=n_boot)
+                trial_sets[bal_cond] = self.get_trials_boot_cond_set(cond_set, n_boot=n_boot)
             except ValueError:
-                out_dict[group] = pd.DataFrame(np.zeros((self.n_units, n_boot)) * np.nan)
-                continue
+                print("error getting the trial sets", bal_cond)
+                #traceback.print_exc(file=sys.stdout)
+                #return df
 
-            conds = list(group_set.keys())
+        ok_cond_trials_flag = True
+        for bal_cond in bal_conds:
+            if (trial_sets[bal_cond].shape[0]) < min_valid_trials:
+                ok_cond_trials_flag = False
+                break
 
-            ok_cond_trials_flag = True
-            for cond in conds:
-                if (trial_sets[cond].shape[0]) < min_valid_trials:
-                    ok_cond_trials_flag = False
-                    break
-            if not ok_cond_trials_flag:
-                # invalid set partition, skip
-                out_dict[group] = pd.DataFrame(np.zeros((self.n_units, n_boot)) * np.nan)
-                continue
+        if not ok_cond_trials_flag:
+            return df
 
-            def _worker(boot):
-                return self.zone_rate_maps_corr(trials1=trial_sets[conds[0]][:, boot],
-                                                trials2=trial_sets[conds[1]][:, boot],
-                                                trial_seg1=trial_segs[0], trial_seg2=trial_segs[1],
-                                                corr_method=corr_method)
+        def _worker(boot):
+            return self.zone_rate_maps_corr(trials1=trial_sets[bal_conds[0]][:, boot],
+                                            trials2=trial_sets[bal_conds[1]][:, boot],
+                                            trial_seg1=trial_segs[bal_conds[0]], trial_seg2=trial_segs[bal_conds[1]],
+                                            corr_method=corr_method, zr_method=zr_method)
 
-            try:
-                if parallel is None:
-                    with Parallel(n_jobs=n_jobs) as parallel:
-                        corr = parallel(delayed(_worker)(boot) for boot in range(n_boot))
-                else:
+        try:
+            if isinstance(parallel, Parallel):
+                corr = parallel(delayed(_worker)(boot) for boot in range(n_boot))
+                df = pd.DataFrame(np.array(corr).T)
+
+            elif parallel == True:
+                with Parallel(n_jobs=n_jobs) as parallel:
                     corr = parallel(delayed(_worker)(boot) for boot in range(n_boot))
+                    df = pd.DataFrame(np.array(corr).T)
+            else:
+                for boot in range(n_boot):
+                    df[boot] = _worker(boot)
+        except:
+            print("Error on parallel step.")
+            #traceback.print_exc(file=sys.stdout)
+        return df
 
-                out_dict[group] = pd.DataFrame(np.array(corr).T)
-            except:
-                out_dict[group] = pd.DataFrame(np.zeros((self.n_units, n_boot)) * np.nan)
-
-        return out_dict
-
-    def all_zone_remapping_analyses(self, corr_method='kendall', n_boot=100, n_jobs=5):
+    def all_zone_remapping_analyses(self, corr_method='kendall', n_boot=100, n_jobs=5, zr_method='trial'):
         """
-        Runs zone_rate_maps_comparison_analyses and zone_rate_maps_group_trials_perm_bcorr and puts them into a single
+        Runs zone_rate_maps_comparison_analyses and zone_rate_maps_bal_conds_boot_corr and puts them into a single
         data frame.
+        :param zr_method: str, method to compute zone rates
+        :param n_jobs: number of workers to initiate and use to bootstrap
+        :param n_boot: number of bootstraps for the trial sets.
         :param corr_method: string, correlation method to use
         :return:
-        data frame: n_units x n_analyses
+            data frame: n_units x n_analyses
         """
         with np.errstate(divide='ignore'):
             # main analyses
@@ -2453,11 +2590,13 @@ class TrialAnalyses:
 
             n_zones = self.tmz.n_all_segs
             with Parallel(n_jobs=n_jobs) as parallel:
-                bcorrs = self.zone_rate_maps_group_trials_boot_bal_corr(group_cond_sets=self.group_cond_sets,
-                                                                        group_trial_segs=self.group_trial_segs,
-                                                                        corr_method=corr_method,
-                                                                        n_boot=n_boot,
-                                                                        parallel=parallel)
+                bcorrs = {}
+                for cond_pair in self.bal_cond_pairs:
+                    bcorrs[cond_pair] = self.zone_rate_maps_bal_conds_boot_corr(bal_cond_pair=cond_pair,
+                                                                                corr_method=corr_method,
+                                                                                n_boot=n_boot,
+                                                                                zr_method=zr_method,
+                                                                                parallel=parallel)
 
             if corr_method == 'kendall':
                 def _transform_corr(_c):
@@ -2466,34 +2605,361 @@ class TrialAnalyses:
                 def _transform_corr(_c):
                     return rs.fisher_r2z(_c)
 
-            def _diff(_a, _b):
-                return _a - _b
-
             for group, corrs in bcorrs.items():
-                df[f"{group}_boot_corr_m"] = corrs.mean(axis=1)
-                z = _transform_corr(corrs)
-                df[f"{group}_boot_corr_z"] = z.mean(axis=1)
+                try:
+                    c = corrs.copy()
+                    c.replace([np.inf, -np.inf], np.nan, inplace=True)
+                    df[f"{group}-corr_m"] = c.mean(axis=1)
 
-            for test, null in self.test_null_comps.items():
-                c = rs.compare_corrs(bcorrs[test], bcorrs[null],
-                                     n_zones, n_zones, corr_method=corr_method)
+                    z = _transform_corr(corrs)
+                    z.replace([np.inf, -np.inf], np.nan, inplace=True)
+                    df[f"{group}-corr_z"] = z.mean(axis=1)
+                except:
+                    df[f"{group}-corr_m"]= np.nan
+                    df[f"{group}-corr_z"]= np.nan
 
-                c.replace([np.inf, -np.inf], np.nan, inplace=True)
-                df[f"{test}_{null}_boot_corr_zm"] = c.mean(axis=1)
 
-                df[f"{test}_{null}_boot_corr_zz"] = c.mean(axis=1) / c.std(axis=1)
+            for test, null in self.test_null_bal_cond_pairs.items():
+                try:
+                    zc, pc = rs.compare_corrs(bcorrs[test], bcorrs[null],
+                                              n_zones, n_zones, corr_method=corr_method)
 
+                    zc.replace([np.inf, -np.inf], np.nan, inplace=True)
+                    pc = pd.DataFrame(pc).replace([np.inf, -np.inf], np.nan)
+
+                    df[f"{test}-{null}-corr_zm"] = zc.mean(axis=1)
+                    df[f"{test}-{null}-corr_zp"] = rs.combine_pvals(pc, axis=1)
+
+                    temp = ttest_1samp(zc, 0, nan_policy='omit', axis=1)
+                    df[f"{test}-{null}-corr_zt"] = temp[0]
+                    df[f"{test}-{null}-corr_ztp"] = temp[1]
+                except:
+                    df[f"{test}-{null}-corr_zm"] = np.nan
+                    df[f"{test}-{null}-corr_zp"] = np.nan
+                    df[f"{test}-{null}-corr_zt"] = np.nan
+                    df[f"{test}-{null}-corr_ztp"] = np.nan
+                    #traceback.print_exc(file=sys.stdout)
             return df
 
-    def all_zone_rates_comps(self, n_boot=100, n_jobs=5):
-        out_dict = {}
-        for group, group_set in self.group_cond_sets.items():
-            trial_segs = self.group_trial_segs[group]
-            try:
-                trial_sets = self.get_trials_boot_cond_set(group_set, n_boot=n_boot)
-            except ValueError:
-                out_dict[group] = pd.DataFrame
-                continue
+    def bal_conds_segment_rate_analyses(self, segment_type, n_boot=100, n_jobs=5):
+
+        m, n, t, p = self.bal_conds_segment_rate_boot(segment_type=segment_type, n_boot=n_boot, n_jobs=n_jobs)
+
+        conds = list(self.bal_cond_sets.keys())
+        cond_pairs = self.bal_cond_pairs
+
+        seg_names = self.tmz.get_segment_type_names(segment_type)
+
+        n_units = self.n_units
+
+        cols1 = []
+        cols2 = []
+        for seg in seg_names:
+            for cond in conds:
+                cols1.append(f"{cond}-{seg}-m")
+                cols1.append(f"{cond}-{seg}-n")
+
+            for cond_pair in cond_pairs:
+                cols2.append(f"{cond_pair}-{seg}-t")
+                cols2.append(f"{cond_pair}-{seg}-p")
+
+        cols = cols1 + cols2
+        df = pd.DataFrame(index=range(n_units), columns=cols)
+
+        for cond in conds:
+            cond_col = [f"{cond}-{seg}-m" for seg in seg_names]
+            df[cond_col] = m[cond].mean(axis=0)
+
+            cond_col = [f"{cond}-{seg}-n" for seg in seg_names]
+            df[cond_col] = n[cond].mean(axis=0)
+
+        for cond_pair in cond_pairs:
+            cond_col = [f"{cond_pair}-{seg}-t" for seg in seg_names]
+            df[cond_col] = t[cond_pair].mean(axis=0)
+
+            cond_col = [f"{cond_pair}-{seg}-p" for seg in seg_names]
+            df[cond_col] = rs.combine_pvals(p[cond_pair], axis=0)
+
+        return df
+
+    def bal_conds_segment_rate_boot(self, segment_type='bigseg', n_boot=100, n_jobs=5):
+        """
+        performs bootstrap analyses on segments of the maze and their comparisons.
+        :param segment_type:
+        :param zr_method: str, method to compute zone rates
+        :param n_jobs: number of workers to initiate and use to bootstrap
+        :param n_boot: number of bootstraps for the trial sets.
+        :return:
+            -> m: dict of mean activity by condition. array of n_units x n_boot x n_segments
+            -> t: dict of stat by condition pairs. array of n_units x n_boot x n_segments
+            -> p: dict of pvals for condition pairs. array of n_units x n_boot x n_segments
+        """
+
+        bal_cond_sets = self.bal_cond_sets
+        conds = list(bal_cond_sets.keys())
+        cond_pairs = self.bal_cond_pairs
+
+        seg_names = self.tmz.get_segment_type_names(segment_type)
+
+        n_units = self.n_units
+        n_segs = len(seg_names)
+        n_conds = len(conds)
+
+        trial_sets = {}
+        for cond in conds:
+            trial_sets[cond] = self.get_trials_boot_cond_set(bal_cond_sets[cond]['cond_set'])
+
+        def _worker(boot):
+            _m = {_cond: np.zeros((n_units, n_segs)) for _cond in conds}
+            _n = {_cond: np.zeros((n_units, n_segs)) for _cond in conds}
+            _t = {cond_pair: np.zeros((n_units, n_segs)) for cond_pair in cond_pairs}
+            _p = {cond_pair: np.zeros((n_units, n_segs)) for cond_pair in cond_pairs}
+
+            trial_segment_rates = {}
+
+            for _cond in conds:
+                bal_cond_set = bal_cond_sets[_cond]
+                trial_segment_rates[_cond] = self.get_trial_segment_rates(trial_sets[_cond][:, boot],
+                                                                          segment_type=segment_type,
+                                                                          trial_seg=bal_cond_set['trial_seg'])
+                for _unit in range(n_units):
+                    _m[_cond][_unit] = trial_segment_rates[_cond][_unit].mean()
+                    _n[_cond][_unit] = trial_segment_rates[_cond][_unit].count()
+
+            for cond_pair in cond_pairs:
+                cond1, cond2 = cond_pair.split('-')
+                for _unit in range(n_units):
+                    temp = ttest_ind(trial_segment_rates[cond1][_unit],
+                                     trial_segment_rates[cond2][_unit],
+                                     nan_policy='omit')
+                    _t[cond_pair][_unit], _p[cond_pair][_unit] = temp[0], temp[1]
+
+            return _m, _n, _t, _p
+
+        with Parallel(n_jobs=n_jobs) as parallel:
+            out = parallel(delayed(_worker)(boot) for boot in range(n_boot))
+
+        # reformat output
+        m = {cond: np.zeros((n_boot, n_units, n_segs)) for cond in conds}
+        n = {cond: np.zeros((n_boot, n_units, n_segs)) for cond in conds}
+        t = {cond_pair: np.zeros((n_boot, n_units, n_segs)) for cond_pair in cond_pairs}
+        p = {cond_pair: np.zeros((n_boot, n_units, n_segs)) for cond_pair in cond_pairs}
+
+        for boot in range(n_boot):
+            _m, _n, _t, _p = out[boot]
+
+            for cond in _m.keys():
+                m[cond][boot] = _m[cond]
+                n[cond][boot] = _n[cond]
+            for cond_pair in _t.keys():
+                t[cond_pair][boot] = _t[cond_pair]
+                p[cond_pair][boot] = _p[cond_pair]
+
+        return m, n, t, p
+
+    def get_avg_seg_rates_boot(self, segment_type='bigseg', n_boot=100, occ_thr=None, n_jobs=5):
+
+        if occ_thr is None:
+            occ_thr = self.occupation_thrs[segment_type]
+
+        conds = list(self.bal_cond_sets.keys())
+
+        seg_names = self.tmz.get_segment_type_names(segment_type)
+        n_segs = len(seg_names)
+        n_units = self.n_units
+        n_conds = len(conds)
+
+        n_rows = n_boot * n_units * n_segs * n_conds
+        df = pd.DataFrame(index=range(n_rows), columns=['boot', 'cond', 'unit', 'seg', 'm'])
+        cnt = 0
+        block_idx_len = n_units * n_segs
+
+        def _worker(_boot):
+            return self.get_avg_trial_zone_rates(trials=trial_set[:, _boot], segment_type=segment_type,
+                                                          trial_seg=trial_seg, occupation_trial_samp_thr=occ_thr)
+
+        with Parallel(n_jobs=n_jobs) as parallel:
+            for cond in conds:
+                bal_cond_set = self.bal_cond_sets[cond]
+                cond_set = bal_cond_set['cond_set']
+                trial_seg = bal_cond_set['trial_seg']
+
+                trial_set = self.get_trials_boot_cond_set(cond_set)
+
+                temp = parallel(delayed(_worker)(boot) for boot in range(n_boot))
+                for boot in range(n_boot):
+                    idx = np.arange(block_idx_len) + cnt * block_idx_len
+                    b_temp = temp[boot]
+                    b_temp['unit'] = b_temp.index
+                    b_temp['cond'] = cond
+                    b_temp['boot'] = boot
+
+                    b_temp = b_temp.melt(id_vars=['boot', 'cond', 'unit'], value_name='seg', var_name='m')
+                    df.loc[idx] = b_temp.set_index(idx)
+
+                    cnt += 1
+        # for cond in conds:
+        #     bal_cond_set = self.bal_cond_sets[cond]
+        #     cond_set = bal_cond_set['cond_set']
+        #     trial_seg = bal_cond_set['trial_seg']
+        #
+        #     trial_set = self.get_trials_boot_cond_set(cond_set)
+        #
+        #     for boot in range(n_boot):
+        #         idx = np.arange(block_idx_len) + cnt * block_idx_len
+        #
+        #         trials = trial_set[:, boot]
+        #         temp = self.get_avg_trial_zone_rates(trials=trials, segment_type=segment_type,
+        #                                              trial_seg=trial_seg, occupation_trial_samp_thr=occ_thr)
+        #         temp['unit'] = temp.index
+        #         temp['cond'] = cond
+        #         temp['boot'] = boot
+        #
+        #         temp = temp.melt(id_vars=['boot', 'cond', 'unit'], value_name='seg', var_name='m')
+        #         df.loc[idx] = temp.set_index(idx)
+        #
+        #         cnt += 1
+
+        df = df.astype({'m': float})
+
+        return df
+
+    def get_seg_rate_boot(self, bal_cond, segment_type='subseg', n_boot=100, occ_thr=1):
+
+        """failed implementation. too slow to have everything on a pandas array :-/"""
+        if not (bal_cond in self.bal_cond_sets.keys()):
+            raise ValueError
+        else:
+            bal_cond_set = self.bal_cond_sets[bal_cond]
+
+        seg_names = self.tmz.get_segment_type_names(segment_type)
+        trial_seg = bal_cond_set['trial_seg']
+        cond = bal_cond_set['cond']
+        sub_conds = bal_cond_set['sub_conds']
+        cond_set = {cond: sub_conds}
+
+        trial_sets = self.get_trials_boot_cond_set(cond_set, n_boot=n_boot)[cond]
+        all_zr = self.get_trial_segment_rates(segment_type=segment_type, trial_seg=trial_seg,
+                                              occ_thr=occ_thr)
+
+        n_trials = len(trial_sets)
+        n_segs = len(seg_names)
+        n_units = self.n_units
+        n_rows = n_units * n_boot * n_trials * n_segs
+
+        df = pd.DataFrame(np.nan, index=range(n_rows), columns=['cond', 'unit', 'boot', 'trial', 'seg', 'activity'])
+        df['cond'] = cond
+
+        units = np.arange(n_units)
+        boot_block_len = n_units * n_trials * n_segs
+        unit_block_len = n_trials * n_segs
+
+        for boot in range(n_boot):
+            boot_idx_start = boot_block_len * boot
+            boot_idx = np.arange(boot_block_len) + boot_idx_start
+
+            df.loc[boot_idx, 'boot'] = boot
+
+            trials = trial_sets[:, boot]
+            for unit in units:
+                unit_block_idx = np.arange(unit_block_len) + unit * unit_block_len + boot_idx_start
+                df.loc[unit_block_idx, 'unit'] = unit
+
+                temp = all_zr[unit].loc[trials].copy()
+                temp['trial'] = temp.index
+                temp = temp.melt(id_vars='trial', value_name='activity', var_name='seg')
+                temp = temp.set_index(unit_block_idx)
+
+                print(temp.shape)
+                df.loc[unit_block_idx, ['trial', 'seg', 'activity']] = temp
+
+        return df
+
+    # def zone_rate_maps_group_trials_boot_bal_corr(self, n_boot=100,
+    #                                           corr_method='kendall', min_valid_trials=5, n_jobs=5,
+    #                                           group_cond_sets=None, group_trial_segs=None, zr_method='trial',
+    #                                           parallel=None):
+    #     """
+    #     this function computes balanced zone rate maps correlations between sets of trials.
+    #     using bootstrap to equate the samples sizes between groups, size is the mean between the set sizes.
+    #     the main component is the group_cond_sets parameter.
+    #      it is a nested dictionary (3 levels):
+    #         group names -> major condition -> balancing conditions
+    #     See below for example.
+    #     Returns
+    #     :param n_boot: number of permutations
+    #     :param corr_method: str, correlation method
+    #     :param min_valid_trials: int, won't perform computation if a trial combinations is less than this #
+    #     :param n_jobs: int, number of parallel workers for permutations
+    #     :param group_cond_sets: dict, group name -> major condition - balancing conditions
+    #             example:
+    #             {'Even-Odd': {'Even':['CL','CR'],'Odd':['CL','CR']},
+    #              'CR-CL': {'CR':['Co', 'InCo'], 'CL':['Co', 'InCo']} }
+    #     :param group_trial_segs: dict indicating the trial segment for each subcondition in a group:
+    #             example:
+    #             {'CR-CL': ['out', 'out'], 'Even-Odd': ['out', 'out']}
+    #     :param zr_method: str, see zone_rate_maps_corr for details
+    #     :param parallel: parallel object to avoid multiple instantiations of workers.
+    #
+    #     :return:
+    #     dict with group names as keys, and pandas data frame with n_units x n_perm as values
+    #     """
+    #
+    #     if group_cond_sets is None:
+    #         group_cond_sets = {'CR-CL': {'CR': ['Co', 'Inco'], 'CL': ['Co', 'Inco']},
+    #                            'Even-Odd': {'Even': ['Co', 'Inco'], 'Odd': ['Co', 'Inco']}}
+    #         group_cond_trial_segs = {'CR-CL': ['out', 'out'],
+    #                             'Even-Odd': ['out', 'out']}
+    #
+    #     out_dict = {}
+    #     for group, group_set in group_cond_sets.items():
+    #         trial_segs = group_cond_trial_segs[group]
+    #         try:
+    #             trial_sets = self.get_trials_boot_cond_set(group_set, n_boot=n_boot)
+    #         except ValueError:
+    #             out_dict[group] = pd.DataFrame(np.zeros((self.n_units, n_boot)) * np.nan)
+    #             continue
+    #
+    #         conds = list(group_set.keys())
+    #
+    #         ok_cond_trials_flag = True
+    #         for cond in conds:
+    #             if (trial_sets[cond].shape[0]) < min_valid_trials:
+    #                 ok_cond_trials_flag = False
+    #                 break
+    #         if not ok_cond_trials_flag:
+    #             # invalid set partition, skip
+    #             out_dict[group] = pd.DataFrame(np.zeros((self.n_units, n_boot)) * np.nan)
+    #             continue
+    #
+    #         def _worker(boot):
+    #             return self.zone_rate_maps_corr(trials1=trial_sets[conds[0]][:, boot],
+    #                                             trials2=trial_sets[conds[1]][:, boot],
+    #                                             trial_seg1=trial_segs[0], trial_seg2=trial_segs[1],
+    #                                             corr_method=corr_method, zr_method=zr_method)
+    #
+    #         try:
+    #             if parallel is None:
+    #                 with Parallel(n_jobs=n_jobs) as parallel:
+    #                     corr = parallel(delayed(_worker)(boot) for boot in range(n_boot))
+    #             else:
+    #                 corr = parallel(delayed(_worker)(boot) for boot in range(n_boot))
+    #
+    #             out_dict[group] = pd.DataFrame(np.array(corr).T)
+    #         except:
+    #             out_dict[group] = pd.DataFrame(np.zeros((self.n_units, n_boot)) * np.nan)
+    #
+    #     return out_dict
+
+    # def all_zone_rate_cond_diffs(self, n_boot=100, n_jobs=5):
+    #     out_dict = {}
+    #     for group, group_set in self.group_cond_sets.items():
+    #         trial_segs = self.group_cond_trial_segs[group]
+    #         try:
+    #             trial_sets = self.get_trials_boot_cond_set(group_set, n_boot=n_boot)
+    #         except ValueError:
+    #             out_dict[group] = pd.DataFrame
+    #             continue
 
 
 def pre_process_track_data(x, y, ha, t, t_rs, track_params, return_all=False):

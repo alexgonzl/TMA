@@ -135,9 +135,9 @@ def zscore(signal, axis=None):
     z = np.zeros_like(signal)
     for ii, s_ii in enumerate(s):
         if s_ii > 0:
-            z[ii] = (signal[ii]-mu[ii])/s_ii
+            z[ii] = (signal[ii] - mu[ii]) / s_ii
         else:
-            z[ii] = signal[ii]-mu[ii]
+            z[ii] = signal[ii] - mu[ii]
     return z
 
 
@@ -161,6 +161,7 @@ def mannwhitney_z(x, y, return_all=False):
 
     n_comps = x.shape[1]
     u = np.zeros(n_comps)
+    p = np.zeros(n_comps)
     n1 = np.zeros(n_comps)
     n2 = np.zeros(n_comps)
 
@@ -169,18 +170,21 @@ def mannwhitney_z(x, y, return_all=False):
         yii = y.iloc[:, ii].dropna()
         n1[ii] = len(xii)
         n2[ii] = len(yii)
-        u[ii] = stats.mannwhitneyu(xii, yii)[0]
+        u[ii], p[ii] = stats.mannwhitneyu(xii, yii)
 
     m = n1 * n2 / 2
     s = np.sqrt(n1 * n2 * (n1 + n2 + 1) / 12)
 
+    z = (u - m) / s
     if return_all:
-        return (u-m)/s, u, n1, n2
+        return z, u, p, n1, n2
     else:
-        return (u-m)/s
+        return z
 
-def mannwhitney_u(x,y, axis=None):
+
+def mannwhitney_u(x, y, axis=None):
     return stats.mannwhitneyu(x, y, axis=axis)[0]
+
 
 def sig_stats(signal):
     """ sig_stats
@@ -278,13 +282,13 @@ def get_poisson_deviance(y, y_hat):
         try:
             # the implementation below is for numerical stability.
             with np.errstate(divide='ignore'):
-                dev_per_samp = np.log(y**y) - np.log(y_hat**y) - y + y_hat
+                dev_per_samp = np.log(y ** y) - np.log(y_hat ** y) - y + y_hat
 
             # for invalid samples [y_hat<=0], make deviance equal to y
             invalid_samps = y_hat <= 0
             dev_per_samp[invalid_samps] = y[invalid_samps]
 
-            return 2*np.nanmean(dev_per_samp, axis=1)
+            return 2 * np.nanmean(dev_per_samp, axis=1)
         except:
             return np.nan
     else:
@@ -525,7 +529,7 @@ def circ_corrcl(x, y):
     rcs = pearson(np.sin(x), np.cos(x))
 
     # Compute angular-linear correlation (equ. 27.47)
-    r = np.sqrt((rxc**2 + rxs**2 - 2 * rxc * rxs * rcs) / (1 - rcs**2))
+    r = np.sqrt((rxc ** 2 + rxs ** 2 - 2 * rxc * rxs * rcs) / (1 - rcs ** 2))
 
     # Compute p-value
     # pval = chi2.sf(n * r**2, 2)
@@ -543,13 +547,13 @@ def get_regression_metrics(y, y_hat, n_params=1, reg_type='linear'):
         r2 = get_poisson_d2(y, y_hat)
         ar2 = get_poisson_ad2(y, y_hat, n_params, d2=r2)
         err = get_poisson_deviance(y, y_hat)
-        nerr = err/y_bar
+        nerr = err / y_bar
 
     elif reg_type == 'linear':
         r2 = get_r2(y, y_hat)
         ar2 = get_ar2(y, y_hat, n_params, r2=r2)
         err = get_rmse(y, y_hat)
-        nerr = err/y_bar
+        nerr = err / y_bar
 
     else:
         print(f'method {reg_type} not implemented.')
@@ -699,15 +703,15 @@ def split_timeseries(n_samps, samps_per_split=1500, n_data_splits=10, ):
     :return: time series of integers, each with the id of the split.
     """
 
-    assert n_data_splits*samps_per_split<=n_samps, f"Error. Needs at least {n_data_splits*samps_per_split} samples" \
-                                                   f" provided only {n_samps} "
+    assert n_data_splits * samps_per_split <= n_samps, f"Error. Needs at least {n_data_splits * samps_per_split} samples" \
+                                                       f" provided only {n_samps} "
     split_edges = np.append(np.arange(0, n_samps, samps_per_split), n_samps)
-    n_ts_segments = len(split_edges)-1
+    n_ts_segments = len(split_edges) - 1
 
     ts_seg_id = np.zeros(n_samps, dtype=int)
     for ii in range(n_ts_segments):
         split_id = np.mod(ii, n_data_splits)
-        ts_seg_id[split_edges[ii]:split_edges[ii+1]] = split_id
+        ts_seg_id[split_edges[ii]:split_edges[ii + 1]] = split_id
 
     return ts_seg_id
 
@@ -757,7 +761,7 @@ def split_timeseries_data(data, n_splits=2, samp_rate=0.02, split_interval=30):
 
 
 def kendall2pearson(tau):
-    return np.sin(np.pi*tau*0.5)
+    return np.sin(np.pi * tau * 0.5)
 
 
 def fisher_r2z(r):
@@ -783,6 +787,138 @@ def bootstrap_corr(x, y, n_boot=100, corr_method='kendall'):
     return r
 
 
+def bootstrap_diff(x, y, n_boot=1000, seed=0):
+    """
+    bootstrap difference Algorithm 16.1 based on Efron,Tibshirani 1993
+    :param x: 1d array
+    :param y: 1d array
+    :param n_boot: number of bootstrap samples to take
+    :param seed: random seed
+    :return:
+        (1) true difference,
+        (2) ASL (Achieved significance level)
+        (3) distribution of bootstrap differences
+    """
+    np.random.seed(seed)
+    assert x.ndim == 1
+    assert x.ndim == y.ndim
+
+    def _dif(_x, _y):
+        return np.nanmean(_x) - np.nanmean(_y)
+
+    n = len(x)
+    m = len(y)
+    p = n+m
+
+    true_d = _dif(x, y)
+    z = np.concatenate((x, y))
+    boot_d = np.zeros(n_boot)
+    for boot in range(n_boot):
+        zb = np.random.choice(z, p)
+        xb = zb[:n]
+        yb = zb[n:]
+        boot_d[boot] = _dif(xb, yb)
+
+    ASL = (boot_d >= true_d).sum()/n_boot
+
+    return true_d, ASL, boot_d
+
+
+def bootstrap_tdiff(x, y, n_boot=500, seed=0):
+    """
+    bootstrap difference Algorithm 16.2 based on Efron,Tibshirani 1993
+    :param x: 1d array
+    :param y: 1d array
+    :param n_boot: number of bootstrap samples to take
+    :param seed: random seed
+    :return:
+        (1) true statistic
+        (2) ASL (Achieved significance level)
+        (3) distribution of bootstrap statistic
+    """
+    np.random.seed(seed)
+    assert x.ndim == 1
+    assert x.ndim == y.ndim
+
+    n = len(x)
+    m = len(y)
+
+    def _dif(_x, _y):
+        return np.nanmean(_x) - np.nanmean(_y)
+
+    def _tstat(_x, _y):
+        num = _dif(_x, _y)
+        den = np.sqrt(np.nanvar(_x)/n + np.nanvar(_y)/m)
+        return num/den
+
+    true_t = _tstat(x, y)
+    z = np.concatenate((x, y))
+
+    xbar = np.nanmean(x)
+    ybar = np.nanmean(y)
+    zbar = np.nanmean(z)
+
+    xtilde = x - xbar + zbar
+    ytilde = y - ybar + zbar
+
+    boot_t = np.zeros(n_boot)
+
+    for boot in range(n_boot):
+        xb = np.random.choice(xtilde, n)
+        yb = np.random.choice(ytilde, m)
+
+        boot_t[boot] = _tstat(xb, yb)
+
+    ASL = 2*min((boot_t >= true_t).mean(), (boot_t < true_t).mean())
+
+    return true_t, ASL, boot_t
+
+def bootstrap_udiff(x,y, n_boot=500, seed=0):
+    """
+        bootstrap difference Algorithm 16.2 based on Efron,Tibshirani 1993
+        - version using the mannwhitney u, instead of t-test.
+        :param x: 1d array
+        :param y: 1d array
+        :param n_boot: number of bootstrap samples to take
+        :param seed: random seed
+        :return:
+            (1) true statistic
+            (2) ASL (Achieved significance level)
+            (3) distribution of bootstrap statistic
+        """
+    np.random.seed(seed)
+    assert x.ndim == 1
+    assert x.ndim == y.ndim
+
+    n = len(x)
+    m = len(y)
+
+    def _dif(_x, _y):
+        return np.nanmean(_x) - np.nanmean(_y)
+
+    true_t = mannwhitney_u(x, y)
+    z = np.concatenate((x, y))
+
+    xbar = np.nanmean(x)
+    ybar = np.nanmean(y)
+    zbar = np.nanmean(z)
+
+    xtilde = x - xbar + zbar
+    ytilde = y - ybar + zbar
+
+    boot_t = np.zeros(n_boot)
+
+    for boot in range(n_boot):
+        xb = np.random.choice(xtilde, n)
+        yb = np.random.choice(ytilde, m)
+
+        boot_t[boot] = mannwhitney_u(xb, yb)
+
+    ASL = (boot_t >= true_t).sum() / n_boot
+
+    return true_t, ASL, boot_t
+
+
 def compare_corrs(r1, r2, n1, n2, corr_method='kendall'):
     """
     takes pairs of correlations sets and compures a z statistic
@@ -795,7 +931,60 @@ def compare_corrs(r1, r2, n1, n2, corr_method='kendall'):
     if corr_method == 'kendall':
         r1 = kendall2pearson(r1)
         r2 = kendall2pearson(r2)
-    return (fisher_r2z(r1)-fisher_r2z(r2))/np.sqrt(1/(n1-3)+1/(n2-3))
+
+    zd = (fisher_r2z(r1) - fisher_r2z(r2)) / np.sqrt(1 / (n1 - 3) + 1 / (n2 - 3))
+    pd = pval_from_z(zd)
+    return zd, pd
+
+
+def combine_pvals(pvals, axis):
+    """uses fisher's method of combining p vals that test for the same hypothesis"""
+    n = len(pvals)
+    return stats.chi2.sf(np.nansum(-2*np.log(pvals), axis=axis), df=n*2)
+
+
+def pval_from_z(zval):
+    return 2*stats.norm.sf(np.abs(zval))
+
+
+def multiple_testing_correction(pvalues, correction_type="FDR"):
+    """
+    Consistent with R - print
+    correct_pvalues_for_multiple_testing([0.0, 0.01, 0.029, 0.03, 0.031, 0.05,
+                                          0.069, 0.07, 0.071, 0.09, 0.1])
+    taken from:
+    https://github.com/CoBiG2/cobig_misc_scripts/blob/master/FDR.py
+    """
+    pvalues = np.array(pvalues)
+    sample_size = pvalues.shape[0]
+    qvalues = np.empty(sample_size)
+    if correction_type == "Bonferroni":
+        # Bonferroni correction
+        qvalues = sample_size * pvalues
+    elif correction_type == "Bonferroni-Holm":
+        # Bonferroni-Holm correction
+        values = [(pvalue, i) for i, pvalue in enumerate(pvalues)]
+        values.sort()
+        for rank, vals in enumerate(values):
+            pvalue, i = vals
+            qvalues[i] = (sample_size-rank) * pvalue
+    elif correction_type == "FDR":
+        # Benjamini-Hochberg, AKA - FDR test
+        values = [(pvalue, i) for i, pvalue in enumerate(pvalues)]
+        values.sort()
+        values.reverse()
+        new_values = []
+        for i, vals in enumerate(values):
+            rank = sample_size - i
+            pvalue, index = vals
+            new_values.append((sample_size/rank) * pvalue)
+        for i in range(0, int(sample_size)-1):
+            if new_values[i] < new_values[i+1]:
+                new_values[i+1] = new_values[i]
+        for i, vals in enumerate(values):
+            pvalue, index = vals
+            qvalues[index] = new_values[i]
+    return qvalues
 # def getDirZoneSpikeMaps(spikes, PosDat, sp_thr=[5, 2000]):
 #     SegSeq = PosDat['SegDirSeq']
 #
