@@ -873,6 +873,7 @@ def bootstrap_tdiff(x, y, n_boot=500, seed=0):
 
     return true_t, ASL, boot_t
 
+
 def bootstrap_udiff(x,y, n_boot=500, seed=0):
     """
         bootstrap difference Algorithm 16.2 based on Efron,Tibshirani 1993

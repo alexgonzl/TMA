@@ -1030,7 +1030,7 @@ class TreeMazeZones:
         return f, ax
 
     def plot_zone_activity(self, zone_activity, ax=None, plot_cue=False, cue_color=None,
-                           lw=0.2, line_alpha=1, line_color='0.5', **cm_args):
+                           lw=0.2, line_alpha=1, line_color='0.5', legend=True, **cm_args):
         if ax is None:
             f, ax = plt.subplots(figsize=(5, 5), dpi=500)
         else:
@@ -1041,7 +1041,7 @@ class TreeMazeZones:
                          max_value=None, min_value=None,
                          label='FR', tick_fontsize=7, label_fontsize=7)
         cm_params.update(cm_args)
-        data_colors, color_array = pf.get_colors_from_data(zone_activity.values, **cm_params)
+        data_colors, color_array = pf.get_colors_from_data(zone_activity.values.squeeze(), **cm_params)
 
         cnt = 0
         for zone, value in zone_activity.items():
@@ -1076,14 +1076,63 @@ class TreeMazeZones:
         ax.axis('off')
         # ax.axis('equal')
 
-        ax_p = ax.get_position()
-        w, h = ax_p.width, ax_p.height
-        x0, y0 = ax_p.x0, ax_p.y0
+        if legend:
+            ax_p = ax.get_position()
+            w, h = ax_p.width, ax_p.height
+            x0, y0 = ax_p.x0, ax_p.y0
 
-        cax_p = [x0 + w * 0.7, y0 + h * 0.1, w * 0.05, h * 0.15]
-        cax = f.add_axes(cax_p)
+            cax_p = [x0 + w * 0.7, y0 + h * 0.1, w * 0.05, h * 0.15]
+            cax = f.add_axes(cax_p)
 
-        pf.get_color_bar_axis(cax, color_array, **cm_params)
+            pf.get_color_bar_axis(cax, color_array, **cm_params)
+
+    def plot_spk_trajectories(self, x, y, spikes, ax=None, **params):
+
+        assert x.shape == y.shape
+        assert x.shape == spikes.shape
+
+        if 'maze_params' not in params:
+            maze_params = dict(fontsize=5, lw=0.2, line_color='0.6', sub_segs='all', sub_seg_color='None', sub_seg_lw=0)
+        else:
+            maze_params = params['maze_params']
+
+        if 'trajectories_params' not in params:
+            trajectories_params = dict(lw=0.2, alpha=0.1, color='0.3')
+        else:
+            trajectories_params = params['trajectories_params']
+
+        if 'spike_params' not in params:
+            spike_params = dict(color='r', alpha=0.1, linewidth=0)
+        else:
+            spike_params = params['spike_params']
+        if 'spike_scale' not in params:
+            spike_scale = 1
+        else:
+            spike_scale = params['spike_scale']
+
+        if ax is None:
+            f, ax = plt.subplots()
+
+        _ = self.plot_maze(axis=ax, seg_color=None, zone_labels=False, seg_alpha=0, **maze_params)
+
+        if x.dtype.type == np.object_:
+            n_trials = x.shape[0]
+        elif x.ndim == 1:
+            x = x[np.newaxis, :]
+            y = y[np.newaxis, :]
+            spikes = spikes[np.newaxis, :]
+            n_trials = 1
+        else:
+            n_trials = x.shape[0]
+
+        for tr in range(n_trials):
+            ax.plot(x[tr], y[tr], zorder=9, **trajectories_params)
+            ax.scatter(x[tr], y[tr], s=spikes[tr]*spike_scale, zorder=10, **spike_params)
+
+        ax.axis("square")
+        ax.axis("off")
+
+        return ax
 
 
 class BehaviorData:
@@ -1092,7 +1141,7 @@ class BehaviorData:
 
     # time durations in seconds
     reward_dur = 0.5  # post reward duration
-    reward_null = np.array([-0.04, 0.04])  # blank time around reward for elimination of artifacts
+    reward_null = np.array([-0.02, 0.5])  # blank time around reward for elimination of artifacts
     detection_dur = 0.1
     post_trial_dur = 1.0
     post_trial_correct = 0.3
@@ -1117,11 +1166,27 @@ class BehaviorData:
                            'T3j': _t3ij_end_criteria, 'T3i': _t3ij_end_criteria,
                            'T3gj': _t3hg_end_criteria}
 
-    trial_end_criteria = {'CL': ['RW5', 'RW6', 'DE3', 'DE4'],
+    trial_end_criteria = {'L': ['RW5', 'RW6', 'DE3', 'DE4'],
+                          'CL': ['RW5', 'RW6', 'DE3', 'DE4'],
+                          'R': ['RW3', 'RW4', 'DE5', 'DE6'],
                           'CR': ['RW3', 'RW4', 'DE5', 'DE6']}
 
-    trial_valid_detections = {'CL': ['DE5', 'DE6'],
-                              'CR': ['DE4', 'DE3']}
+    trial_valid_goal_detections = {'CL': ['DE5', 'DE6'],
+                                   'L': ['DE5', 'DE6'],
+                                   'CR': ['DE3', 'DE4'],
+                                   'R': ['DE3', 'DE4']}
+
+    trial_invalid_goal_detections = {'CL': ['DE3', 'DE4'],
+                                     'L': ['DE3', 'DE4'],
+                                     'CR': ['DE5', 'DE6'],
+                                     'R': ['DE5', 'DE6']}
+
+    trial_goal_rewards = {'L': ['RW5', 'RW6'],
+                          'CL': ['RW5', 'RW6'],
+                          'R': ['RW3', 'RW4'],
+                          'CR': ['RW3', 'RW4']}
+
+    goal_detection_events = ['DE3', 'DE4', 'DE5', 'DE6']
 
     event_names = ['RH', 'RD', 'R1', 'R2', 'R3', 'R4', 'RG', 'R',
                    'DH', 'DD', 'D1', 'D2', 'D3', 'D4',
@@ -1204,6 +1269,7 @@ class BehaviorData:
         n_R_cues = len(events['CR'])
         n_cues = n_L_cues + n_R_cues
 
+        cue_codes = {1: 'L', 2: 'R'}
         # left -> 1, right -> 2
         all_cues = np.concatenate((np.ones(n_L_cues), 1 + np.ones(n_R_cues)))
         all_cues_times = np.concatenate((events['CL'], events['CR']))
@@ -1216,8 +1282,9 @@ class BehaviorData:
         t_last = self.t[-1]
         # variables to be created / stored
         n_trials = n_cues
-        df = pd.DataFrame(index=range(n_trials), columns=['t0', 'tE', 'dur', 'cue', 'dec', 'correct',
-                                                          'long', 'goal', 'sw', 'vsw'])
+        df = pd.DataFrame(index=range(n_trials),
+                          columns=['t0', 'tD', 'tE', 'tE_1', 'tE_2', 'dur', 'cue', 'dec', 'correct',
+                                   'long', 'goal', 'grw', 'sw', 'vsw'])
         for ii in np.arange(n_trials):
             # t0 ->  current trial start time stamp
             # t0_next -> next trial start time
@@ -1228,60 +1295,77 @@ class BehaviorData:
             else:
                 t0_next = sorted_cue_times[ii + 1]
 
-            corr = 0
-            goal = -1
-            long = -1
-            dec = ''
-            cue = ''
-            tE = t0_next
-            if sorted_cues[ii] == 1:  # left
-                cue = 'L'
-                for end_ev in self.trial_end_criteria['CL']:  # end events
-                    end_ev_id = np.logical_and(events[end_ev] >= t0, events[end_ev] < t0_next)
-                    if any(end_ev_id):
-                        if end_ev[:2] == 'RW':  # correct end events are rewards
-                            dec = 'L'
-                            corr = 1
-                            goal = int(end_ev[2])
-                        else:  # incorrect end event
-                            dec = 'R'
-                            corr = 0
-                            goal = -1
-                        tE = events[end_ev][end_ev_id][0]
-                        break
+            corr = np.nan  # correct flag
+            goal = np.nan  # goal id
+            long = np.nan  # long trial
+            grw = np.nan  # goal reward
+            dec = ''  # decision
+            cue = ''  # cue
+            end_ev = ''  # end event
 
-            elif sorted_cues[ii] == 2:  # right
-                cue = 'R'
-                for end_ev in self.trial_end_criteria['CR']:  # end evens
-                    end_ev_id = np.logical_and(events[end_ev] >= t0, events[end_ev] < t0_next)
-                    if any(end_ev_id):
-                        if end_ev[:2] == 'RW':  # correct end events
-                            dec = 'R'
-                            corr = 1
-                            goal = int(end_ev[2])
-                        else:  # incorrect end events
-                            dec = 'L'
-                            corr = 0
-                            goal = -1
-                        tE = events[end_ev][end_ev_id][0]
-                        break
-                        # check if there were detections on both target wells:
+            tE = t0_next
+            tE_1 = t0_next  # inital trial end (after exploration of first goal well)
+            tE_2 = t0_next  # secondary trial end (after last exploration arm)
+
+            # decision time
+            dec_ev_id = np.logical_and(events['DE2'] > t0, events['DE2'] <= tE)
+            if any(dec_ev_id):
+                tD = events['DE2'][dec_ev_id][0]
+            else:
+                tD = tE
+
+            cue_num = sorted_cues[ii]
+            cue = cue_codes[cue_num]
+            for end_ev_jj in self.trial_end_criteria[cue]:
+                end_ev_id = np.logical_and(events[end_ev_jj] > t0, events[end_ev_jj] < t0_next)
+                if any(end_ev_id):
+                    if events[end_ev_jj][end_ev_id][0] < tE:
+                        end_ev = end_ev_jj
+                        tE = events[end_ev_jj][end_ev_id][0]
+
+            # correct end events:
+            if (end_ev[:2] == 'RW'):
+                corr = 1
+                dec = cue
+                goal = int(end_ev[2])
+                grw = 1
+            elif (end_ev in self.trial_invalid_goal_detections[cue]):  # incorrect
+                corr = 0
+                grw = 0
+                kk = ((cue_num) % 2) + 1
+                dec = cue_codes[kk]
+            else:  # unaccounted scenario
+                grw = 0
+                dec = cue
+
+            # goal wells detections'
+            tE_1 = tE
+            e1_goal = goal
+            tE_2 = tE
+            if dec in ['L', 'R']:
+                for de in self.trial_valid_goal_detections[dec]:
+                    end_ev_id2 = np.logical_and(events[de] > tD, events[de] <= t0_next)
+                    if any(end_ev_id2):
+                        if events[de][end_ev_id2][0] <= tE_1:
+                            tE_1 = events[de][end_ev_id2][0]
+                            e1_goal = int(de[2])
+
+                        tE_2 = max(tE_2, events[de][end_ev_id2][-1])  # last goal detection
+
             if corr:
                 long = 0
-                for de in self.trial_valid_detections['C' + cue]:
-                    if any(np.logical_and(events[de] >= t0, events[de] <= tE)):
-                        if de[2] != str(goal):
-                            long = 1
-                            break
-            else:
-                long = -1
-
+                if e1_goal != goal:
+                    long = 1
             if goal > 2:
                 goal = goal - 2
-            df.loc[ii, ['t0', 'tE', 'dur', 'cue', 'dec', 'correct', 'long', 'goal']] = \
-                t0, tE, tE - t0, cue, dec, corr, long, goal
-        df['t0'] = ((df['t0'] - self.tB) // self.time_step).astype(int)
-        df['tE'] = ((df['tE'] - self.tB) // self.time_step).astype(int)
+
+            df.loc[ii, ['t0', 'tD', 'tE', 'tE_1', 'tE_2', 'dur',
+                        'cue', 'dec', 'correct', 'long', 'goal', 'grw']] = \
+                t0, tD, tE, tE_1, tE_2, tE - t0, cue, dec, corr, long, goal, grw
+
+        # convert from time (in secs) to samples
+        for kk in ['t0', 'tD', 'tE', 'tE_1', 'tE_2']:
+            df[kk] = ((df[kk] - self.tB) // self.time_step).astype(int)
         df['dur'] = (df['dur'] // self.time_step).astype(int)
 
         # switch trial
@@ -1290,7 +1374,8 @@ class BehaviorData:
 
         # valid switch trial: switch after a correct trial
         df['vsw'] = 0
-        df.loc[1:, 'vsw'] = df['correct'][:-1].values & df['sw'][1:].values
+        df.loc[1:, 'vsw'] = df['correct'][:-1].values * df['sw'][1:].values
+        df['vsw'].fillna(0, inplace=True)
 
         df = df.astype({'sw': 'int', 'vsw': 'int'})
         return df
@@ -1509,10 +1594,10 @@ class BehaviorData:
         perf['n_L_trials'] = (df.cue == 'L').sum()
         perf['n_R_trials'] = (df.cue == 'R').sum()
         perf['pct_correct'] = df.correct.mean()
-        perf['pct_sw_correct'] = (df.sw & df.correct).sum() / perf.n_sw_trials
-        perf['pct_vsw_correct'] = (df.vsw & df.correct).sum() / perf.n_vsw_trials
-        perf['pct_L_correct'] = ((df.cue == 'L') & df.correct).sum() / perf.n_L_trials
-        perf['pct_R_correct'] = ((df.cue == 'R') & df.correct).sum() / perf.n_R_trials
+        perf['pct_sw_correct'] = (df.sw * df.correct).sum() / perf.n_sw_trials
+        perf['pct_vsw_correct'] = (df.vsw * df.correct).sum() / perf.n_vsw_trials
+        perf['pct_L_correct'] = ((df.cue == 'L') * df.correct).sum() / perf.n_L_trials
+        perf['pct_R_correct'] = ((df.cue == 'R') * df.correct).sum() / perf.n_R_trials
 
         return perf
 
@@ -1556,7 +1641,8 @@ class TrialAnalyses:
 
     occupation_thrs = {'bigseg': 5, 'seg': 2, 'subseg': 1, 'bigseg_nowells': 5, 'wells': 2}
 
-    def __init__(self, session_info, reward_blank=False, not_inzone_blank=True, valid_transitions_blank=True):
+    def __init__(self, session_info, reward_blank=False, not_inzone_blank=True, valid_transitions_blank=True,
+                 trial_end='tE', **kwargs):
         """
         class for trialwise analyses on session data
         :param session_info:
@@ -1567,9 +1653,12 @@ class TrialAnalyses:
         self.si = session_info
         self.tmz = TreeMazeZones()
 
-        temp = session_info.get_event_behavior()
-        self.trial_table = temp.trial_table
-        self.event_table = temp.event_table
+        assert trial_end in ['tE', 'tD', 'tE_1', 'tE_2']
+        self.trial_end = trial_end
+
+        be = session_info.get_event_behavior()
+        self.trial_table = be.trial_table
+        self.event_table = be.event_table
 
         self.n_trials = len(self.trial_table)
         self.all_trials = np.arange(self.n_trials)
@@ -1577,13 +1666,17 @@ class TrialAnalyses:
         self.n_units = self.si.n_units
         self.n_total_samps = self.si.n_samps
 
-        self.trial_times, self.outbound_samps, self.inbound_samps = self.get_trial_times()
+        self.trial_time_table = self.get_trial_time_table()
 
         self.track_data = self.si.get_track_data()
         self.pz, self.pz_invalid_samps = self.si.get_pos_zones(return_invalid_pz=True)
 
         self.fr = self.si.get_fr()
         self.spikes = self.si.get_binned_spikes()
+
+        if reward_blank:
+            self.blank_reward_samps = np.where(be._make_event_vector('R_blank'))[0]
+            self._blank_data(self.blank_reward_samps)
 
         if not_inzone_blank:
             self._blank_data(self.pz_invalid_samps)
@@ -1602,10 +1695,12 @@ class TrialAnalyses:
             for bc in bal_cond_pair.split('-'):
                 self.bal_cond_sets[bc] = self._decode_cond(bc)
 
-        self.trial_zones = {k: self.get_trial_zones(trial_seg=k) for k in ['out', 'in']}
-        self.trial_zone_samps_counts_mat = {k: self.get_trial_zones_samps_counts_mat(trial_seg=k) for k in
-                                            ['out', 'in']}
-        self.trial_zones_rates = {k: self.get_all_trial_zone_rates(trial_seg=k) for k in ['out', 'in']}
+        self.trial_zones = {k: self.get_trial_zones(trial_seg=k)
+                            for k in ['out', 'in']}
+        self.trial_zone_samps_counts_mat = {k: self.get_trial_zones_samps_counts_mat(trial_seg=k)
+                                            for k in ['out', 'in']}
+        self.trial_zones_rates = {k: self.get_all_trial_zone_rates(trial_seg=k)
+                                  for k in ['out', 'in']}
 
         self.zones_by_trial = {k: self.trial_zone_samps_counts_mat[k] > 0 for k in ['out', 'in']}
 
@@ -1690,21 +1785,17 @@ class TrialAnalyses:
 
         return trials
 
-    def get_trial_times(self, trials=None):
-        if trials is None:
-            n_trials = self.n_trials
-            trials = self.all_trials
-        else:
-            n_trials = len(trials)
+    def get_trial_time_table(self):
+        n_trials = self.n_trials
+        trials = self.all_trials
 
-        df = pd.DataFrame(np.zeros((n_trials, 3), dtype=int), columns=['t0', 'tE', 'tR'])
-        outbound_samps = np.empty(0, dtype=int)
-        inbound_samps = np.empty(0, dtype=int)
+        df = pd.DataFrame(np.zeros((n_trials, 6), dtype=int), columns=['t0', 'tD', 'tE', 'tE_1', 'tE_2', 'tR'])
+
+        for k in ['t0', 'tD', 'tE', 'tE_1', 'tE_2']:
+            df[k] = self.trial_table[k]
+
         for ii, tr in enumerate(trials):
-            df.loc[ii, 't0'] = self.trial_table.loc[tr, 't0']
-            df.loc[ii, 'tE'] = self.trial_table.loc[tr, 'tE']
             if tr < (self.n_trials - 1):
-
                 return_home_detections = self.event_table.loc[(self.event_table.out_bound == 0) &
                                                               (self.event_table.trial_num == tr) &
                                                               (self.event_table.event == 'DE1'), 't0'].values
@@ -1716,63 +1807,101 @@ class TrialAnalyses:
             else:
                 df.loc[ii, 'tR'] = self.n_total_samps - 1
 
-            outbound_samps = np.append(outbound_samps, np.arange(df.t0[ii], df.tE[ii] + 1, dtype=int))
-            inbound_samps = np.append(inbound_samps, np.arange(df.tE[ii], df.tR[ii] + 1, dtype=int))
+        return df
 
-        return df, outbound_samps, inbound_samps
+    def get_trials_t0_tE(self, trial_seg='out'):
+
+        assert trial_seg in ['out', 'in', 'all']
+
+        if (trial_seg == 'out'):
+            t0 = self.trial_time_table.t0
+            tE = self.trial_time_table[self.trial_end]
+        elif (trial_seg == 'in'):
+            t0 = self.trial_time_table.tE_2
+            tE = self.trial_time_table.tR
+        else:
+            t0 = self.trial_time_table.t0
+            tE = self.trial_time_table.tR
+
+        return t0, tE
+
+    def get_trial_concat_samps(self, trials, trial_seg='out'):
+        """
+        function that returns the samples for the given trials
+        :param trials: list, array
+            trials to be evaluated
+        :param trial_seg: str
+            'out' -> outbound segment of trial
+            'in' -> inbound segment of trial
+            'all' -> both
+        :return:
+            samps -> array of integers corresponding to the samples of the trials
+        """
+
+        if trials is None:
+            n_trials = self.n_trials
+            trials = self.all_trials
+        else:
+            n_trials = len(trials)
+        samps = np.empty(0, dtype=int)
+
+        t0, tE = self.get_trials_t0_tE(trial_seg)
+
+        for tr in trials:
+            samps = np.append(samps, np.arange(t0[tr], tE[tr] + 1, dtype=int))
+
+        return samps
 
     def get_trial_track_pos(self, trials=None, trial_seg='out'):
+        """
+        get the x,y position by trial.
+        :param trials: list/array of ints, selected trials [default all trials]
+        :param trial_seg: str, outward or inward trajectories ['out','in']
+        :param trial_end: str, end point of the trial (tE or tE_2)
+        :return:
+            tuple of arrays.
+                x -> array of x positions by trial
+                y -> array of y positions by trial
+        """
         if trials is None:
             n_trials = self.n_trials
             trials = self.all_trials
         else:
             n_trials = len(trials)
 
-        assert trial_seg in ['out', 'in', 'all']
+        t0, tE = self.get_trials_t0_tE(trial_seg)
 
         x = np.zeros(n_trials, dtype=object)
         y = np.zeros(n_trials, dtype=object)
 
         track_data = self.track_data
         for ii, tr in enumerate(trials):
-            if trial_seg == 'out':
-                t0 = self.trial_times.t0[tr]
-                tE = self.trial_times.tE[tr]
-            elif trial_seg == 'in':
-                t0 = self.trial_times.tE[tr]
-                tE = self.trial_times.tR[tr]
-            else:
-                t0 = self.trial_times.t0[tr]
-                tE = self.trial_times.tR[tr]
-
-            x[ii] = track_data.loc[t0:tE, 'x']
-            y[ii] = track_data.loc[t0:tE, 'y']
+            x[ii] = track_data.loc[t0[tr]:tE[tr], 'x']
+            y[ii] = track_data.loc[t0[tr]:tE[tr], 'y']
 
         return x, y
 
     def get_trial_zones(self, trials=None, trial_seg='out'):
+        """
+        gets the zones samples by trial
+
+        :param trials: list/array of ints, selected trials [default all trials]
+        :param trial_seg: str, outward or inward trajectories ['out','in']
+        :param trial_end: str, end point of the trial (tE or tE_2)
+        :return:
+        """
         if trials is None:
             n_trials = self.n_trials
             trials = self.all_trials
         else:
             n_trials = len(trials)
 
-        assert trial_seg in ['out', 'in', 'all']
+        t0, tE = self.get_trials_t0_tE(trial_seg)
 
         trial_zones = np.zeros(n_trials, dtype=object)
         pz = self.pz
         for ii, tr in enumerate(trials):
-            if trial_seg == 'out':
-                t0 = self.trial_times.t0[tr]
-                tE = self.trial_times.tE[tr]
-            elif trial_seg == 'in':
-                t0 = self.trial_times.tE[tr]
-                tE = self.trial_times.tR[tr]
-            elif trial_seg == 'all':
-                t0 = self.trial_times.t0[tr]
-                tE = self.trial_times.tR[tr]
-
-            trial_zones[ii] = pz[t0:(tE + 1)]
+            trial_zones[ii] = pz[t0[tr]:(tE[tr] + 1)]
 
         return trial_zones
 
@@ -1788,8 +1917,6 @@ class TrialAnalyses:
 
     def get_trial_neural_data(self, trials=None, data_type='fr', trial_seg='out'):
 
-        assert trial_seg in ['out', 'in', 'all']
-
         if trials is None:
             n_trials = self.n_trials
             trials = self.all_trials
@@ -1804,25 +1931,31 @@ class TrialAnalyses:
             print("Invalid data type.")
             return
 
+        t0, tE = self.get_trials_t0_tE(trial_seg)
         trial_data = np.zeros((self.n_units, n_trials), dtype=object)
 
         for ii, tr in enumerate(trials):
-            if trial_seg == 'out':
-                t0 = self.trial_times.t0[tr]
-                tE = self.trial_times.tE[tr]
-            elif trial_seg == 'in':
-                t0 = self.trial_times.tE[tr]
-                tE = self.trial_times.tR[tr]
-            elif trial_seg == 'all':
-                t0 = self.trial_times.t0[tr]
-                tE = self.trial_times.tR[tr]
-
             for unit in range(self.n_units):
-                trial_data[unit, ii] = neural_data[unit, t0:(tE + 1)]
+                trial_data[unit, ii] = neural_data[unit, t0[tr]:(tE[tr] + 1)]
 
         return trial_data
 
-    def get_trial_rate_maps(self, trials=None, data_type='fr', occupation_thr=1, trial_seg='out', occ_rate_mask=False):
+    def get_trial_pos_counts_map(self, trials=None, trial_seg='out'):
+
+        if trials is None:
+            trials = self.all_trials
+
+        x, y = self.get_trial_track_pos(trials, trial_seg=trial_seg)
+        x = np.hstack(x)
+        y = np.hstack(y)
+
+        # get occupancy map
+        pos_count_map = spatial_funcs.histogram_2d(x, y, self.x_edges, self.y_edges)
+
+        return pos_count_map
+
+    def get_trial_rate_maps(self, trials=None, data_type='fr', occupation_thr=1, trial_seg='out',
+                            occ_rate_mask=False):
 
         if trials is None:
             trials = self.all_trials
@@ -1837,11 +1970,11 @@ class TrialAnalyses:
             print("Invalid data type.")
             return
 
-        x, y = self.get_trial_track_pos(trials)
+        x, y = self.get_trial_track_pos(trials, trial_seg=trial_seg)
         x = np.hstack(x)
         y = np.hstack(y)
 
-        pos_count_map = self.get_trial_pos_counts_map(trials)
+        pos_count_map = spatial_funcs.histogram_2d(x, y, self.x_edges, self.y_edges)
 
         mask = pos_count_map >= occupation_thr
 
@@ -1865,20 +1998,6 @@ class TrialAnalyses:
 
         return rate_maps
 
-    def get_trial_pos_counts_map(self, trials=None, trial_seg='out'):
-
-        if trials is None:
-            trials = self.all_trials
-
-        x, y = self.get_trial_track_pos(trials, trial_seg=trial_seg)
-        x = np.hstack(x)
-        y = np.hstack(y)
-
-        # get occupancy map
-        pos_count_map = spatial_funcs.histogram_2d(x, y, self.x_edges, self.y_edges)
-
-        return pos_count_map
-
     def get_all_trial_zone_rates(self, data_type='fr',
                                  occupation_trial_samp_thr=1, trial_seg='out'):
 
@@ -1892,16 +2011,15 @@ class TrialAnalyses:
 
         n_segs = self.tmz.n_all_segs
         seg_names = self.tmz.all_segs_names
-
         zones_by_trial = self.trial_zones[trial_seg]
-        trial_zone_rates = np.zeros(self.n_units, dtype=object)
 
+        trial_zone_rates = np.zeros(self.n_units, dtype=object)
         dummy_df = pd.DataFrame(np.zeros((self.n_trials, n_segs)) * np.nan, columns=seg_names)
+
         for unit in range(self.n_units):
             trial_zone_rates[unit] = dummy_df.copy()
 
         for ii in range(self.n_trials):
-
             pzm = self.tmz.get_pos_zone_mat(zones_by_trial[ii], segment_type='subseg')
             pz_counts = pzm.sum()
             pzmn = (pzm / pz_counts).fillna(0)  # pozitions zones normalized by occupancy
@@ -1928,6 +2046,7 @@ class TrialAnalyses:
         for unit in range(self.n_units):
             trial_segment_rates[unit] = trial_zone_rates[unit].loc[trials].copy().reset_index(drop=True)
 
+        # if another segment type, trial rates can be renormalized instead of recomputed using sample counts.
         if segment_type != 'subseg':
             trial_zone_samp_counts = self.trial_zone_samps_counts_mat[trial_seg].loc[trials].fillna(0).reset_index(
                 drop=True)
@@ -1966,24 +2085,7 @@ class TrialAnalyses:
         assert trial_seg in ['out', 'in', 'all']
 
         if samps is None:
-            if trials is None:
-                if trial_seg == 'out':
-                    samps = self.outbound_samps
-                elif trial_seg == 'in':
-                    samps = self.inbound_samps
-                elif trial_seg == 'all':
-                    out_samps = self.outbound_samps
-                    in_samps = self.inbound_samps
-                    samps = np.concatenate((out_samps, in_samps))
-
-            else:
-                _, out_samps, in_samps = self.get_trial_times(trials)
-                if trial_seg == 'out':
-                    samps = out_samps
-                elif trial_seg == 'in':
-                    samps = in_samps
-                elif trial_seg == 'all':
-                    samps = np.concatenate((out_samps, in_samps))
+            samps = self.get_trial_concat_samps(trials=trials, trial_seg=trial_seg)
 
         if data_type == 'fr':
             neural_data = self.fr[:, samps]
@@ -2538,8 +2640,8 @@ class TrialAnalyses:
                 trial_sets[bal_cond] = self.get_trials_boot_cond_set(cond_set, n_boot=n_boot)
             except ValueError:
                 print("error getting the trial sets", bal_cond)
-                #traceback.print_exc(file=sys.stdout)
-                #return df
+                # traceback.print_exc(file=sys.stdout)
+                # return df
 
         ok_cond_trials_flag = True
         for bal_cond in bal_conds:
@@ -2570,8 +2672,69 @@ class TrialAnalyses:
                     df[boot] = _worker(boot)
         except:
             print("Error on parallel step.")
-            #traceback.print_exc(file=sys.stdout)
+            traceback.print_exc(file=sys.stdout)
         return df
+
+    def unit_zrm_boot_corr(self, unit_id, bal_cond_pair=None, min_valid_trials=5,
+                           corr_method='kendall', n_boot=25):
+        """"zone rate map bootstrapped correlation by bal cond pair.
+        this method with a low bootstrap number will find all pairs of correlations"""
+
+        out = np.zeros(n_boot ** 2)*np.nan
+
+        if corr_method != 'kendall':
+            raise NotImplementedError
+
+        if bal_cond_pair is None:
+            bal_conds = self.bal_cond_pairs[0].split('-')
+        else:
+            bal_conds = bal_cond_pair.split('-')
+
+        trial_sets = {}
+        trial_segs = {}
+        for bal_cond in bal_conds:
+            if bal_cond in self.bal_cond_sets:
+                bal_cond_set = self.bal_cond_sets[bal_cond]
+            else:
+                bal_cond_set = self._decode_cond(bal_cond)
+
+            cond = bal_cond_set['cond']
+            sub_conds = bal_cond_set['sub_conds']
+
+            cond_set = {cond: sub_conds}
+            trial_segs[bal_cond] = bal_cond_set['trial_seg']
+            try:
+                trial_sets[bal_cond] = self.get_trials_boot_cond_set(cond_set, n_boot=n_boot)
+            except ValueError:
+                print("error getting the trial sets", bal_cond)
+
+        ok_cond_trials_flag = True
+        for bal_cond in bal_conds:
+            if (trial_sets[bal_cond].shape[0]) < min_valid_trials:
+                ok_cond_trials_flag = False
+                break
+
+        if not ok_cond_trials_flag:
+            return out
+
+        unit_trial_zone_rates1 = self.trial_zones_rates[trial_segs[bal_conds[0]]][unit_id]
+        unit_trial_zone_rates2 = self.trial_zones_rates[trial_segs[bal_conds[0]]][unit_id]
+        zr1 = pd.DataFrame(index=range(n_boot), columns=self.tmz.all_segs_names)
+        zr2 = pd.DataFrame(index=range(n_boot), columns=self.tmz.all_segs_names)
+        for boot in range(n_boot):
+            zr1.loc[boot] = unit_trial_zone_rates1.loc[trial_sets[bal_conds[0]][:, boot]].mean()
+            zr2.loc[boot] = unit_trial_zone_rates2.loc[trial_sets[bal_conds[1]][:, boot]].mean()
+
+        zr1.replace([np.inf, -np.inf], np.nan, inplace=True)
+        zr2.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+        cnt = 0
+        for ii in range(n_boot):
+            for jj in range(n_boot):
+                out[cnt] = rs.kendall(zr1.loc[ii], zr2.loc[jj])
+                cnt += 1
+        return out
+
 
     def all_zone_remapping_analyses(self, corr_method='kendall', n_boot=100, n_jobs=5, zr_method='trial'):
         """
@@ -2615,9 +2778,8 @@ class TrialAnalyses:
                     z.replace([np.inf, -np.inf], np.nan, inplace=True)
                     df[f"{group}-corr_z"] = z.mean(axis=1)
                 except:
-                    df[f"{group}-corr_m"]= np.nan
-                    df[f"{group}-corr_z"]= np.nan
-
+                    df[f"{group}-corr_m"] = np.nan
+                    df[f"{group}-corr_z"] = np.nan
 
             for test, null in self.test_null_bal_cond_pairs.items():
                 try:
@@ -2638,7 +2800,7 @@ class TrialAnalyses:
                     df[f"{test}-{null}-corr_zp"] = np.nan
                     df[f"{test}-{null}-corr_zt"] = np.nan
                     df[f"{test}-{null}-corr_ztp"] = np.nan
-                    #traceback.print_exc(file=sys.stdout)
+                    # traceback.print_exc(file=sys.stdout)
             return df
 
     def bal_conds_segment_rate_analyses(self, segment_type, n_boot=100, n_jobs=5):
@@ -2776,7 +2938,7 @@ class TrialAnalyses:
 
         def _worker(_boot):
             return self.get_avg_trial_zone_rates(trials=trial_set[:, _boot], segment_type=segment_type,
-                                                          trial_seg=trial_seg, occupation_trial_samp_thr=occ_thr)
+                                                 trial_seg=trial_seg, occupation_trial_samp_thr=occ_thr)
 
         with Parallel(n_jobs=n_jobs) as parallel:
             for cond in conds:
@@ -2874,6 +3036,163 @@ class TrialAnalyses:
                 df.loc[unit_block_idx, ['trial', 'seg', 'activity']] = temp
 
         return df
+
+    def get_pop_zone_rates(self, units=None, trial_seg='out'):
+        """
+        Returns a wide matrix of trials x (n_units*n_segements).
+        :param units: iterable, list or array of units to include, defaults to all
+        :param trial_seg: str, outbound or inbound trajectories
+        :return:
+            dataframe of data
+        """
+
+        if units is None:
+            units = np.arange(self.n_units)
+
+        n_segs = self.tmz.n_all_segs
+        n_units = len(units)
+        n_trials = self.n_trials
+
+        out = np.zeros((n_trials, n_units * n_segs))
+
+        for ii, unit in enumerate(units):
+            ix = np.arange(n_segs) + ii * n_segs
+            out[:, ix] = self.trial_zones_rates[trial_seg][unit].values
+
+        return pd.DataFrame(out)
+
+    def pop_zone_rate_maps_bal_conds_boot_corr(self, units=None, n_boot=100, corr_method='kendall', min_valid_trials=5,
+                                               bal_cond_pair=None):
+
+        df = pd.DataFrame(index=[0], columns=range(n_boot))
+
+        # get conds
+        if bal_cond_pair is None:
+            bal_conds = self.bal_cond_pairs[0].split('-')
+        else:
+            bal_conds = bal_cond_pair.split('-')
+
+        # get trials
+        trial_sets = {}
+        trial_segs = {}
+        for bal_cond in bal_conds:
+            if bal_cond in self.bal_cond_sets:
+                bal_cond_set = self.bal_cond_sets[bal_cond]
+            else:
+                bal_cond_set = self._decode_cond(bal_cond)
+
+            trial_segs[bal_cond] = bal_cond_set['trial_seg']
+
+            try:
+                trial_sets[bal_cond] = self.get_trials_boot_cond_set(bal_cond_set['cond_set'], n_boot=n_boot)
+            except ValueError:
+                print("error getting the trial sets", bal_cond)
+                # traceback.print_exc(file=sys.stdout)
+                # return df
+
+        ok_cond_trials_flag = True
+        for bal_cond in bal_conds:
+            if (trial_sets[bal_cond].shape[0]) < min_valid_trials:
+                ok_cond_trials_flag = False
+                break
+
+        if not ok_cond_trials_flag:
+            return df
+
+        # get data
+        data_seg = {}
+        for bal_cond in bal_conds:
+            trial_seg = trial_segs[bal_cond]
+            if trial_seg in data_seg.keys():
+                pass
+            else:
+                data_seg[trial_seg] = self.get_pop_zone_rates(units=units, trial_seg=trial_seg)
+
+        assert len(bal_conds) == 2
+
+        # compute correlations
+        cond1 = bal_conds[0]
+        cond2 = bal_conds[1]
+        for boot in range(n_boot):
+            trials1 = trial_sets[cond1][:, boot]
+            trials2 = trial_sets[cond2][:, boot]
+
+            trial_seg1 = trial_segs[cond1]
+            trial_seg2 = trial_segs[cond2]
+
+            m1 = data_seg[trial_seg1].loc[trials1].mean()
+            m2 = data_seg[trial_seg2].loc[trials2].mean()
+
+            df.loc[:, boot] = m1.corr(m2, method=corr_method)
+
+        return df
+
+    def pop_zone_remapping_analyses(self, corr_method='kendall', n_boot=100):
+        """
+        wrapper funcion that runs remapping analyses on the population level data
+        :param corr_method: correlation method
+        :param n_boot: number of bootstrap samples
+        :return:
+            dataframe
+        """
+
+        unit_groups = dict(cells=np.where(self.si.cell_ids)[0],
+                           muas=np.where(self.si.mua_ids)[0],
+                           units=np.arange(self.n_units))
+
+        df = pd.DataFrame(index=unit_groups.keys())
+
+        if corr_method == 'kendall':
+            def _transform_corr(_c):
+                return rs.fisher_r2z(rs.kendall2pearson(_c))
+        else:
+            def _transform_corr(_c):
+                return rs.fisher_r2z(_c)
+
+        with np.errstate(divide='ignore'):
+            for unit_group, units in unit_groups.items():
+                bcorrs = {}
+                for cond_pair in self.bal_cond_pairs:
+                    bcorrs[cond_pair] = self.pop_zone_rate_maps_bal_conds_boot_corr(units=units,
+                                                                                    bal_cond_pair=cond_pair,
+                                                                                    corr_method=corr_method,
+                                                                                    n_boot=n_boot)
+                for group, corrs in bcorrs.items():
+                    try:
+                        c = corrs.copy()
+                        c.replace([np.inf, -np.inf], np.nan, inplace=True)
+                        df.loc[unit_group, f"{group}-corr_m"] = c.mean(axis=1).values
+
+                        z = _transform_corr(corrs)
+                        z.replace([np.inf, -np.inf], np.nan, inplace=True)
+                        df.loc[unit_group, f"{group}-corr_z"] = z.mean(axis=1).values
+                    except:
+                        # traceback.print_exc(file=sys.stdout)
+                        df.loc[unit_group, f"{group}-corr_m"] = np.nan
+                        df.loc[unit_group, f"{group}-corr_z"] = np.nan
+
+                n_features = self.n_units * self.tmz.n_all_segs
+                for test, null in self.test_null_bal_cond_pairs.items():
+                    try:
+                        zc, pc = rs.compare_corrs(bcorrs[test], bcorrs[null],
+                                                  n_features, n_features, corr_method=corr_method)
+
+                        zc.replace([np.inf, -np.inf], np.nan, inplace=True)
+                        pc = pd.DataFrame(pc).replace([np.inf, -np.inf], np.nan)
+
+                        df.loc[unit_group, f"{test}-{null}-corr_zm"] = zc.mean(axis=1).values
+                        df.loc[unit_group, f"{test}-{null}-corr_zp"] = rs.combine_pvals(pc, axis=1)
+
+                        temp = ttest_1samp(zc, 0, nan_policy='omit', axis=1)
+                        df.loc[unit_group, f"{test}-{null}-corr_zt"] = temp[0]
+                        df.loc[unit_group, f"{test}-{null}-corr_ztp"] = temp[1]
+                    except:
+                        df.loc[unit_group, f"{test}-{null}-corr_zm"] = np.nan
+                        df.loc[unit_group, f"{test}-{null}-corr_zp"] = np.nan
+                        df.loc[unit_group, f"{test}-{null}-corr_zt"] = np.nan
+                        df.loc[unit_group, f"{test}-{null}-corr_ztp"] = np.nan
+                        # traceback.print_exc(file=sys.stdout)
+            return df
 
     # def zone_rate_maps_group_trials_boot_bal_corr(self, n_boot=100,
     #                                           corr_method='kendall', min_valid_trials=5, n_jobs=5,
