@@ -8,6 +8,7 @@ import h5py
 import sys
 import traceback
 import warnings
+from joblib import delayed, Parallel
 
 import Analyses.spike_functions as spike_funcs
 import Analyses.spatial_functions as spatial_funcs
@@ -178,6 +179,8 @@ class SummaryInfo:
             zone_rates_remap=results_path / 'zone_rates_remap_summary_table.csv',
             pop_zone_rates_remap=results_path / 'pop_zone_rates_remap_summary_table.csv',
             bal_conds_seg_rates=results_path / 'bal_conds_seg_rates_summary_table.csv',
+            zone_encoder_lag=results_path / 'zone_encoder_lag.csv',
+            zone_encoder_cue=results_path / 'zone_encoder_cue.csv',
         )
         paths['results'] = results_path
         paths['figures'] = figures_path
@@ -186,7 +189,8 @@ class SummaryInfo:
 
     def update_paths(self):
         for subject in self.subjects:
-            _ = SubjectInfo(subject, overwrite=True)
+            si = SubjectInfo(subject)
+            si.update_paths()
 
     def get_zone_rates_comps(self, overwrite=False, **params):
         """
@@ -507,6 +511,105 @@ class SummaryInfo:
             zone_rates = pd.read_csv(fn, index_col=0)
 
         return zone_rates
+
+    def get_zone_encoder_lag(self, overwrite=False):
+
+        fn = self.paths['zone_encoder_lag']
+
+        valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_encoder_lag == True].index)
+        if not fn.exists() or overwrite:
+            encoder_res = pd.DataFrame()
+
+            unit_count = 0
+            for subject in self.subjects:
+                subject_info = SubjectInfo(subject)
+                for session in subject_info.sessions:
+                    session_info = SubjectSessionInfo(subject, session)
+
+                    try:
+                        if session not in valid_sessions:
+                            continue
+
+                        if not (session_info.session_analyses_table.zone_encoder_lag == 1).values[0]:
+                            # skip if it hasn't been run
+                            continue
+                        if session_info.n_units == 0:
+                            # skip if no units
+                            continue
+
+                        n_session_units = session_info.n_units
+
+                        session_encoder_res = session_info.get_zone_encoder_lag()
+                        session_encoder_res.rename(columns={'unit': 'session_unit_id'}, inplace=True)
+                        session_table = session_info.session_unit_table
+
+                        s_enc_table = pd.concat((session_encoder_res,
+                                                 session_table.loc[session_encoder_res.session_unit_id].reset_index(
+                                                     drop=True)), axis=1)
+                        s_enc_table = s_enc_table.loc[:, ~s_enc_table.columns.duplicated()]
+                        s_enc_table['unit_id'] = s_enc_table['session_unit_id'] + unit_count
+                        unit_count += n_session_units
+                    except:
+                        print(f'Error Processing Session {session}')
+                        traceback.print_exc(file=sys.stdout)
+                        continue
+                    encoder_res = encoder_res.append(s_enc_table)
+
+            encoder_res = encoder_res.reset_index(drop=True)
+            encoder_res.to_csv(fn)
+        else:
+            encoder_res = pd.read_csv(fn, index_col=0)
+
+        return encoder_res
+
+    def get_zone_encoder_cue(self, overwrite=False):
+        fn = self.paths['zone_encoder_cue']
+
+        valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_encoder_cue == True].index)
+        if not fn.exists() or overwrite:
+            encoder_res = pd.DataFrame()
+
+            unit_count = 0
+            for subject in self.subjects:
+                subject_info = SubjectInfo(subject)
+                for session in subject_info.sessions:
+                    session_info = SubjectSessionInfo(subject, session)
+
+                    try:
+                        if session not in valid_sessions:
+                            continue
+
+                        if not (session_info.session_analyses_table.zone_encoder_cue == 1).values[0]:
+                            # skip if it hasn't been run
+                            continue
+                        if session_info.n_units == 0:
+                            # skip if no units
+                            continue
+
+                        n_session_units = session_info.n_units
+
+                        session_encoder_res = session_info.get_zone_encoder_cue()
+                        session_encoder_res.rename(columns={'unit': 'session_unit_id'}, inplace=True)
+                        session_table = session_info.session_unit_table
+
+                        s_enc_table = pd.concat((session_encoder_res,
+                                                 session_table.loc[session_encoder_res.session_unit_id].reset_index(
+                                                     drop=True)), axis=1)
+                        s_enc_table = s_enc_table.loc[:, ~s_enc_table.columns.duplicated()]
+                        s_enc_table['unit_id'] = s_enc_table['session_unit_id'] + unit_count
+                        unit_count += n_session_units
+                    except:
+                        print(f'Error Processing Session {session}')
+                        traceback.print_exc(file=sys.stdout)
+                        continue
+                    encoder_res = encoder_res.append(s_enc_table)
+
+            encoder_res = encoder_res.reset_index(drop=True)
+            encoder_res.to_csv(fn)
+        else:
+            encoder_res = pd.read_csv(fn, index_col=0)
+
+        return encoder_res
 
     def get_of_results(self, overwrite=False):
 
@@ -885,6 +988,11 @@ class SubjectInfo:
             self.valid_track_table = self.check_track_data_validty()
 
             self.save_subject_info()
+
+    def update_paths(self):
+        for session in self.sessions:
+            self.session_paths[session].update(self._session_paths(session))
+        self.save_subject_info()
 
     def load_subject_info(self):
         with self.subject_info_file.open(mode='rb') as f:
@@ -1403,6 +1511,14 @@ class SubjectInfo:
             paths['bal_conds_seg_rates'] = paths['Results'] / 'bal_conds_seg_rates.csv'
             paths['bal_conds_seg_boot_rates'] = paths['Results'] / 'bal_conds_seg_boot_rates.csv'
 
+            paths['zone_encoder_lag'] = paths['Results'] / 'zone_encoder_lag.csv'
+            paths['zone_encoder_cue'] = paths['Results'] / 'zone_encoder_cue.csv'
+
+            paths['zone_decoder_zones'] = paths['Results'] / 'zone_decoder_zones.csv'
+            paths['zone_decoder_cue'] = paths['Results'] / 'zone_decoder_cue.csv'
+            paths['zone_decoder_dec'] = paths['Results'] / 'zone_decoder_dec.csv'
+            paths['zone_decoder_goal'] = paths['Results'] / 'zone_decoder_goal.csv'
+
             paths['zone_analyses'] = paths['Results'] / 'ZoneAnalyses.pkl'
             paths['TrialInfo'] = paths['Results'] / 'TrInfo.pkl'
             paths['TrialCondMat'] = paths['Results'] / 'TrialCondMat.csv'
@@ -1630,6 +1746,10 @@ class SubjectSessionInfo(SubjectInfo):
                 self.n_orig_samps = tt_info['n_samps']
                 self.tB = tt_info['tB']
 
+        self.session_analyses_table = pd.DataFrame(index=[self.session])
+        self._analyses = self._check_analyses()
+        self._analyses_names = list(self._analyses.keys())
+
         self.task_params = get_task_params(self)
         self.n_cells = self.clusters['n_cell']
         self.n_mua = self.clusters['n_mua']
@@ -1644,11 +1764,14 @@ class SubjectSessionInfo(SubjectInfo):
             self.cell_ids = np.array([v[0] == 'cell' for k, v in self.cluster_ids.items()])
             self.mua_ids = ~self.cell_ids
 
-        self.session_analyses_table = pd.DataFrame(index=[self.session])
-        self._analyses = self._check_analyses()
-        self._analyses_names = list(self._analyses.keys())
+            unit_type = np.zeros(self.n_units, dtype='object')
+            unit_type[self.cell_ids] = 'cell'
+            unit_type[self.mua_ids] = 'mua'
+            self.unit_type_map = dict(zip(np.arange(self.n_units), unit_type))
 
         self.enc_models = None
+
+        self.session_unit_table = self._session_unit_table()
 
     def __str__(self):
         print()
@@ -1660,6 +1783,40 @@ class SubjectSessionInfo(SubjectInfo):
         print()
         print('To run all analyses use run_analyses().')
         return ''
+
+    def _session_unit_table(self):
+
+        session = self.session
+        session_table = pd.DataFrame(index=np.arange(self.n_units),
+                                     columns=['session_unit_id', 'subject', 'session', 'session_pct_cov',
+                                              'unit_type', 'tt', 'tt_cl',
+                                              'cl_name'])
+
+        session_table['session'] = session
+        session_table['subject'] = self.subject
+        session_table['task'] = self.task
+        session_table['session_unit_id'] = np.arange(self.n_units)
+
+        session_table['session_pct_cov'] = self.check_track_data_validity()
+
+        try:
+            session_table['unit_type'] = [v[0] for k, v in self.cluster_ids.items()]
+            session_table['tt'] = [v[1] for k, v in self.cluster_ids.items()]
+            session_table['tt_cl'] = [v[2] for k, v in self.cluster_ids.items()]
+
+            cl_names = []
+            for k, v in self.cluster_ids.items():
+                tt = v[1]
+                cl = v[2]
+                depth = self.sessions_tt_positions.loc[session, f"tt_{tt}"]
+                cl_name = f"{session}-tt{tt}_d{depth}_cl{cl}"
+                cl_names.append(cl_name)
+
+            session_table['cl_name'] = cl_names
+        except:
+            pass
+
+        return session_table
 
     def print_task_params(self):
         print()
@@ -1694,7 +1851,10 @@ class SubjectSessionInfo(SubjectInfo):
                 'zone_rates_remap': (self.get_zone_rates_remap, self.paths['zone_rates_remap'].exists()),
                 'pop_zone_rates_remap': (self.get_pop_zone_rates_remap, self.paths['pop_zone_rates_remap'].exists()),
                 'bal_conds_seg_rates': (self.get_bal_conds_seg_rates, self.paths['bal_conds_seg_rates'].exists()),
-                'bal_conds_seg_boot_rates': (self.get_bal_conds_seg_boot_rates, np.nan)
+                'bal_conds_seg_boot_rates': (self.get_bal_conds_seg_boot_rates, np.nan),
+                'zone_encoder_lag': (self.get_zone_encoder_lag, self.paths['zone_encoder_lag'].exists()),
+                'zone_encoder_cue': (self.get_zone_encoder_cue, self.paths['zone_encoder_cue'].exists()),
+
             }
         else:
             return NotImplementedError
@@ -1903,15 +2063,21 @@ class SubjectSessionInfo(SubjectInfo):
             return None
 
     def check_track_data_validity(self):
-        if self.task == 'OF':
-            behav = self.get_track_data()
-            # noinspection PyTypeChecker
-            coverage = np.around(behav['pos_valid_mask'].mean(), 2)
-            return coverage
-        else:
-            df, nan_idx = self.get_track_data(return_nan_idx=True)
-            pct_nan = len(nan_idx) / len(df)
-            return 1 - pct_nan
+        try:
+            if self.session_analyses_table.track_data==1:
+                if self.task == 'OF':
+                    behav = self.get_track_data()
+                    # noinspection PyTypeChecker
+                    coverage = np.around(behav['pos_valid_mask'].mean(), 2)
+                    return coverage
+                else:
+                    df, nan_idx = self.get_track_data(return_nan_idx=True)
+                    pct_nan = len(nan_idx) / len(df)
+                    return 1 - pct_nan
+            else:
+                return np.nan
+        except:
+            return np.nan
 
     # methods from spike functions
     def get_spikes(self, return_numpy=True, save_spikes_dict=False, overwrite=False):
@@ -2331,6 +2497,34 @@ class SubjectSessionInfo(SubjectInfo):
                 trial_analyses = tmf.TrialAnalyses(self, **params)
                 df = trial_analyses.get_avg_seg_rates_boot(segment_type=params['segment_type'],
                                                            n_boot=params['n_boot'])
+                df.to_csv(fn)
+            else:
+                df = pd.read_csv(fn, index_col=0)
+            return df
+        else:
+            raise NotImplementedError
+
+    def get_zone_encoder_lag(self, overwrite=False):
+        if self.task[:2] == 'T3':
+            fn = self.paths['zone_encoder_lag']
+            if not fn.exists() or overwrite:
+                df = tmf.zone_encoding_analysis(self, lags=[-50, 0, 50],
+                                                decay_funcs=['inverse'],
+                                                cue_types=['none'])
+                df.to_csv(fn)
+            else:
+                df = pd.read_csv(fn, index_col=0)
+            return df
+        else:
+            raise NotImplementedError
+
+    def get_zone_encoder_cue(self, overwrite=False):
+        if self.task[:2] == 'T3':
+            fn = self.paths['zone_encoder_cue']
+            if not fn.exists() or overwrite:
+                df = tmf.zone_encoding_analysis(self, lags=[50],
+                                                decay_funcs=['inverse'],
+                                                cue_types=['none', 'fixed', 'inter'])
                 df.to_csv(fn)
             else:
                 df = pd.read_csv(fn, index_col=0)
