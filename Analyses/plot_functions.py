@@ -144,6 +144,7 @@ class Fig1(Figure):
 
     panel_locs = dict(a=[a_x0, ab_y0, ab_w, ab_h],
                       b=[b_x0, ab_y0, ab_w, ab_h],
+
                       c=[c_x0, c_y0, c_w, c_h],
                       d=[de_x0, d_y0, de_w, de_h],
                       e=[de_x0, e_y0, de_w, de_h])
@@ -179,7 +180,7 @@ class Fig1(Figure):
 
         # setup
         self.params.update(kargs)
-        # inherit figure methods 
+        # inherit figure methods
         super().__init__(fig_size=self.params['fig_size'], dpi=self.params['dpi'])
         # update fontsizes
         self.params['fontsizes'] = self._fontsizes
@@ -400,15 +401,18 @@ class Fig1(Figure):
         fontsize = self.fontsize
 
         if ax is None:
-            f, ax = plt.subplots(figsize=(1, 1), dpi=600)
+            f, ax = plt.subplots(figsize=(1.5, 1.5), dpi=600)
             ax_pos = ax.get_position()
             x0, y0, w, h = ax_pos.x0, ax_pos.y0, ax_pos.width, ax_pos.height
             x_split = w * 0.75
             ax.set_position([x0, y0, x_split, h])
             ax2 = f.add_axes([x0 + x_split, y0, w - x_split, h])
+
+            return_flag = True
         else:
             ax = self.add_panel_axes('d', [0.2, 0, 0.65, 0.92])
             ax2 = self.add_panel_axes('d', [0.85, 0, 0.15, 0.92])
+            return_flag = False
 
         # ax = reduce_ax(ax, fig_params['scale'])
 
@@ -438,10 +442,10 @@ class Fig1(Figure):
             ax.spines[spine].set_visible(False)
         for spine in ['bottom', 'left']:
             ax.spines[spine].set_linewidth(1)
-            ax.spines[spine].set_color('k')
+            ax.spines[spine].set_color('0.2')
 
-        ax.tick_params(axis="both", direction="in", length=2, width=0.8, color="0.5", which='major', pad=1)
-        ax.xaxis.set_label_coords(0.625, -0.1)
+        ax.tick_params(axis="both", direction="out", length=2, width=1, color="0.2", which='major', pad=0.5)
+        ax.xaxis.set_label_coords(0.625, -0.15)
 
         # summary
 
@@ -477,10 +481,16 @@ class Fig1(Figure):
         for spine in ['top', 'right', 'left']:
             ax2.spines[spine].set_visible(False)
         ax2.spines['bottom'].set_linewidth(1)
-        ax2.spines['bottom'].set_color('k')
+        ax2.spines['bottom'].set_color('0.2')
 
-        ax2.tick_params(axis="both", direction="in", length=2, width=0.8, color="0.5", which='major', pad=1)
+        ax2.tick_params(axis="both", direction="out", length=2, width=1, color="0.2", which='major', pad=0.5)
         ax2.tick_params(axis='y', left=False)
+
+        ax.grid(linewidth=0.5)
+        ax2.grid(linewidth=0.5)
+        if return_flag:
+            return f
+
 
     def panel_e(self, ax=None, **params):
         perf = self.summary_info.get_behav_perf()
@@ -797,7 +807,7 @@ class Fig2(Figure):
         unit_id = self.unit_ids[unit_idx]
         ta = self.unit_session_ta[unit_id]
 
-        x, y = ta.get_trial_track_pos()
+        x, y,_ = ta.get_trial_track_pos()
         cue_trial_sets = self.unit_session_boot_trials[unit_id]
 
         _ = self.tree_maze.plot_maze(axis=ax[0],
@@ -854,6 +864,8 @@ class Fig2(Figure):
         ax[2].legend(handles=legend_elements, loc='lower center', bbox_to_anchor=leg_pos, frameon=False,
                      fontsize=self.legend_fontsize - 1, labelspacing=0.1, handlelength=0.5, handletextpad=0.4)
 
+        return ax
+
     def panel_b(self, fig_template=None, **panel_params):
 
         params = self.params['panel_b']
@@ -861,7 +873,7 @@ class Fig2(Figure):
 
         sub_panel_labels = ['i', 'ii', 'iii', 'iv']
         if fig_template is None:
-            f = Figure(fig_size=(2, 2), dpi=500)
+            f = Figure(fig_size=(3, 3), dpi=500)
             x0, y0 = 0, 0
             w2, h2 = 0.5, 0.5
         else:
@@ -911,7 +923,7 @@ class Fig2(Figure):
         session_unit_id = self.unit_session_unit_idx[unit]
 
         # ---- traces + spikes ---- #
-        x, y = ta.get_trial_track_pos()
+        x, y, _ = ta.get_trial_track_pos()
         trial_sets = self.unit_session_boot_trials[unit]
         spikes = ta.get_trial_neural_data(data_type='spikes')[session_unit_id]
 
@@ -1009,7 +1021,7 @@ class Fig2(Figure):
                           [x1, y1, w, h]]
 
         if fig_template is None:
-            f = Figure(fig_size=(1, 0.8), dpi=500)
+            f = Figure(fig_size=(1.5, 1.5), dpi=500)
             p_ax = f.add_panel(label='c', pos=[0, 0, 1, 1], label_txt=False)
         else:
             f = self

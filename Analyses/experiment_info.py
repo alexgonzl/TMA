@@ -180,7 +180,11 @@ class SummaryInfo:
             pop_zone_rates_remap=results_path / 'pop_zone_rates_remap_summary_table.csv',
             bal_conds_seg_rates=results_path / 'bal_conds_seg_rates_summary_table.csv',
             zone_encoder_lag=results_path / 'zone_encoder_lag.csv',
+            # zone_encoder_lag=results_path / 'zone_encoder_lag.pkl',
             zone_encoder_cue=results_path / 'zone_encoder_cue.csv',
+            # zone_encoder_cue=results_path / 'zone_encoder_cue.pkl',
+            zone_decoder=results_path / 'zone_decoder.csv',
+            zone_decoder_dec=results_path / 'zone_decoder_dec.csv',
         )
         paths['results'] = results_path
         paths['figures'] = figures_path
@@ -556,10 +560,17 @@ class SummaryInfo:
                     encoder_res = encoder_res.append(s_enc_table)
 
             encoder_res = encoder_res.reset_index(drop=True)
+
             encoder_res.to_csv(fn)
         else:
             encoder_res = pd.read_csv(fn, index_col=0)
 
+        # encoder_res = encoder_res.astype(dtype=dict(trial='int16', zones='category', session_unit_id='int16',
+        #                                             sp='float16', fr='float16', fr_hat='float16', resid='float16',
+        #                                             r2='float16', nrmse='float16', fold='float16', lag='category',
+        #                                             decay='category', cue_type='category', unit_type='category',
+        #                                             subject='category', session='category', session_pct_cov='float16',
+        #                                             task='category', unit_id='int16'), errors='ignore')
         return encoder_res
 
     def get_zone_encoder_cue(self, overwrite=False):
@@ -605,11 +616,137 @@ class SummaryInfo:
                     encoder_res = encoder_res.append(s_enc_table)
 
             encoder_res = encoder_res.reset_index(drop=True)
+            # encoder_res = encoder_res.astype(dtype=dict(trial='int16', zones='category', session_unit_id='int16',
+            #                                             sp='float16', fr='float16', fr_hat='float16', resid='float16',
+            #                                             r2='float16', nrmse='float16', fold='float16', lag='category',
+            #                                             decay='category', cue_type='category', unit_type='category',
+            #                                             subject='category', session='category', task='category',
+            #                                             session_pct_cov='float16', tt='category', tt_cl='category',
+            #                                             cl_name='category', unit_id='int16'), errors='ignore')
+
             encoder_res.to_csv(fn)
+            # encoder_res.to_pickle(fn)
         else:
             encoder_res = pd.read_csv(fn, index_col=0)
+            # encoder_res = pd.read_pickle(fn, index_col=0)
+
+        # tmz = tmf.TreeMazeZones()
+        # encoder_res['zones'] = encoder_res['zones'].astype(pd.api.types.CategoricalDtype(tmz.zones2))
+        encoder_res['cue_type'] = encoder_res['cue_type'].astype(
+            pd.api.types.CategoricalDtype(['none', 'fixed', 'inter']))
 
         return encoder_res
+
+    def get_zone_decoder(self, overwrite=False):
+        fn = self.paths['zone_decoder']
+
+        valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_decoder == True].index)
+        if not fn.exists() or overwrite:
+            decoder_res = pd.DataFrame()
+
+            for subject in self.subjects:
+                subject_info = SubjectInfo(subject)
+                for session in subject_info.sessions:
+                    session_info = SubjectSessionInfo(subject, session)
+
+                    try:
+                        if session not in valid_sessions:
+                            continue
+
+                        if not (session_info.session_analyses_table.zone_decoder == 1).values[0]:
+                            # skip if it hasn't been run
+                            continue
+                        if session_info.n_units == 0:
+                            # skip if no units
+                            continue
+
+                        n_session_units = session_info.n_units
+
+                        session_decoder_res = session_info.get_zone_decoder()
+                        session_decoder_res = session_decoder_res.groupby(['encoder_type', 'feature_type',
+                                                                           'target_type', 'fold', 'zones', 'cue'])[
+                            'acc', 'bac', 'dist', 'logit_dist'].mean().reset_index()
+                        session_decoder_res['subject'] = subject
+                        session_decoder_res['session'] = session
+                        session_decoder_res['task'] = session_info.task
+                        session_decoder_res['n_units'] = n_session_units
+
+                    except:
+                        print(f'Error Processing Session {session}')
+                        traceback.print_exc(file=sys.stdout)
+                        continue
+                    decoder_res = decoder_res.append(session_decoder_res)
+
+            decoder_res = decoder_res.reset_index(drop=True)
+            decoder_res.to_csv(fn)
+        else:
+            decoder_res = pd.read_csv(fn, index_col=0)
+
+        tmz = tmf.TreeMazeZones()
+        decoder_res['zones'] = decoder_res['zones'].astype(pd.api.types.CategoricalDtype(tmz.zones2))
+        return decoder_res
+
+    def get_zone_decoder_2_subj_behav(self, overwrite=False):
+        fn = self.paths['zone_decoder_dec']
+
+        zones2 = tmf.TreeMazeZones().zones2
+        stem_zones = zones2[:9]
+        branch_zones = zones2[9:]
+        valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_decoder == True].index)
+        if not fn.exists() or overwrite:
+            decoder_res = pd.DataFrame()
+
+            for subject in self.subjects:
+                subject_info = SubjectInfo(subject)
+                for session in subject_info.sessions:
+                    session_info = SubjectSessionInfo(subject, session)
+
+                    try:
+                        if session not in valid_sessions:
+                            continue
+
+                        if not (session_info.session_analyses_table.zone_decoder == 1).values[0]:
+                            # skip if it hasn't been run
+                            continue
+                        if session_info.n_units == 0:
+                            # skip if no units
+                            continue
+
+                        n_session_units = session_info.n_units
+
+                        session_decoder_res = session_info.get_zone_decoder()
+                        session_decoder_res = session_decoder_res[session_decoder_res.target_type.isin(['dec', 'cue'])]
+                        session_decoder_res['cue_bias'] = session_decoder_res['pred'] == session_decoder_res['cue']
+                        session_decoder_res['subj_perf'] = session_decoder_res['correct'] == 1
+                        session_decoder_res['subj_perf_match'] = session_decoder_res['subj_perf'] & \
+                                                                 (session_decoder_res['acc'] == 1)
+
+                        session_decoder_res.loc[session_decoder_res.zones.isin(stem_zones), 'seg'] = 'stem'
+                        session_decoder_res.loc[session_decoder_res.zones.isin(branch_zones), 'seg'] = 'branch'
+
+                        session_decoder_res = session_decoder_res.groupby(['encoder_type', 'target_type','zones', 'seg'])[[
+                            'acc', 'cue_bias', 'subj_perf', 'subj_perf_match']].mean().reset_index()
+                        session_decoder_res = session_decoder_res.dropna().reset_index(drop=True)
+
+                        session_decoder_res['subject'] = subject
+                        session_decoder_res['session'] = session
+                        session_decoder_res['task'] = session_info.task
+                        session_decoder_res['n_units'] = n_session_units
+
+                    except:
+                        print(f'Error Processing Session {session}')
+                        traceback.print_exc(file=sys.stdout)
+                        continue
+                    decoder_res = decoder_res.append(session_decoder_res)
+
+            decoder_res = decoder_res.reset_index(drop=True)
+            decoder_res.to_csv(fn)
+        else:
+            decoder_res = pd.read_csv(fn, index_col=0)
+
+        tmz = tmf.TreeMazeZones()
+        decoder_res['zones'] = decoder_res['zones'].astype(pd.api.types.CategoricalDtype(tmz.zones2))
+        return decoder_res
 
     def get_of_results(self, overwrite=False):
 
@@ -1514,10 +1651,7 @@ class SubjectInfo:
             paths['zone_encoder_lag'] = paths['Results'] / 'zone_encoder_lag.csv'
             paths['zone_encoder_cue'] = paths['Results'] / 'zone_encoder_cue.csv'
 
-            paths['zone_decoder_zones'] = paths['Results'] / 'zone_decoder_zones.csv'
-            paths['zone_decoder_cue'] = paths['Results'] / 'zone_decoder_cue.csv'
-            paths['zone_decoder_dec'] = paths['Results'] / 'zone_decoder_dec.csv'
-            paths['zone_decoder_goal'] = paths['Results'] / 'zone_decoder_goal.csv'
+            paths['zone_decoder'] = paths['Results'] / 'zone_decoder.csv'
 
             paths['zone_analyses'] = paths['Results'] / 'ZoneAnalyses.pkl'
             paths['TrialInfo'] = paths['Results'] / 'TrInfo.pkl'
@@ -1854,6 +1988,7 @@ class SubjectSessionInfo(SubjectInfo):
                 'bal_conds_seg_boot_rates': (self.get_bal_conds_seg_boot_rates, np.nan),
                 'zone_encoder_lag': (self.get_zone_encoder_lag, self.paths['zone_encoder_lag'].exists()),
                 'zone_encoder_cue': (self.get_zone_encoder_cue, self.paths['zone_encoder_cue'].exists()),
+                'zone_decoder': (self.get_zone_decoder, self.paths['zone_decoder'].exists()),
 
             }
         else:
@@ -2064,7 +2199,7 @@ class SubjectSessionInfo(SubjectInfo):
 
     def check_track_data_validity(self):
         try:
-            if self.session_analyses_table.track_data==1:
+            if self.session_analyses_table.track_data == 1:
                 if self.task == 'OF':
                     behav = self.get_track_data()
                     # noinspection PyTypeChecker
@@ -2508,7 +2643,7 @@ class SubjectSessionInfo(SubjectInfo):
         if self.task[:2] == 'T3':
             fn = self.paths['zone_encoder_lag']
             if not fn.exists() or overwrite:
-                df = tmf.zone_encoding_analysis(self, lags=[-50, 0, 50],
+                df = tmf.zone_encoding_analyses(self, lags=[-50, 0, 50],
                                                 decay_funcs=['inverse'],
                                                 cue_types=['none'])
                 df.to_csv(fn)
@@ -2522,12 +2657,30 @@ class SubjectSessionInfo(SubjectInfo):
         if self.task[:2] == 'T3':
             fn = self.paths['zone_encoder_cue']
             if not fn.exists() or overwrite:
-                df = tmf.zone_encoding_analysis(self, lags=[50],
+                df = tmf.zone_encoding_analyses(self, lags=[50],
                                                 decay_funcs=['inverse'],
                                                 cue_types=['none', 'fixed', 'inter'])
                 df.to_csv(fn)
             else:
                 df = pd.read_csv(fn, index_col=0)
+            return df
+        else:
+            raise NotImplementedError
+
+    def get_zone_decoder(self, overwrite=False, verbose=False):
+        if self.task[:2] == 'T3':
+            fn = self.paths['zone_decoder']
+            feature_types = ['encoder', 'neural']
+            target_types = ['cue', 'dec', 'first_goal', 'rw_goal', 'zones']
+
+            if not fn.exists() or overwrite:
+                df = tmf.zone_decoder_analyses(self, feature_types=feature_types,
+                                               target_types=target_types, verbose=verbose)
+                df.to_csv(fn)
+            else:
+                df = pd.read_csv(fn, index_col=0)
+                tmz = tmf.TreeMazeZones()
+                df['zones'] = df['zones'].astype(pd.api.types.CategoricalDtype(tmz.zones2))
             return df
         else:
             raise NotImplementedError
