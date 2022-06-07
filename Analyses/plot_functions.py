@@ -1,3 +1,5 @@
+import copy
+
 import numpy as np
 import pandas as pd
 from scipy import signal, ndimage, interpolate, stats
@@ -444,7 +446,7 @@ class Fig1(Figure):
             ax.spines[spine].set_linewidth(1)
             ax.spines[spine].set_color('0.2')
 
-        ax.tick_params(axis="both", direction="out", length=2, width=1, color="0.2", which='major', pad=0.5)
+        ax.tick_params(axis="both", direction="out", length=2, width=0.8, color="0.2", which='major', pad=0.5)
         ax.xaxis.set_label_coords(0.625, -0.15)
 
         # summary
@@ -483,14 +485,13 @@ class Fig1(Figure):
         ax2.spines['bottom'].set_linewidth(1)
         ax2.spines['bottom'].set_color('0.2')
 
-        ax2.tick_params(axis="both", direction="out", length=2, width=1, color="0.2", which='major', pad=0.5)
+        ax2.tick_params(axis="both", direction="out", length=2, width=0.8, color="0.2", which='major', pad=0.5)
         ax2.tick_params(axis='y', left=False)
 
         ax.grid(linewidth=0.5)
         ax2.grid(linewidth=0.5)
         if return_flag:
             return f
-
 
     def panel_e(self, ax=None, **params):
         perf = self.summary_info.get_behav_perf()
@@ -504,15 +505,19 @@ class Fig1(Figure):
         fontsize = self.fontsize
 
         if ax is None:
-            f, ax = plt.subplots(figsize=(1, 1), dpi=600)
+            f, ax = plt.subplots(figsize=(1.5, 1.5), dpi=600)
             ax_pos = ax.get_position()
             x0, y0, w, h = ax_pos.x0, ax_pos.y0, ax_pos.width, ax_pos.height
             x_split = w * 0.75
             ax.set_position([x0, y0, x_split, h])
             ax2 = f.add_axes([x0 + x_split, y0, w - x_split, h])
+
+            return_flag = True
         else:
             ax = self.add_panel_axes('e', [0.2, 0, 0.65, 0.92])
             ax2 = self.add_panel_axes('e', [0.85, 0, 0.15, 0.92])
+
+            return_flag = False
 
         sns.set_theme(context='paper', style="whitegrid", font_scale=1, palette=fig_params['palette'])
         sns.set_style(rc={"axes.edgecolor": '0.3',
@@ -542,8 +547,8 @@ class Fig1(Figure):
             ax.spines[spine].set_linewidth(1)
             ax.spines[spine].set_color('k')
 
-        ax.tick_params(axis="both", direction="in", length=2, width=0.8, color="0.5", which='major', pad=1)
-        ax.xaxis.set_label_coords(0.625, -0.1)
+        ax.tick_params(axis="both", direction="out", length=2, width=0.8, color="0.2", which='major', pad=0.5)
+        ax.xaxis.set_label_coords(0.625, -0.15)
 
         # summary
         # ax = f.add_axes([x0 + x_split, y0, w - x_split, h])
@@ -579,14 +584,20 @@ class Fig1(Figure):
         for spine in ['top', 'right', 'left']:
             ax2.spines[spine].set_visible(False)
         for spine in ['bottom']:
-            ax.spines[spine].set_linewidth(1)
-            ax.spines[spine].set_color('k')
+            ax2.spines[spine].set_linewidth(1)
+            ax2.spines[spine].set_color('k')
 
-        ax2.tick_params(axis="both", direction="in", length=2, width=0.8, color="0.5", which='major', pad=1)
+        ax2.tick_params(axis="both", direction="out", length=2, width=1, color="0.2", which='major', pad=0.5)
         ax2.tick_params(axis='y', left=False)
 
+        ax.grid(linewidth=0.5)
+        ax2.grid(linewidth=0.5)
 
-class Fig2(Figure):
+        if return_flag:
+            return f
+
+
+class Fig2_orig(Figure):
     seed = 4
 
     fig_w = 5
@@ -807,7 +818,7 @@ class Fig2(Figure):
         unit_id = self.unit_ids[unit_idx]
         ta = self.unit_session_ta[unit_id]
 
-        x, y,_ = ta.get_trial_track_pos()
+        x, y, _ = ta.get_trial_track_pos()
         cue_trial_sets = self.unit_session_boot_trials[unit_id]
 
         _ = self.tree_maze.plot_maze(axis=ax[0],
@@ -1188,7 +1199,7 @@ class Fig2(Figure):
 
     def panel_f(self, fig_template=None, **panel_params):
 
-        label='f'
+        label = 'f'
         x_split = 0.75
         if fig_template is None:
             x0, y0 = 0.1, 0.1
@@ -1209,7 +1220,7 @@ class Fig2(Figure):
         for ii in range(2):
             ax[ii] = f.add_panel_axes(label=label, axes_pos=ax_pos[ii])
 
-        params = self.params['panel_'+label]
+        params = self.params['panel_' + label]
         params.update(panel_params)
         r_score = params['remap_score']
         b_score = params['behav_score']
@@ -1534,14 +1545,14 @@ class Fig2(Figure):
 
         ylabel = r'$\tau_{(\bar z_{\Delta \tau}, p_{se})}$'
         if 'CR' in r_score:
-            ylabel +='-Cue'
+            ylabel += '-Cue'
         elif 'Co' in r_score:
-            ylabel +='-Rw'
+            ylabel += '-Rw'
 
         ax[0].set_ylabel(ylabel, fontsize=self.fontsize)
         ax[0].set_xticklabels([f"s$_{{{ii}}}$" for ii in range(1, len(subjects))], fontsize=self.fontsize)
         ax[0].set_xlabel('Subjects', fontsize=self.fontsize)
-        ax[0].xaxis.set_label_coords(0.5+1/6, -0.2, transform=ax[0].transAxes)
+        ax[0].xaxis.set_label_coords(0.5 + 1 / 6, -0.2, transform=ax[0].transAxes)
 
         for spine in ['top', 'right']:
             ax[0].spines[spine].set_visible(False)
@@ -1574,10 +1585,10 @@ class Fig2(Figure):
             ax[ii].set_yticks([-1, 0, 1])
             ax[ii].set_yticklabels([-1, 0, 1], fontsize=self.fontsize)
             ax[ii].tick_params(axis="both", direction="out", length=3, width=1, color='0.2', which='major', pad=0.5,
-                              labelsize=self.fontsize)
+                               labelsize=self.fontsize)
             ax[ii].grid(linewidth=0.5)
         ax[1].tick_params(axis='y', left=False)
-        ax[1].set_yticklabels(['']*3)
+        ax[1].set_yticklabels([''] * 3)
 
     def _combine_tables(self, zrc, b_table):
         zrc_b = zrc.copy()
@@ -1604,12 +1615,1555 @@ class Fig2(Figure):
         return session.split("_")[1]
 
 
+class Fig2(Figure):
+    seed = 4
+
+    fig_w = 5
+    fig_h = 4
+    dpi = 1000
+
+    fig_ratio = fig_w / fig_h
+    fig_size = (fig_w, fig_h)
+
+    wspace = 0.02
+    hspace = 0.02
+
+    panels = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']
+
+    a_x0, a_w, a_h = 0.0, 1 / 3, 1 / 3
+    b_x0, b_y0, b_w, b_h = 0.0, 0.0, 1 / 2, 1 - a_h
+    a_y0 = b_y0 + b_h
+
+    c_x0, c_y0 = a_x0 + a_w, a_y0
+    c_w, c_h = b_w - c_x0, a_h
+
+    d_x0, d_y0 = c_x0 + c_w, a_y0
+    d_w, d_h = 1 - 1.5 * (c_x0 + c_w), a_h
+
+    e_x0, e_w, e_h = d_x0, d_w, d_h
+    e_y0 = 1 - e_h - d_h
+
+    f_x0, f_y0, f_w, f_h = e_x0, b_y0, e_w, e_h
+
+    g_x0, g_y0 = d_x0 + d_w, d_y0
+    g_w, g_h = d_w, d_h
+
+    h_x0, h_y0, h_w, h_h = g_x0, e_y0, e_w, e_h
+    i_x0, i_y0, i_w, i_h = g_x0, f_y0, f_w, f_h
+
+    assert np.isclose(a_w + c_w + d_w + g_w, 1)
+    assert np.isclose(a_h + b_h, 1)
+    assert np.isclose(d_h + e_h + f_h, 1)
+
+    subject_palette = 'deep'
+
+    params = dict(fig_size=fig_size, dpi=dpi, seed=seed,
+                  panel_a=dict(unit_idx_track=0,
+                               maze_params=dict(lw=0.2, line_color='0.6', sub_segs='all',
+                                                sub_seg_color='None', sub_seg_lw=0.1),
+                               legend_params=dict(lw=0.7, markersize=1),
+                               trajectories_params=dict(lw=0.15, alpha=0.1),
+                               well_marker_size=3),
+                  panel_b=dict(cond_pair=['CR_bo-CL_bo'] * 4,
+                               cm_params=dict(color_map='viridis',
+                                              n_color_bins=25, nans_2_zeros=True, div=False,
+                                              label='FR'),
+                               zone_rates_lw=0.05, zone_rates_lc='0.75',
+                               dist_n_boot=50, dist_test_color='b', dist_null_color='0.5',
+                               dist_lw=0.9, dist_v_lw=0.7, spike_scale=0.3),
+                  panel_c=dict(test_var_name='CR_bo-CL_bo', measure='corr_m', z_measure='corr_zm',
+                               test_color='#bcbd22', null_color='#17becf', z_color='0.3',
+                               rug_height=0.08, rug_alpha=0.75, rug_lw=0.1,
+                               kde_lw=0.8, kde_alpha=0.8, kde_smoothing=0.5, kde_v_lw=0.5,
+                               ),
+                  panel_d=dict(behav_score='pct_correct', corr_method='kendall',
+                               remap_score='CR_bo-CL_bo-Even_bo-Odd_bo-corr_zm',
+                               dot_sizes=(1, 5), dot_alpha=0.75, dot_lw=0.1, dot_ec='k',
+                               reg_line_params=dict(lw=1, color='#e46c5c'), plot_ci=True,
+                               ci_params=dict(alpha=0.4, color='#e46c5c', linewidth=0, zorder=10)),
+                  panel_e=dict(behav_score='pct_correct', corr_method='kendall',
+                               remap_score='CR_bo-CL_bo-Even_bo-Odd_bo-corr_zm',
+                               rescale_behav=False,
+                               dot_sizes=(2, 8), dot_alpha=0.75, dot_lw=0.1, dot_ec='k',
+                               dot_scale=1, legend_markersize=3,
+                               reg_line_params=dict(lw=1, color='0.3'), plot_ci=True,
+                               ci_params=dict(alpha=0.4, color='#86b4cb', linewidth=0, zorder=-1),
+                               color_pal=sns.color_palette(subject_palette)),
+                  panel_f=dict(behav_score='pct_correct', corr_method='kendall',
+                               remap_score='CR_bo-CL_bo-Even_bo-Odd_bo-corr_zm',
+                               rescale_behav=True,
+                               point_plot_params=dict(estimator=np.mean, linewidth=0.2, join=False,
+                                                      scale=0.4, errwidth=1, ci='sd'),
+                               scatter_summary_params=dict(s=12, alpha=0.8, lw=0, zorder=10),
+                               summary_lw=1.2, summary_c='0.2', summary_xrange_scale=0.2,
+                               color_pal=sns.color_palette(subject_palette)))
+
+    params['panel_g'] = params['panel_d'].copy()
+    params['panel_g']['remap_score'] = 'Co_bi-Inco_bi-Even_bi-Odd_bi-corr_zm'
+
+    params['panel_h'] = params['panel_e'].copy()
+    params['panel_h']['remap_score'] = 'Co_bi-Inco_bi-Even_bi-Odd_bi-corr_zm'
+
+    params['panel_i'] = params['panel_f'].copy()
+    params['panel_i']['remap_score'] = 'Co_bi-Inco_bi-Even_bi-Odd_bi-corr_zm'
+
+    def __init__(self, unit_ids=None, unit_type='cell', trial_end='tE_2', task='T3', boot_data=False, **kargs):
+        # setup
+        self.params.update(kargs)
+        # inherit figure methods
+        super().__init__(fig_size=self.params['fig_size'], dpi=self.params['dpi'])
+        # update fontsizes
+        self.params['fontsizes'] = self._fontsizes
+        self.params.update(kargs)
+        np.random.seed(self.params['seed'])
+
+        assert unit_type in ['all', 'cell', 'mua']
+        self.unit_type = unit_type
+        assert 'T3' in task
+        self.task = task
+        self.tree_maze = tmf.TreeMazeZones()
+        self.boot_data = boot_data
+
+        self.fontsize = self.params['fontsizes']['default']
+        self.label_fontsize = self.params['fontsizes']['panel_label']
+        self.legend_fontsize = self.params['fontsizes']['legend']
+
+        # summary data for panels d and c.
+        self.summary_info = ei.SummaryInfo()
+        zrc = self.summary_info.get_zone_rates_remap(trial_end=trial_end, **kargs)
+        b_table = self.summary_info.get_behav_perf()
+        self.zrc_b = self._combine_tables(zrc, b_table)
+
+        self.n_total_units = len(self.zrc_b)
+        if unit_ids is None:
+            unit_ids = np.random.choice(self.zrc_b.unit_id, 4)
+        else:
+            assert len(unit_ids) == 4
+
+        self.unit_ids = unit_ids
+
+        self.unit_sessions = {}
+        self.unit_subjects = {}
+        self.unit_session_info = {}
+        self.unit_session_ta = {}
+        _loaded_sessions = []
+        _session_units = {}
+        self.unit_session_unit_idx = {}
+        for unit in unit_ids:
+            session = self.zrc_b.loc[unit].session
+            self.unit_session_unit_idx[unit] = self.zrc_b.loc[unit].session_unit_id
+            self.unit_sessions[unit] = session
+            subject = session.split("_")[0]
+            self.unit_subjects[unit] = subject
+
+            if session not in _loaded_sessions:
+                _loaded_sessions.append(session)
+                _session_units[session] = []
+                _session_units[session].append(unit)
+
+                self.unit_session_info[unit] = ei.SubjectSessionInfo(subject, session)
+                self.unit_session_ta[unit] = tmf.TrialAnalyses(session_info=self.unit_session_info[unit],
+                                                               trial_end=trial_end, **kargs)
+            else:
+                _session_units[session].append(unit)
+                _first_unit = _session_units[session][0]
+                self.unit_session_info[unit] = self.unit_session_info[_first_unit]
+                self.unit_session_ta[unit] = self.unit_session_ta[_first_unit]
+
+        self.panel_locs = {}
+        for pp in self.panels:
+            self.panel_locs[pp] = []
+            for kk in ['x0', 'y0', 'w', 'h']:
+                self.panel_locs[pp].append(getattr(self, f"{pp}_{kk}"))
+
+        self.unit_session_boot_trials = {}
+        self.unit_session_boot_seg_rates = {}
+        self.unit_cond_pair = {}
+
+        seg_rates_params = dict(reward_blank=False, trial_end=trial_end)
+        if 'reward_blank' in kargs.keys():
+            seg_rates_params['reward_blank'] = kargs['reward_blank']
+
+        for ii, unit in enumerate(unit_ids):
+            ta = self.unit_session_ta[unit]
+            session_unit_id = self.unit_session_unit_idx[unit]
+            self.unit_cond_pair[unit] = self.params['panel_b']['cond_pair'][ii]
+
+            if boot_data:
+                cond_pair = self.unit_cond_pair[unit].split('-')
+                cond_sets = {}
+                cond_sets.update(ta.bal_cond_sets[cond_pair[0]]['cond_set'])
+                cond_sets.update(ta.bal_cond_sets[cond_pair[1]]['cond_set'])
+
+                self.unit_session_boot_trials[unit] = ta.get_trials_boot_cond_set(cond_sets)
+
+                boot_seg_rates = self.unit_session_info[unit].get_bal_conds_seg_boot_rates(**seg_rates_params)
+                self.unit_session_boot_seg_rates[unit] = boot_seg_rates.loc[
+                    boot_seg_rates.unit == session_unit_id].reset_index(drop=True)
+
+    def fig_layout(self):
+        for label, loc in self.panel_locs.items():
+            self.add_panel(label, loc)
+
+    def plot_all(self):
+        for p in self.panels:
+            try:
+                obj = getattr(self, f"panel_{p}")
+                obj(fig_template=True)
+            except:
+                pass
+
+    def panel_a(self, fig_template=None, **panel_params):
+
+        if fig_template:
+            self.add_panel(label='a', pos=self.panel_locs['a'])
+            ax = np.zeros(3, dtype=object)
+            ax[0] = self.add_panel_axes('a', [0.0, 0.1, 0.47, 1])
+            ax[1] = self.add_panel_axes('a', [0.49, 0.1, 0.47, 1])
+            ax[2] = self.add_panel_axes('a', [0, 0, 1, 1])
+            ax[2].axis('off')
+            leg_pos = [0, 0.2, 1, 1]
+        else:
+            f, ax = plt.subplots(1, 3, figsize=(2, 1), dpi=500)
+            ax[0].set_position([0, 0, 0.5, 1])
+            ax[1].set_position([0.5, 0, 0.5, 1])
+            ax[2].set_position([0, 0, 1, 1])
+            ax[2].axis('off')
+            leg_pos = [0, 0, 1, 1]
+
+        params = self.params['panel_a']
+        params.update(panel_params)
+
+        unit_idx = params['unit_idx_track']
+        unit_id = self.unit_ids[unit_idx]
+        ta = self.unit_session_ta[unit_id]
+
+        x, y, _ = ta.get_trial_track_pos()
+
+        trial_sets = {}
+        for cue in ['CL', 'CR']:
+            if self.boot_data:
+                trial_sets[cue] = self.unit_session_boot_trials[unit_id][:, 0]
+            else:
+                t = ta.trial_condition_table[cue]
+                trial_sets[cue] = np.where(t)[0]
+
+        _ = self.tree_maze.plot_maze(axis=ax[0],
+                                     seg_color=None, zone_labels=False, seg_alpha=0.1,
+                                     plot_cue=True, cue_color='L', **params['maze_params'])
+        _ = self.tree_maze.plot_maze(axis=ax[1],
+                                     seg_color=None, zone_labels=False, seg_alpha=0.1,
+                                     plot_cue=True, cue_color='R', **params['maze_params'])
+
+        well_coords = self.tree_maze.well_coords
+        correct_cue_goals = {'CR': ['G1', 'G2'], 'CL': ['G3', 'G4']}
+        cue_coords = self.tree_maze.cue_label_coords
+
+        for ii, cue in enumerate(['CL', 'CR']):
+            for tr in trial_sets[cue]:
+                dec = ta.trial_table.loc[tr, 'dec']
+                valid_dur = ta.trial_table.loc[tr, 'dur'] <= 1000
+                if (dec in ['L', 'R']) & valid_dur:
+                    col = ta.tmz.split_colors[dec]
+                    ax[ii].plot(x[tr], y[tr], zorder=1, color=col, **params['trajectories_params'], rasterized=True)
+
+            ax[ii].scatter(well_coords['H'][0], well_coords['H'][1], s=params['well_marker_size'], marker='o', lw=0,
+                           color='k',
+                           zorder=10)
+
+            for jj in range(4):
+                goal_id = f"G{jj + 1}"
+                coords = well_coords[goal_id]
+                marker_end_color = 'b' if (goal_id in correct_cue_goals[cue]) else 'r'
+
+                ax[ii].scatter(coords[0], coords[1], s=params['well_marker_size'], marker='d', lw=0,
+                               color=marker_end_color,
+                               zorder=10,
+                               rasterized=False)
+
+            ax[ii].text(cue_coords[0], cue_coords[1], cue[1] + 'C', fontsize=self.legend_fontsize,
+                        horizontalalignment='center', verticalalignment='center', color='w')
+
+        for ii in range(2):
+            ax[ii].axis("square")
+            ax[ii].axis("off")
+            # ax[ii].set_ylim(ta.y_edges[0], ta.y_edges[-1])
+            ax[ii].set_xlim(ta.x_edges[0] * 1.24, ta.x_edges[-1] * 1.24)
+
+        legend_params = params['legend_params']
+        legend_elements = [mpl.lines.Line2D([0.1], [0.1], color='g', lw=legend_params['lw'], label='L Decision'),
+                           mpl.lines.Line2D([0], [0], color='purple', lw=legend_params['lw'], label='R Decision'),
+                           mpl.lines.Line2D([0], [0], marker='o', color='k', lw=0, label='Start',
+                                            markerfacecolor='k', markersize=legend_params['markersize']),
+                           mpl.lines.Line2D([0], [0], marker='d', color='b', lw=0, label='Correct',
+                                            markerfacecolor='b', markersize=legend_params['markersize']),
+                           mpl.lines.Line2D([0], [0], marker='d', color='r', lw=0, label='Incorrect',
+                                            markerfacecolor='r', markersize=legend_params['markersize'])]
+
+        ax[2].legend(handles=legend_elements, loc='lower center', bbox_to_anchor=leg_pos, frameon=False,
+                     fontsize=self.legend_fontsize - 1, labelspacing=0.1, handlelength=0.5, handletextpad=0.4)
+
+        return ax
+
+    def panel_b(self, fig_template=None, **panel_params):
+
+        params = self.params['panel_b']
+        params.update(panel_params)
+
+        sub_panel_labels = ['i', 'ii', 'iii', 'iv']
+        if fig_template is None:
+            f = Figure(fig_size=(3, 3), dpi=500)
+            x0, y0 = 0, 0
+            w2, h2 = 0.5, 0.5
+        else:
+            f = self
+            sub_panel_labels = ['b.' + _ for _ in sub_panel_labels]
+            x0, y0 = f.b_x0, f.b_y0
+            w2, h2 = f.b_w / 2, f.b_h / 2
+
+        sub_panel_pos = [[x0, y0 + h2, w2, h2],
+                         [x0, y0, w2, h2],
+                         [x0 + w2, y0 + h2, w2, h2],
+                         [x0 + w2, y0, w2, h2]]
+
+        for ii, label in enumerate(sub_panel_labels):
+            f.add_panel(pos=sub_panel_pos[ii], label=label)
+            self.sub_panel_b(fig=f, unit=self.unit_ids[ii], sub_panel_label=label)
+
+        if fig_template is None:
+            return f
+
+    def sub_panel_b(self, unit, fig=None, sub_panel_label=None, **panel_params):
+
+        params = self.params['panel_b']
+        params.update(panel_params)
+
+        return_fig = False
+        if fig is None:
+            fig = Figure(fig_size=(2.5, 2))
+            return_fig = True
+
+        ax = np.zeros(6, dtype=object)
+        if sub_panel_label is not None:
+            raise NotImplementedError
+        else:
+            gs = mpl.gridspec.GridSpec(2, 3, wspace=0.01, hspace=0.01, width_ratios=[0.35, 0.35, 0.3],
+                                       top=1, bottom=0, right=1, left=0)
+            cnt = 0
+            ax = np.zeros(6, dtype=object)
+            for row in range(2):
+                for col in range(3):
+                    ax[cnt] = fig.fig.add_axes(gs[row, col].get_position(fig.fig))
+                    cnt += 1
+
+        ta = self.unit_session_ta[unit]
+        session_unit_id = self.unit_session_unit_idx[unit]
+
+        # ----------- conditions -------------#
+        cond_pair_name = self.unit_cond_pair[unit]
+        cond_pair = cond_pair_name.split('-')
+        if cond_pair_name == 'CR_bo-CL_bo':
+            left_cond = 'CL_bo'
+            right_cond = 'CR_bo'
+            r_name = 'RC'
+            l_name = 'LC'
+            trial_segs = ['out'] * 2
+            comp = 'cue'
+        elif cond_pair_name == 'Co_bi-Inco_bi':
+            left_cond = 'Co_bi'
+            right_cond = 'Inco_bi'
+            r_name = 'NRW'
+            l_name = 'RW'
+            trial_segs = ['in'] * 2
+            comp = 'rw'
+        else:
+            raise
+
+        cond_pair2 = [left_cond.split('_')[0], right_cond.split('_')[0]]
+        cond_names = [l_name, r_name]
+
+        # get trials
+        trial_sets = [[]] * 2
+        if self.boot_data:
+            for ii, cond in enumerate(cond_pair):
+                trial_sets[ii] = self.unit_session_boot_trials[unit][cond][:, 0]
+        else:
+            for ii, cond in enumerate(cond_pair2):
+                t = ta.trial_condition_table[cond]
+                trial_sets[ii] = np.where(t)[0]
+
+        # ---- traces + spikes ---- #
+        x, y, _ = ta.get_trial_track_pos()
+        spikes = ta.get_trial_neural_data(data_type='spikes')[session_unit_id]
+
+        for ii in range(2):
+            self.tree_maze.plot_spk_trajectories(x=x[trial_sets[ii]], y=y[trial_sets[ii]],
+                                                 spikes=spikes[trial_sets[ii]], ax=ax[ii],
+                                                 spike_scale=params['spike_scale'],
+                                                 trajectories_params=dict(color='0.4', lw=0.2, alpha=0.1,
+                                                                          rasterized=True),
+                                                 spike_trajectories=dict(color='r', alpha=0.1, linewidth=0,
+                                                                         rasterized=True))
+            ax[ii].set_title(cond_names[ii], fontsize=self.fontsize, pad=1)
+
+        # ---- zone rate mean heat maps ---- #
+        lw = params['zone_rates_lw']
+        line_color = params['zone_rates_lc']
+        cm_params = params['cm_params']
+        cm_params['tick_fontsize'] = self.legend_fontsize - 1
+        cm_params['label_fontsize'] = self.legend_fontsize - 1
+
+        # obtain zone rate data for each condition
+        if self.boot_data:
+            seg_rates = self.unit_session_boot_seg_rates[unit].groupby(['cond', 'unit', 'seg']).mean()
+            seg_rates = seg_rates.reset_index()
+            max_val = seg_rates[(seg_rates.cond.isin(cond_pair))].m.max()
+
+            zr = [[]] * 2
+            for ii in range(2):
+                zr[ii] = seg_rates[seg_rates.cond == cond_pair[ii]][['m', 'seg']]
+                zr[ii] = zr[ii].pivot_table(columns='seg', aggfunc=lambda xx: xx)
+                zr[ii] = zr[ii].reset_index().drop('index', axis=1)
+
+        else:
+            zr = [[]] * 2
+            max_val = 0
+            for ii, (cond, trial_seg) in enumerate(zip(cond_pair2, trial_segs)):
+                zr[ii] = ta.get_avg_zone_rates(trials=trial_sets[ii], trial_seg=trial_seg).loc[session_unit_id]
+                max_val = max(max_val, zr[ii].max())
+
+        for ii, ax_ii in enumerate([3, 4]):
+            self.tree_maze.plot_zone_activity(zr[ii], ax=ax[ax_ii],  # legend=(ii + 1) % 2,
+                                              min_value=0, max_value=max_val,
+                                              lw=lw, line_color=line_color, **cm_params)
+
+        # ---------- condition comparison ---------- #
+        ax_ii = 2
+        p = ax[ax_ii].get_position()
+        x_delta = 0.23 * p.width
+        y_delta = 0.2 * p.height
+        h_delta = 0.3 * p.height
+
+        p2 = [p.x0 + x_delta, p.y0 + y_delta, p.width - x_delta, p.height - h_delta]
+        ax[ax_ii].set_position(p2)
+
+        ta.plot_unit_seg_cond_comp(unit=session_unit_id, comp=comp, ax=ax[ax_ii], **dict(fontsize=self.fontsize * 0.8))
+
+        # ---- distributions of correlations  ---- #
+        ax_ii = 5
+        p = ax[ax_ii].get_position()
+        x_delta = 0.23 * p.width
+        y_delta = 0.2 * p.height
+        h_delta = 0.5 * p.height
+        p2 = [p.x0 + x_delta, p.y0 + y_delta, p.width - x_delta, p.height - h_delta]
+        ax[ax_ii].set_position(p2)
+
+        test_cond_pair = cond_pair_name
+        null_cond_pair = ta.test_null_bal_cond_pairs[test_cond_pair]
+        n_boot = params['dist_n_boot']
+        test_boot_corr_dist = ta.unit_zrm_boot_corr(unit_id=session_unit_id,
+                                                    bal_cond_pair=test_cond_pair, n_boot=n_boot)
+        null_boot_corr_dist = ta.unit_zrm_boot_corr(unit_id=session_unit_id,
+                                                    bal_cond_pair=null_cond_pair, n_boot=n_boot)
+
+        plot_kde_dist(data=test_boot_corr_dist, v_lines=np.nanmean(test_boot_corr_dist), label=f"{r_name}-{l_name}",
+                      color=params['dist_test_color'], lw=params['dist_lw'], v_lw=params['dist_v_lw'], ax=ax[ax_ii])
+        plot_kde_dist(data=null_boot_corr_dist, v_lines=np.nanmean(null_boot_corr_dist), label=f"Null",
+                      color=params['dist_null_color'], lw=params['dist_lw'], v_lw=params['dist_v_lw'], ax=ax[ax_ii])
+
+        ax[ax_ii].get_yaxis().set_ticks([])
+        ax[ax_ii].set_xticks([0, 1])
+        ax[ax_ii].set_xticklabels([0, 1], fontsize=self.fontsize * 0.75)
+        ax[ax_ii].set_xlabel(r"$\tau$", fontsize=self.fontsize, labelpad=0)
+        ax[ax_ii].xaxis.set_label_coords(0.5, -0.1, transform=ax[ax_ii].transAxes)
+
+        sns.despine(ax=ax[ax_ii])
+        ax[ax_ii].tick_params(axis='both', bottom=True, left=True,
+                              labelsize=self.fontsize * 0.6, pad=1, length=2,
+                              width=1, color='0.2', which='major')
+
+        for sp in ['bottom', 'left']:
+            ax[ax_ii].spines[sp].set_linewidth(1)
+            ax[ax_ii].spines[sp].set_color('0.2')
+
+        ax[ax_ii].set_ylabel('Bootstrapped Corr', fontsize=self.fontsize * 0.6, labelpad=0)
+        legend_elements = [plt.Line2D([0], [0], color=params['dist_test_color'],
+                                      label=f"{r_name}-{l_name}", lw=params['dist_lw']),
+                           plt.Line2D([0], [0], color=params['dist_null_color'],
+                                      label="Null", lw=params['dist_lw']),
+                           ]
+        legend_params = dict(handlelength=0.3, handletextpad=0.3, bbox_to_anchor=[0.5, 1.1], loc='lower center',
+                             frameon=False, fontsize=self.fontsize * 0.6, markerscale=0.6, labelspacing=0.2,
+                             ncol=2,
+                             columnspacing=0.7)
+        ax[ax_ii].legend(handles=legend_elements, **legend_params)
+
+        z_var = f"{test_cond_pair}-{null_cond_pair}-corr_zm"
+        z_val = self.zrc_b.loc[unit, z_var]
+        ax[ax_ii].text(0.5, 1.05, r"$\bar{z}_{\Delta \tau}$=" + str(np.around(z_val, 1)), fontsize=self.fontsize * 0.6,
+                       ha='center', va='bottom', transform=ax[ax_ii].transAxes)
+        ax[ax_ii].grid(False)
+
+        if return_fig:
+            return fig
+
+    def panel_c(self, fig_template=None, **panel_params):
+
+        x0, y0 = 0.2, 0.65
+        x1, y1 = x0, 0.25
+        w, h = 0.65, 0.25
+        panel_axes_pos = [[x0, y0, w, h],
+                          [x1, y1, w, h]]
+
+        if fig_template is None:
+            f = Figure(fig_size=(1.5, 1.5), dpi=500)
+            p_ax = f.add_panel(label='c', pos=[0, 0, 1, 1], label_txt=False)
+        else:
+            f = self
+            p_ax = self.add_panel(label='c', pos=self.panel_locs['c'])
+
+        ax = np.zeros(2, dtype=object)
+        for ii, pos in enumerate(panel_axes_pos):
+            ax[ii] = f.add_panel_axes(label='c', axes_pos=pos)
+
+        legend_params = dict(handlelength=0.25, handletextpad=0.2, bbox_to_anchor=[-0.1, 0.4], loc='lower left',
+                             frameon=False, fontsize=self.legend_fontsize, markerscale=0.6, labelspacing=0.1)
+
+        params = self.params['panel_c']
+        params.update(panel_params)
+
+        test_var_name = params['test_var_name']
+        measure = params['measure']
+        z_measure = params['z_measure']
+
+        null_var_name = self.unit_session_ta[self.unit_ids[0]].test_null_bal_cond_pairs[test_var_name]
+
+        test_var = f"{test_var_name}-{measure}"
+        null_var = f"{null_var_name}-{measure}"
+        z_var = f"{test_var_name}-{null_var_name}-{z_measure}"
+
+        id_vars = ['unit_id', 'unit_type']
+        table = self.zrc_b.melt(id_vars=id_vars, value_vars=[test_var, null_var, z_var], var_name='comparison',
+                                value_name='score').copy()
+        table.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+        if self.unit_type != 'all':
+            table = table[table.unit_type == self.unit_type]
+        table = table.assign(x='vars')
+
+        kde_params = dict(alpha=params['kde_alpha'], cut=0)
+
+        # test/null dists
+        null_dat = table[table.comparison == null_var]
+        plot_kde_dist(data=null_dat.score, color=params['null_color'],
+                      lw=params['kde_lw'], v_lines=null_dat.score.mean(), v_lw=params['kde_lw'],
+                      ax=ax[0], **kde_params)
+        test_dat = table[table.comparison == test_var]
+        plot_kde_dist(data=test_dat.score, color=params['test_color'],
+                      lw=params['kde_lw'], v_lines=test_dat.score.mean(), v_lw=params['kde_lw'],
+                      ax=ax[0], **kde_params)
+
+        # plot individual ticks
+        sns.rugplot(ax=ax[0], data=null_dat, x='score', height=-params['rug_height'], alpha=params['rug_alpha'],
+                    color=params['null_color'], clip_on=False, linewidth=params['rug_lw'])
+
+        sns.rugplot(ax=ax[0], data=test_dat, x='score', height=params['rug_height'], alpha=params['rug_alpha'],
+                    color=params['test_color'], clip_on=False, linewidth=params['rug_lw'])
+
+        if 'corr_m' in measure:
+            ax[0].set_xlim([-1.01, 1.01])
+            ax[0].set_xticks([-1, 0, 1])
+            ax[0].set_xticklabels([-1, 0, 1], fontsize=self.fontsize - 1)
+            ax[0].set_xlabel(r"$\bar{\tau}$", labelpad=0, fontsize=self.fontsize)
+
+        if test_var_name == 'CR_bo-CL_bo':
+            test_var_name_short = 'RC-LC'
+            null_var_name_short = 'Null'
+        elif test_var_name == 'Co_bi-Inco_bi':
+            test_var_name_short = 'Co-Inco'
+            null_var_name_short = 'Null'
+        else:
+            test_var_name_short = test_var_name
+            null_var_name_short = null_var_name
+
+        legend_elements = [plt.Line2D([0], [0], color=params['test_color'], label=test_var_name_short),
+                           plt.Line2D([0], [0], color=params['null_color'], label=null_var_name_short),
+                           ]
+        ax[0].legend(handles=legend_elements, **legend_params)
+
+        # z data
+        z_dat = table[table.comparison == z_var]
+        plot_kde_dist(data=z_dat.score, color=params['z_color'],
+                      lw=params['kde_lw'], v_lines=z_dat.score.mean(), v_lw=params['kde_lw'],
+                      ax=ax[1], **kde_params)
+        sns.rugplot(ax=ax[1], data=z_dat, x='score', height=params['rug_height'], alpha=params['rug_alpha'],
+                    color=params['z_color'], clip_on=False, linewidth=params['rug_lw'])
+
+        xticks = np.floor(min(z_dat.score)), np.ceil(max(z_dat.score))
+        xticks = np.sort(np.append(xticks, 0)).astype(int)
+        ax[1].set_xticks(xticks)
+        ax[1].set_xticklabels(xticks, fontsize=self.fontsize - 1)
+
+        if 'CR' in z_var:
+            ax[1].set_xlabel(r"$\bar{z}_{\Delta \tau} \: Cue$", fontsize=self.fontsize, labelpad=0)
+        elif 'Co' in z_var:
+            ax[1].set_xlabel(r"$\bar{z}_{\Delta \tau} \: Rw$", fontsize=self.fontsize, labelpad=0)
+        else:
+            ax[1].set_xlabel(r"$\bar{z}_{\Delta \tau}$", fontsize=self.fontsize, labelpad=0)
+
+        for ax_ii in ax:
+            sns.despine(ax=ax_ii, left=True)
+            ax_ii.get_yaxis().set_ticks([])
+            ax_ii.set_ylabel("")
+            ax_ii.spines['bottom'].set_linewidth(1)
+            ax_ii.spines['bottom'].set_color('k')
+            ax_ii.grid(False)
+            ax_ii.tick_params(axis="x", direction="out", bottom=True, length=2, width=0.8, color='0.2', which='major',
+                              pad=0.2)
+            ax_ii.set_facecolor('none')
+
+        # y label for both axes
+        p_ax.text(0, 0.6, f"Units (n={len(z_dat)})", rotation='vertical', ha='left', va='center',
+                  fontsize=self.fontsize,
+                  transform=p_ax.transAxes)
+
+        if fig_template is None:
+            return f
+
+    def panel_d(self, fig_template=None, **panel_params):
+        x0, y0 = 0.28, 0.3
+        w, h = 0.6, 0.6
+        ax_pos = [x0, y0, w, h]
+
+        if fig_template is None:
+            f = Figure(fig_size=(1, 1), dpi=500)
+            ax = f.add_axes(ax_pos)
+        else:
+            f = self
+            p_ax = self.add_panel(label='d', pos=self.panel_locs['d'])
+            ax = self.add_panel_axes(label='d', axes_pos=ax_pos)
+
+        params = self.params['panel_d']
+        params.update(panel_params)
+
+        r_score = params['remap_score']
+        b_score = params['behav_score']
+
+        self.plot_unit_remap_v_beh(ax=ax, r_score=r_score, b_score=b_score, **params)
+
+        if fig_template is None:
+            return f
+
+    def panel_e(self, fig_template=None, **panel_params):
+
+        if fig_template is None:
+            x0, y0 = 0.1, 0.1
+            w, h = 0.8, 0.8
+            ax_pos = [x0, y0, w, h]
+            f = Figure(fig_size=(1, 1), dpi=500)
+            ax = f.add_axes(ax_pos)
+        else:
+            x0, y0 = 0.28, 0.3
+            w, h = 0.6, 0.6
+            ax_pos = [x0, y0, w, h]
+
+            f = self
+            p_ax = self.add_panel(label='e', pos=self.panel_locs['e'])
+            ax = self.add_panel_axes(label='e', axes_pos=ax_pos)
+
+        params = self.params['panel_e']
+        params.update(panel_params)
+        r_score = params['remap_score']
+        b_score = params['behav_score']
+
+        self.plot_session_remap_v_beh(ax=ax, r_score=r_score, b_score=b_score, **params)
+
+        if fig_template is None:
+            return f
+
+    def panel_f(self, fig_template=None, **panel_params):
+
+        label = 'f'
+        x_split = 0.75
+        if fig_template is None:
+            x0, y0 = 0.1, 0.1
+            w, h = 0.8, 0.8
+
+            f = Figure(fig_size=(1, 1), dpi=500)
+            p_ax = f.add_panel(label=label, pos=[0, 0, 1, 1], label_txt=False)
+        else:
+            x0, y0 = 0.28, 0.3
+            w, h = 0.6, 0.6
+            f = self
+            p_ax = self.add_panel(label=label, pos=self.panel_locs[label])
+
+        ax_pos = [[x0, y0, w * x_split, h],
+                  [x0 + w * x_split, y0, w * (1 - x_split), h]]
+
+        ax = np.zeros(2, dtype=object)
+        for ii in range(2):
+            ax[ii] = f.add_panel_axes(label=label, axes_pos=ax_pos[ii])
+
+        params = self.params['panel_' + label]
+        params.update(panel_params)
+        r_score = params['remap_score']
+        b_score = params['behav_score']
+
+        self.plot_subject_remap_beh_slope(ax=ax, r_score=r_score, b_score=b_score, **params)
+
+        if fig_template is None:
+            return f
+
+    def panel_g(self, fig_template=None, **panel_params):
+        label = 'g'
+        x0, y0 = 0.32, 0.3
+        w, h = 0.6, 0.6
+        ax_pos = [x0, y0, w, h]
+
+        if fig_template is None:
+            f = Figure(fig_size=(1, 1), dpi=500)
+            ax = f.add_axes(ax_pos)
+        else:
+            f = self
+            p_ax = self.add_panel(label=label, pos=self.panel_locs[label])
+            ax = self.add_panel_axes(label=label, axes_pos=ax_pos)
+
+        params = self.params['panel_' + label]
+        params.update(panel_params)
+
+        r_score = params['remap_score']
+        b_score = params['behav_score']
+
+        self.plot_unit_remap_v_beh(ax=ax, r_score=r_score, b_score=b_score, **params)
+
+        if fig_template is None:
+            return f
+
+    def panel_h(self, fig_template=None, **panel_params):
+
+        label = 'h'
+        if fig_template is None:
+            x0, y0 = 0.1, 0.1
+            w, h = 0.8, 0.8
+            ax_pos = [x0, y0, w, h]
+            f = Figure(fig_size=(1, 1), dpi=500)
+            ax = f.add_axes(ax_pos)
+        else:
+            x0, y0 = 0.32, 0.3
+            w, h = 0.6, 0.6
+            ax_pos = [x0, y0, w, h]
+            f = self
+            p_ax = self.add_panel(label=label, pos=self.panel_locs[label])
+            ax = self.add_panel_axes(label=label, axes_pos=ax_pos)
+
+        params = self.params['panel_' + label]
+        params.update(panel_params)
+        r_score = params['remap_score']
+        b_score = params['behav_score']
+
+        self.plot_session_remap_v_beh(ax=ax, r_score=r_score, b_score=b_score, **params)
+
+        if fig_template is None:
+            return f
+
+    def panel_i(self, fig_template=None, **panel_params):
+
+        label = 'i'
+        x_split = 0.75
+        if fig_template is None:
+            x0, y0 = 0.1, 0.1
+            w, h = 0.8, 0.8
+
+            f = Figure(fig_size=(1, 1), dpi=500)
+            p_ax = f.add_panel(label=label, pos=[0, 0, 1, 1], label_txt=False)
+        else:
+            x0, y0 = 0.32, 0.3
+            w, h = 0.6, 0.6
+            f = self
+            p_ax = self.add_panel(label=label, pos=self.panel_locs[label])
+
+        ax_pos = [[x0, y0, w * x_split, h],
+                  [x0 + w * x_split, y0, w * (1 - x_split), h]]
+
+        ax = np.zeros(2, dtype=object)
+        for ii in range(2):
+            ax[ii] = f.add_panel_axes(label=label, axes_pos=ax_pos[ii])
+
+        params = self.params['panel_' + label]
+        params.update(panel_params)
+        r_score = params['remap_score']
+        b_score = params['behav_score']
+
+        self.plot_subject_remap_beh_slope(ax=ax, r_score=r_score, b_score=b_score, **params)
+
+        if fig_template is None:
+            return f
+
+    def plot_unit_remap_v_beh(self, ax, r_score, b_score, **params):
+        corr_method = params['corr_method']
+
+        table = self.zrc_b.copy()
+        table['r_score'] = table[r_score]
+        table['r_nscore'] = -table['r_score']
+        table['b_score'] = table[b_score]
+
+        r = np.around(table[['b_score', 'r_score']].corr(method=corr_method).iloc[0, 1], 2)
+        if r < 0:
+            size_sign = 'r_nscore'
+        else:
+            size_sign = 'r_score'
+
+        sns.scatterplot(ax=ax, x='r_score', y='b_score', data=table, hue='r_score', size=size_sign,
+                        palette='crest_r', legend=False, alpha=params['dot_alpha'], sizes=params['dot_sizes'],
+                        **{'linewidth': params['dot_lw'], 'edgecolor': params['dot_ec']})
+
+        # regression line
+        temp = table[['b_score', 'r_score']].dropna()
+        x = temp['r_score'].values
+        y = temp['b_score'].values
+
+        if corr_method == 'pearson':
+            m, b = np.polyfit(x, y, 1)
+        else:
+            m, b = stats.siegelslopes(y, x)
+
+        xx = np.linspace(x.min(), x.max(), 100)
+        ax.plot(xx, m * xx + b, **params['reg_line_params'])
+
+        if params['plot_ci']:
+            if corr_method == 'pearson':
+                yb, yu, xx = get_reg_ci(x, y, reg_type='linear', eval_x=xx)
+            else:
+                yb, yu, xx = get_reg_ci(x, y, eval_x=xx)
+            ax.fill_between(xx, yb, yu, **params['ci_params'])
+
+        # aesthetics
+        ax.set_ylabel(r"$p_{se} (\%)$", fontsize=self.fontsize, labelpad=0)
+        if 'corr_m' in r_score:
+            ax.set_xlabel(r"$\bar \tau$", fontsize=self.fontsize, labelpad=0)
+            xticks = [-1, 0, 1]
+        elif 'zm' in r_score:
+            xticks = np.floor(min(x)), np.ceil(max(x))
+            xticks = np.sort(np.append(xticks, 0)).astype(int)
+
+            if 'CR' in r_score:
+                ax.set_xlabel(r"$\bar{z}_{\Delta \tau} \: Cue$", fontsize=self.fontsize, labelpad=0)
+            elif 'Co' in r_score:
+                ax.set_xlabel(r"$\bar{z}_{\Delta \tau} \: Rw$", fontsize=self.fontsize, labelpad=0)
+            else:
+                ax.set_xlabel(r"$\bar{z}_{\Delta \tau}$", fontsize=self.fontsize, labelpad=0)
+        else:
+            xticks = ax.get_xticks()
+
+        ax.set_xticks(xticks)
+        ax.set_xticklabels(xticks, fontsize=self.fontsize - 1)
+        ax.tick_params(axis="both", direction="out", length=2, width=1, color='0.2', which='major',
+                       pad=0.5, labelsize=self.fontsize)
+
+        ax.set_ylim(0.25, 1.01)
+        yticks = ax.get_yticks()
+        ax.set_yticklabels((yticks * 100).astype(int))
+        sns.despine(ax=ax)
+
+        for sp in ['bottom', 'left']:
+            ax.spines[sp].set_linewidth(1)
+            ax.spines[sp].set_color('k')
+
+        xt = ax.get_xlim()[0]
+        xt = xt + np.abs(xt) * 0.1
+        if corr_method == 'kendall':
+            ax.text(xt, 0.3, r"$\tau={}$".format(r), fontsize=self.legend_fontsize)
+        else:
+            ax.text(xt, 0.3, r"$\rho={}$".format(r), fontsize=self.legend_fontsize)
+
+        ax.grid(linewidth=0.5)
+
+    def plot_session_remap_v_beh(self, ax, r_score, b_score, **params):
+
+        corr_method = params['corr_method']
+        table = self.zrc_b.copy()
+        table['r_score'] = table[r_score]
+        table['b_score'] = table[b_score]
+
+        table = table[['subject', 'task', 'session', 'unit_type', 'r_score', 'b_score']].copy()
+        table['x'] = table['r_score']
+        table['y'] = table['b_score']
+        table = table.dropna()
+
+        if params['rescale_behav']:
+            table['y'] = self._logit(table['y'])
+
+        session_means = table.groupby(['subject', 'session']).mean()
+        session_means['n'] = table.groupby(['subject', 'session']).size()
+
+        sns.scatterplot(ax=ax, x='x', y='y', hue='subject', size='n', data=session_means,
+                        legend=True, hue_order=self.summary_info.subjects,
+                        alpha=params['dot_alpha'], sizes=params['dot_sizes'],
+                        **{'linewidth': params['dot_lw'], 'edgecolor': params['dot_ec']})
+
+        l = ax.get_legend()
+        # hack to get seaborn scaled markers:
+        o = []
+        on_numerics = False
+        for l_handle in l.legendHandles:
+            if on_numerics:
+                label = l_handle.properties()['label']
+                l_handle.set_label = "n=" + label
+                o.append(l_handle)
+            elif l_handle.properties()['label'] == 'n':
+                on_numerics = True
+        legend_size_marker_handles = [o[ii] for ii in [0, -1]]
+        l.remove()
+
+        # regression line
+        x = session_means['x']
+        y = session_means['y']
+
+        if corr_method == 'pearson':
+            m, b = np.polyfit(x, y, 1)
+        else:
+            m, b = stats.siegelslopes(y, x)
+
+        xx = np.linspace(x.min(), x.max(), 100)
+        ax.plot(xx, m * xx + b, **params['reg_line_params'])
+
+        if params['plot_ci']:
+            if corr_method == 'pearson':
+                yb, yu, xx = get_reg_ci(x, y, reg_type='linear', eval_x=xx)
+            else:
+                yb, yu, xx = get_reg_ci(x, y, eval_x=xx)
+
+            ax.fill_between(xx, yb, yu, **params['ci_params'])
+
+        ax.grid(linewidth=0.5)
+        ax.tick_params(axis="both", direction="out", length=3, width=1, color='0.2', which='major', pad=1,
+                       labelsize=self.fontsize)
+
+        if not params['rescale_behav']:
+            ax.set_ylim(0.25, 1.01)
+            yticks = ax.get_yticks()
+            ax.set_yticklabels((yticks * 100).astype(int))
+            ax.set_ylabel(r"$p_{se} (\%)$", fontsize=self.fontsize, labelpad=0)
+        else:
+            ax.set_ylabel(r"$p_{se}$ [logit]", fontsize=self.fontsize, labelpad=0)
+
+        if 'zm' in r_score:
+            xticks = np.floor(min(x)), np.ceil(max(x))
+            xticks = np.sort(np.append(xticks, 0)).astype(int)
+        else:
+            xticks = ax.get_xticks()
+
+        ax.set_xticks(xticks)
+        ax.set_xticklabels(xticks, fontsize=self.fontsize - 1)
+        ax.tick_params(axis="both", direction="out", length=2, width=1, color='0.2', which='major',
+                       pad=0.5, labelsize=self.fontsize)
+
+        if 'CR' in r_score:
+            ax.set_xlabel(r"$\bar{z}_{\Delta \tau \: \bar{se}} \: Cue$", fontsize=self.fontsize, labelpad=0)
+        elif 'Co' in r_score:
+            ax.set_xlabel(r"$\bar{z}_{\Delta \tau \: \bar{se}} \: Rw$", fontsize=self.fontsize, labelpad=0)
+        else:
+            ax.set_xlabel(r"$\bar{z}_{\Delta \tau-se}$", fontsize=self.fontsize, labelpad=0)
+        sns.despine(ax=ax)
+        for sp in ['bottom', 'left']:
+            ax.spines[sp].set_linewidth(1)
+            ax.spines[sp].set_color('k')
+
+        xt = 0.1
+        r = np.around(session_means[['x', 'y']].corr(method=corr_method).iloc[0, 1], 2)
+        if corr_method == 'kendall':
+            ax.text(xt, 0.05, r"$\tau$={}".format(r), fontsize=self.legend_fontsize, transform=ax.transAxes)
+        else:
+            ax.text(xt, 0.05, r"$\rho$={}".format(r), fontsize=self.legend_fontsize, transform=ax.transAxes)
+
+        legend_params = dict(handlelength=0.25, handletextpad=0.2, bbox_to_anchor=[1.0, 1], loc='upper left',
+                             frameon=False, labelspacing=0.02,
+                             fontsize=self.legend_fontsize - 1)
+
+        legend_elements = []
+        pal = params['color_pal']
+        for ii, ss in enumerate(self.summary_info.subjects[:-1]):
+            legend_elements.append(
+                plt.Line2D([0], [0], marker='o', alpha=params['dot_alpha'], markersize=params['legend_markersize'],
+                           lw=0, mew=0, color=pal[ii], label=f"s$_{{{ii + 1}}}$"))
+        l1 = ax.legend(handles=legend_elements, **legend_params)
+
+        legend_params = dict(handlelength=0.25, handletextpad=0.3, bbox_to_anchor=[1.0, 0], loc='lower left',
+                             frameon=False, fontsize=self.legend_fontsize - 1,
+                             labelspacing=0.1)
+
+        l2 = ax.add_artist(plt.legend(handles=legend_size_marker_handles, **legend_params))
+        ax.add_artist(l1)
+
+    def plot_subject_remap_beh_slope(self, ax, r_score, b_score, **params):
+
+        corr_method = params['corr_method']
+        table = self.zrc_b.copy()
+        table['r_score'] = table[r_score]
+        table['b_score'] = table[b_score]
+
+        table = table[['subject', 'task', 'session', 'unit_type', 'r_score', 'b_score']].copy()
+        table['x'] = table['r_score']
+        table['y'] = table['b_score']
+        table = table.dropna()
+
+        if params['rescale_behav']:
+            table['y'] = self._logit(table['y'])
+
+        table_m = table.groupby(['subject', 'task', 'session']).mean()
+        table_m = table_m.reset_index()
+        subjects = self.summary_info.subjects
+        n_subjects = len(subjects)
+        n_boot = 500
+        rb = np.zeros((n_subjects, n_boot)) * np.nan
+        for ii, ss in enumerate(subjects):
+            sub_table = table_m.loc[table_m.subject == ss, ['x', 'y']]
+            rb[ii] = rs.bootstrap_corr(sub_table.x.values, sub_table.y.values, n_boot, corr_method=corr_method)
+        boot_behav_remap = pd.DataFrame(rb.T, columns=subjects).melt(value_name='r', var_name='subject')
+
+        subset = boot_behav_remap.dropna()
+        pal = params['color_pal']
+        sns.pointplot(ax=ax[0], x='subject', y='r', hue='subject', data=subset, palette=pal,
+                      **params['point_plot_params'])
+        ax[0].get_legend().remove()
+
+        ylabel = r'$\tau_{(\bar z_{\Delta \tau}, p_{se})}$'
+        if 'CR' in r_score:
+            ylabel += '-Cue'
+        elif 'Co' in r_score:
+            ylabel += '-Rw'
+
+        ax[0].set_ylabel(ylabel, fontsize=self.fontsize)
+        ax[0].set_xticklabels([f"s$_{{{ii}}}$" for ii in range(1, len(subjects))], fontsize=self.fontsize)
+        ax[0].set_xlabel('Subjects', fontsize=self.fontsize)
+        ax[0].xaxis.set_label_coords(0.5 + 1 / 6, -0.2, transform=ax[0].transAxes)
+
+        for spine in ['top', 'right']:
+            ax[0].spines[spine].set_visible(False)
+        for spine in ['bottom', 'left']:
+            ax[0].spines[spine].set_linewidth(1)
+            ax[0].spines[spine].set_color('k')
+
+        # summary
+        scale = params['summary_xrange_scale']
+        subset2 = boot_behav_remap.groupby("subject").mean().loc[subjects[:-1]]
+        subset2['color'] = pal[:len(subset2)]
+        x_locs = np.random.rand(len(subset2)) * scale
+        x_locs = x_locs - x_locs.mean()
+        ax[1].scatter(x_locs, subset2.r, c=subset2.color, **params['scatter_summary_params'])
+
+        ax[1].plot(np.array([-1, 1]) * scale, [subset2.r.mean()] * 2, lw=params['summary_lw'],
+                   color=params['summary_c'])
+
+        ax[1].set_xlim(np.array([-1, 1]) * scale * 2)
+        ax[1].set_xticks([0])
+        ax[1].set_xticklabels([r" $\bar s$ "], fontsize=self.fontsize)
+        for spine in ['top', 'right', 'left']:
+            ax[1].spines[spine].set_visible(False)
+        for spine in ['bottom']:
+            ax[1].spines[spine].set_linewidth(1)
+            ax[1].spines[spine].set_color('k')
+
+        for ii in range(2):
+            ax[ii].set_ylim(-1.01, 1.01)
+            ax[ii].set_yticks([-1, 0, 1])
+            ax[ii].set_yticklabels([-1, 0, 1], fontsize=self.fontsize)
+            ax[ii].tick_params(axis="both", direction="out", length=3, width=1, color='0.2', which='major', pad=0.5,
+                               labelsize=self.fontsize)
+            ax[ii].grid(linewidth=0.5)
+        ax[1].tick_params(axis='y', left=False)
+        ax[1].set_yticklabels([''] * 3)
+
+    def _combine_tables(self, zrc, b_table):
+        zrc_b = zrc.copy()
+        b_table = b_table.copy()
+        b_table.set_index('session', inplace=True)
+
+        b_cols = ['pct_correct', 'pct_sw_correct', 'pct_vsw_correct', 'pct_L_correct', 'pct_R_correct']
+        for session in b_table.index:
+            z_index = zrc_b.session == session
+            zrc_b.loc[z_index, b_cols] = b_table.loc[session, b_cols].values
+
+        zrc_b['task'] = zrc_b.session.apply(self._get_task_from_session)
+
+        if self.unit_type != 'all':
+            zrc_b = zrc_b[zrc_b.unit_type == self.unit_type]
+        return zrc_b
+
+    @staticmethod
+    def _logit(p):
+        return np.log(p / (1 - p))
+
+    @staticmethod
+    def _get_task_from_session(session):
+        return session.split("_")[1]
+
+
+class RemapFigures():
+    dpi = 1500
+    fontsize = 10
+
+    def __init__(self, remap_comp, unit_type='cell', **remap_params):
+        self.update_panel_params(remap_comp=remap_comp)
+        self.tmz = tmf.TreeMazeZones()
+
+        self.summary_info = ei.SummaryInfo()
+        zrc = self.summary_info.get_zone_rates_remap(overwrite=False, **remap_params)
+        b_table = self.summary_info.get_behav_perf()
+        self.zrc_b = self._combine_tables(zrc, b_table)
+
+        pzrc =  self.summary_info.get_pop_zone_rates_remap(overwrite=False, **remap_params)
+        self.pzrc_b = self._combine_tables(pzrc, b_table)
+
+    def update_panel_params(self, params=None, remap_comp='cue'):
+
+        if remap_comp == 'cue':
+            self.cond_pair = 'CR-CL'
+            self.cond_pair_bal = 'CR_bo-CL_bo'
+            self.null_pair_bal = 'Even_bo-Odd_bo'
+            self.cond_colors = ['Purples', 'Greens']
+            self.cond_label_names = ['RC', 'LC']
+            self.cond_label_order = [1, 0]
+
+        elif remap_comp == 'rw':
+            cond_pair = 'Co-Inco'
+            cond_pair_bal = 'Co_bi-Inco_bi'
+            null_pair_bal = 'Even_bi-Odd_bi'
+            cond_colors = ['Blues', 'Reds']
+            cond_label_names = ['Rw', 'NRw']
+            cond_label_order = [0, 1]
+
+        elif remap_comp == 'dir':
+            cond_pair = 'Out-In'
+            cond_pair_bal = 'Out_bo-In_bi'
+            null_pair_bal = 'Even_bo-Odd_bi'
+            cond_colors = ['Oranges', 'Greys']
+            cond_label_names = ['Out', 'In']
+            cond_label_order = [0, 1]
+
+        else:
+            raise NotImplementedError
+
+        subject_palette = 'deep'
+        cond_pair_list = cond_pair.split("-")
+        remap_score = f"{cond_pair_bal}-{null_pair_bal}_corr_zm"
+
+        default_params = dict(example_trajectory=dict(unit_idx_track=0,
+                                                      maze_params=dict(lw=0.2, line_color='0.6', sub_segs='all',
+                                                                       sub_seg_color='None', sub_seg_lw=0.1),
+                                                      legend_params=dict(lw=0.7, markersize=1),
+                                                      trajectories_params=dict(lw=0.15, alpha=0.1),
+                                                      well_marker_size=3),
+
+                              example_cond_comp=dict(cond_pair=cond_pair,
+                                                     cm_params=dict(color_map='viridis',
+                                                                    n_color_bins=25, nans_2_zeros=True, div=False,
+                                                                    label='FR'),
+                                                     zone_rates_lw=0.05, zone_rates_lc='0.75',
+                                                     dist_n_boot=50, dist_test_color='b', dist_null_color='0.5',
+                                                     dist_lw=0.9, dist_v_lw=0.7, spike_scale=0.3),
+
+                              seg_rate_comp=dict(cond_pair=cond_pair),
+                              remap_score_dist=dict(remap_score=remap_score,
+                                                    test_color='#bcbd22', null_color='#17becf', z_color='0.3',
+                                                    rug_height=0.08, rug_alpha=0.75, rug_lw=0.1,
+                                                    kde_lw=0.8, kde_alpha=0.8, kde_smoothing=0.5, kde_v_lw=0.5,
+                                                    ),
+                              remap_unit_v_behav=dict(behav_score='pct_correct', corr_method='kendall',
+                                                      remap_score=remap_score,
+                                                      dot_sizes=(1, 5), dot_alpha=0.75, dot_lw=0.1, dot_ec='k',
+                                                      reg_line_params=dict(lw=1, color='#e46c5c'), plot_ci=True,
+                                                      ci_params=dict(alpha=0.4, color='#e46c5c', linewidth=0,
+                                                                     zorder=10)),
+
+                              remap_pop_mean_v_behav=dict(behav_score='pct_correct', corr_method='kendall',
+                                                           remap_score=remap_score,
+                                                           rescale_behav=False,
+                                                           dot_sizes=(2, 8), dot_alpha=0.75, dot_lw=0.1, dot_ec='k',
+                                                           dot_scale=1, legend_markersize=3,
+                                                           reg_line_params=dict(lw=1, color='0.3'), plot_ci=True,
+                                                           ci_params=dict(alpha=0.4, color='#86b4cb', linewidth=0,
+                                                                          zorder=-1),
+                                                           color_pal=sns.color_palette(subject_palette)),
+
+                              remap_pop_corr_v_behav=dict(behav_score='pct_correct', corr_method='kendall',
+                                                            remap_score=remap_score,
+                                                            rescale_behav=False,
+                                                            dot_sizes=(2, 8), dot_alpha=0.75, dot_lw=0.1, dot_ec='k',
+                                                            dot_scale=1, legend_markersize=3,
+                                                            reg_line_params=dict(lw=1, color='0.3'), plot_ci=True,
+                                                            ci_params=dict(alpha=0.4, color='#86b4cb', linewidth=0,
+                                                                           zorder=-1),
+                                                            color_pal=sns.color_palette(subject_palette)),
+
+                              remap_behav_slopes_by_subject=dict(behav_score='pct_correct', corr_method='kendall',
+                                                                 remap_score=remap_score,
+                                                                 rescale_behav=False,
+                                                                 dot_sizes=(2, 8), dot_alpha=0.75, dot_lw=0.1,
+                                                                 dot_ec='k',
+                                                                 dot_scale=1, legend_markersize=3,
+                                                                 reg_line_params=dict(lw=1, color='0.3'), plot_ci=True,
+                                                                 ci_params=dict(alpha=0.4, color='#86b4cb', linewidth=0,
+                                                                                zorder=-1),
+                                                                 color_pal=sns.color_palette(subject_palette)))
+
+        self.cond_pair_list = cond_pair_list
+        self.remap_comp = remap_comp
+        self.params = copy.deepcopy(default_params)
+        self.params.update(params)
+
+    def update_fontsize(self, fontscale=1, fontsize=10):
+        self.fontsize = fontsize * fontscale
+        self.tick_fontsize = self.fontsize
+        self.legend_fontsize = self.fontsize * 0.8
+        self.label_fontsize = self.fontsize * 1.1
+
+    def plot_unit_remap_v_beh(self, ax=None, **in_params):
+
+        if ax is None:
+            f, ax = plt.subplots(figsize=(1, 1), dpi=300)
+        else:
+            f = ax.figure
+
+        params = copy.deepcopy(self.params['remap_unit_v_behav'])
+        params.update(in_params)
+
+        r_score = params['remap_score']
+        b_score = params['behav_score']
+        corr_method = params['corr_method']
+
+        table = self.zrc_b.copy()
+        table['r_score'] = table[r_score]
+        table['r_nscore'] = -table['r_score']
+        table['b_score'] = table[b_score]
+
+        r = np.around(table[['b_score', 'r_score']].corr(method=corr_method).iloc[0, 1], 2)
+        if r < 0:
+            size_sign = 'r_nscore'
+        else:
+            size_sign = 'r_score'
+
+        sns.scatterplot(ax=ax, x='r_score', y='b_score', data=table, hue='r_score', size=size_sign,
+                        palette='crest_r', legend=False, alpha=params['dot_alpha'], sizes=params['dot_sizes'],
+                        **{'linewidth': params['dot_lw'], 'edgecolor': params['dot_ec']})
+
+        # regression line
+        temp = table[['b_score', 'r_score']].dropna()
+        x = temp['r_score'].values
+        y = temp['b_score'].values
+
+        if corr_method == 'pearson':
+            m, b = np.polyfit(x, y, 1)
+        else:
+            m, b = stats.siegelslopes(y, x)
+
+        xx = np.linspace(x.min(), x.max(), 100)
+        ax.plot(xx, m * xx + b, **params['reg_line_params'])
+
+        if params['plot_ci']:
+            if corr_method == 'pearson':
+                yb, yu, xx = get_reg_ci(x, y, reg_type='linear', eval_x=xx)
+            else:
+                yb, yu, xx = get_reg_ci(x, y, eval_x=xx)
+            ax.fill_between(xx, yb, yu, **params['ci_params'])
+
+        # aesthetics
+        ax.set_ylabel(r"$p_{se} (\%)$", fontsize=self.label_fontsize, labelpad=0)
+        if 'corr_m' in r_score:
+            ax.set_xlabel(r"$\bar \tau$", fontsize=self.label_fontsize, labelpad=0)
+            xticks = [-1, 0, 1]
+        elif 'zm' in r_score:
+            xticks = np.floor(min(x)), np.ceil(max(x))
+            xticks = np.sort(np.append(xticks, 0)).astype(int)
+
+            if 'CR' in r_score:
+                ax.set_xlabel(r"$\bar{z}_{\Delta \tau} \: Cue$", fontsize=self.label_fontsize, labelpad=0)
+            elif 'Co' in r_score:
+                ax.set_xlabel(r"$\bar{z}_{\Delta \tau} \: Rw$", fontsize=self.label_fontsize, labelpad=0)
+            else:
+                ax.set_xlabel(r"$\bar{z}_{\Delta \tau}$", fontsize=self.label_fontsize, labelpad=0)
+        else:
+            xticks = ax.get_xticks()
+
+        ax.set_xticks(xticks)
+        ax.set_xticklabels(xticks, fontsize=self.fontsize)
+        ax.tick_params(axis="both", direction="out", length=2, width=1, color='0.2', which='major',
+                       pad=0.5, labelsize=self.fontsize)
+
+        ax.set_ylim(0.25, 1.01)
+        yticks = ax.get_yticks()
+        ax.set_yticklabels((yticks * 100).astype(int))
+        sns.despine(ax=ax)
+
+        for sp in ['bottom', 'left']:
+            ax.spines[sp].set_linewidth(1)
+            ax.spines[sp].set_color('k')
+
+        xt = ax.get_xlim()[0]
+        xt = xt + np.abs(xt) * 0.1
+        if corr_method == 'kendall':
+            ax.text(xt, 0.3, r"$\tau={}$".format(r), fontsize=self.legend_fontsize)
+        else:
+            ax.text(xt, 0.3, r"$\rho={}$".format(r), fontsize=self.legend_fontsize)
+
+        ax.grid(linewidth=0.5)
+
+        return f, ax
+
+    def plot_pop_mean_remap_v_beh(self, ax=None, **in_params):
+
+        if ax is None:
+            f, ax = plt.subplots(figsize=(1, 1), dpi=300)
+        else:
+            f = ax.figure
+
+        params = copy.deepcopy(self.params['remap_unit_v_behav'])
+        params.update(in_params)
+
+        r_score = params['remap_score']
+        b_score = params['behav_score']
+        corr_method = params['corr_method']
+
+        table = self.zrc_b.copy()
+        table['r_score'] = table[r_score]
+        table['b_score'] = table[b_score]
+
+        table = table[['subject', 'task', 'session', 'unit_type', 'r_score', 'b_score']].copy()
+        table['x'] = table['r_score']
+        table['y'] = table['b_score']
+        table = table.dropna()
+
+        if params['rescale_behav']:
+            table['y'] = self._logit(table['y'])
+
+        session_means = table.groupby(['subject', 'session']).mean()
+        session_means['n'] = table.groupby(['subject', 'session']).size()
+
+        sns.scatterplot(ax=ax, x='x', y='y', hue='subject', size='n', data=session_means,
+                        legend=True, hue_order=self.summary_info.subjects,
+                        alpha=params['dot_alpha'], sizes=params['dot_sizes'],
+                        **{'linewidth': params['dot_lw'], 'edgecolor': params['dot_ec']})
+
+        l = ax.get_legend()
+        # hack to get seaborn scaled markers:
+        o = []
+        on_numerics = False
+        for l_handle in l.legendHandles:
+            if on_numerics:
+                label = l_handle.properties()['label']
+                l_handle.set_label = "n=" + label
+                o.append(l_handle)
+            elif l_handle.properties()['label'] == 'n':
+                on_numerics = True
+        legend_size_marker_handles = [o[ii] for ii in [0, -1]]
+        l.remove()
+
+        # regression line
+        x = session_means['x']
+        y = session_means['y']
+
+        if corr_method == 'pearson':
+            m, b = np.polyfit(x, y, 1)
+        else:
+            m, b = stats.siegelslopes(y, x)
+
+        xx = np.linspace(x.min(), x.max(), 100)
+        ax.plot(xx, m * xx + b, **params['reg_line_params'])
+
+        if params['plot_ci']:
+            if corr_method == 'pearson':
+                yb, yu, xx = get_reg_ci(x, y, reg_type='linear', eval_x=xx)
+            else:
+                yb, yu, xx = get_reg_ci(x, y, eval_x=xx)
+
+            ax.fill_between(xx, yb, yu, **params['ci_params'])
+
+        ax.grid(linewidth=0.5)
+        ax.tick_params(axis="both", direction="out", length=3, width=1, color='0.2', which='major', pad=1,
+                       labelsize=self.fontsize)
+
+        if not params['rescale_behav']:
+            ax.set_ylim(0.25, 1.01)
+            yticks = ax.get_yticks()
+            ax.set_yticklabels((yticks * 100).astype(int))
+            ax.set_ylabel(r"$p_{se} (\%)$", fontsize=self.label_fontsize, labelpad=0)
+        else:
+            ax.set_ylabel(r"$p_{se}$ [logit]", fontsize=self.label_fontsize, labelpad=0)
+
+        if 'zm' in r_score:
+            xticks = np.floor(min(x)), np.ceil(max(x))
+            xticks = np.sort(np.append(xticks, 0)).astype(int)
+        else:
+            xticks = ax.get_xticks()
+
+        ax.set_xticks(xticks)
+        ax.set_xticklabels(xticks, fontsize=self.fontsize)
+        ax.tick_params(axis="both", direction="out", length=2, width=1, color='0.2', which='major',
+                       pad=0.5, labelsize=self.fontsize)
+
+        if 'CR' in r_score:
+            ax.set_xlabel(r"$\bar{z}_{\Delta \tau \: \bar{se}} \: Cue$", fontsize=self.label_fontsize, labelpad=0)
+        elif 'Co' in r_score:
+            ax.set_xlabel(r"$\bar{z}_{\Delta \tau \: \bar{se}} \: Rw$", fontsize=self.label_fontsize, labelpad=0)
+        else:
+            ax.set_xlabel(r"$\bar{z}_{\Delta \tau-se}$", fontsize=self.label_fontsize, labelpad=0)
+        sns.despine(ax=ax)
+        for sp in ['bottom', 'left']:
+            ax.spines[sp].set_linewidth(1)
+            ax.spines[sp].set_color('k')
+
+        xt = 0.1
+        r = np.around(session_means[['x', 'y']].corr(method=corr_method).iloc[0, 1], 2)
+        if corr_method == 'kendall':
+            ax.text(xt, 0.05, r"$\tau$={}".format(r), fontsize=self.legend_fontsize, transform=ax.transAxes)
+        else:
+            ax.text(xt, 0.05, r"$\rho$={}".format(r), fontsize=self.legend_fontsize, transform=ax.transAxes)
+
+        legend_params = dict(handlelength=0.25, handletextpad=0.2, bbox_to_anchor=[1.0, 1], loc='upper left',
+                             frameon=False, labelspacing=0.02,
+                             fontsize=self.legend_fontsize)
+
+        legend_elements = []
+        pal = params['color_pal']
+        for ii, ss in enumerate(self.summary_info.subjects[:-1]):
+            legend_elements.append(
+                plt.Line2D([0], [0], marker='o', alpha=params['dot_alpha'], markersize=params['legend_markersize'],
+                           lw=0, mew=0, color=pal[ii], label=f"s$_{{{ii + 1}}}$"))
+        l1 = ax.legend(handles=legend_elements, **legend_params)
+
+        legend_params = dict(handlelength=0.25, handletextpad=0.3, bbox_to_anchor=[1.0, 0], loc='lower left',
+                             frameon=False, fontsize=self.legend_fontsize,
+                             labelspacing=0.1)
+
+        l2 = ax.add_artist(plt.legend(handles=legend_size_marker_handles, **legend_params))
+        ax.add_artist(l1)
+
+        return f,ax
+
+    def plot_pop_corr_remap_v_beh(self, ax=None, **in_params):
+        pass
+
+    def plot_subject_remap_beh_slope(self, ax=None, **in_params):
+
+        if ax is None:
+            f, ax = plt.subplots(figsize=(1, 1), dpi=300)
+        else:
+            f = ax.figure
+
+        params = copy.deepcopy(self.params['remap_unit_v_behav'])
+        params.update(in_params)
+
+        r_score = params['remap_score']
+        b_score = params['behav_score']
+
+        corr_method = params['corr_method']
+        table = self.zrc_b.copy()
+        table['r_score'] = table[r_score]
+        table['b_score'] = table[b_score]
+
+        table = table[['subject', 'task', 'session', 'unit_type', 'r_score', 'b_score']].copy()
+        table['x'] = table['r_score']
+        table['y'] = table['b_score']
+        table = table.dropna()
+
+        if params['rescale_behav']:
+            table['y'] = self._logit(table['y'])
+
+        table_m = table.groupby(['subject', 'task', 'session']).mean()
+        table_m = table_m.reset_index()
+        subjects = self.summary_info.subjects
+        n_subjects = len(subjects)
+        n_boot = 500
+        rb = np.zeros((n_subjects, n_boot)) * np.nan
+        for ii, ss in enumerate(subjects):
+            sub_table = table_m.loc[table_m.subject == ss, ['x', 'y']]
+            rb[ii] = rs.bootstrap_corr(sub_table.x.values, sub_table.y.values, n_boot, corr_method=corr_method)
+        boot_behav_remap = pd.DataFrame(rb.T, columns=subjects).melt(value_name='r', var_name='subject')
+
+        subset = boot_behav_remap.dropna()
+        pal = params['color_pal']
+        sns.pointplot(ax=ax[0], x='subject', y='r', hue='subject', data=subset, palette=pal,
+                      **params['point_plot_params'])
+        ax[0].get_legend().remove()
+
+        ylabel = r'$\tau_{(\bar z_{\Delta \tau}, p_{se})}$'
+        if 'CR' in r_score:
+            ylabel += '-Cue'
+        elif 'Co' in r_score:
+            ylabel += '-Rw'
+
+        ax[0].set_ylabel(ylabel, fontsize=self.label_fontsize)
+        ax[0].set_xticklabels([f"s$_{{{ii}}}$" for ii in range(1, len(subjects))], fontsize=self.fontsize)
+        ax[0].set_xlabel('Subjects', fontsize=self.label_fontsize)
+        ax[0].xaxis.set_label_coords(0.5 + 1 / 6, -0.2, transform=ax[0].transAxes)
+
+        for spine in ['top', 'right']:
+            ax[0].spines[spine].set_visible(False)
+        for spine in ['bottom', 'left']:
+            ax[0].spines[spine].set_linewidth(1)
+            ax[0].spines[spine].set_color('k')
+
+        # summary
+        scale = params['summary_xrange_scale']
+        subset2 = boot_behav_remap.groupby("subject").mean().loc[subjects[:-1]]
+        subset2['color'] = pal[:len(subset2)]
+        x_locs = np.random.rand(len(subset2)) * scale
+        x_locs = x_locs - x_locs.mean()
+        ax[1].scatter(x_locs, subset2.r, c=subset2.color, **params['scatter_summary_params'])
+
+        ax[1].plot(np.array([-1, 1]) * scale, [subset2.r.mean()] * 2, lw=params['summary_lw'],
+                   color=params['summary_c'])
+
+        ax[1].set_xlim(np.array([-1, 1]) * scale * 2)
+        ax[1].set_xticks([0])
+        ax[1].set_xticklabels([r" $\bar s$ "], fontsize=self.fontsize)
+        for spine in ['top', 'right', 'left']:
+            ax[1].spines[spine].set_visible(False)
+        for spine in ['bottom']:
+            ax[1].spines[spine].set_linewidth(1)
+            ax[1].spines[spine].set_color('k')
+
+        for ii in range(2):
+            ax[ii].set_ylim(-1.01, 1.01)
+            ax[ii].set_yticks([-1, 0, 1])
+            ax[ii].set_yticklabels([-1, 0, 1], fontsize=self.fontsize)
+            ax[ii].tick_params(axis="both", direction="out", length=3, width=1, color='0.2', which='major', pad=0.5,
+                               labelsize=self.fontsize)
+            ax[ii].grid(linewidth=0.5)
+        ax[1].tick_params(axis='y', left=False)
+        ax[1].set_yticklabels([''] * 3)
+
+
+    def _combine_tables(self, zrc, b_table):
+        zrc_b = zrc.copy()
+        b_table = b_table.copy()
+        b_table.set_index('session', inplace=True)
+
+        b_cols = ['pct_correct', 'pct_sw_correct', 'pct_vsw_correct', 'pct_L_correct', 'pct_R_correct']
+        for session in b_table.index:
+            z_index = zrc_b.session == session
+            zrc_b.loc[z_index, b_cols] = b_table.loc[session, b_cols].values
+
+        zrc_b['task'] = zrc_b.session.apply(self._get_task_from_session)
+
+        if self.unit_type != 'all':
+            zrc_b = zrc_b[zrc_b.unit_type == self.unit_type]
+        return zrc_b
+
+    @staticmethod
+    def _logit(p):
+        return np.log(p / (1 - p))
+
+    @staticmethod
+    def _get_task_from_session(session):
+        return session.split("_")[1]
+
 ################################################################################
 # Plot Functions
 ################################################################################
-def plot_poly(poly, ax, alpha=0.3, color='g', lw=1.5, line_alpha=1, line_color='0.5'):
+def plot_poly(poly, ax, alpha=0.3, color='g', lw=1.5, line_alpha=1, line_color='0.5', z_order=2):
     p1x, p1y = poly.exterior.xy
-    ax.plot(p1x, p1y, color=line_color, linewidth=lw, alpha=line_alpha)
+    ax.plot(p1x, p1y, color=line_color, linewidth=lw, alpha=line_alpha, zorder=z_order)
     ring_patch = PolygonPatch(poly, fc=color, ec='none', alpha=alpha)
     ax.add_patch(ring_patch)
 
@@ -1648,7 +3202,8 @@ def plot_kde_dist(data, color='k', lw=1.0, v_lines=None, v_ls=':', v_lw=0.5, ax=
         alpha = 1
 
     if v_lines is not None:
-        xt, yt = ax.lines[0].get_data()
+
+        xt, yt = ax.lines[-1].get_data()
         try:
             for x_loc in v_lines:
                 y_height = yt[np.argmin(abs(xt - x_loc))]
@@ -1757,7 +3312,8 @@ def get_reg_ci(x, y, reg_type='siegel', nboot=100, alpha=0.05, eval_x=None):
 
 def get_color_bar_axis(cax, color_array, color_map='cividis', **args):
     params = dict(tick_fontsize=7,
-                  label_fontsize=7)
+                  label_fontsize=7,
+                  skip_labels=False)
 
     params.update(args)
 
@@ -1773,14 +3329,16 @@ def get_color_bar_axis(cax, color_array, color_map='cividis', **args):
     # cax.set_yticklabels([''])
     cax.tick_params(pad=4, length=0, grid_linewidth=0)
 
-    cax.text(1.05, 1, int(color_array[-1]), fontsize=params['tick_fontsize'], ha='left', va='center',
-             transform=cax.transAxes)
-    if 'label' in params:
-        # cax.set_ylabel(params['label'], rotation='horizontal', va='top', ha='right',
-        #                fontsize=params['label_fontsize'], labelpad=0)
-
-        cax.text(1.05, 0, params['label'], fontsize=params['label_fontsize'], ha='left', va='center',
+    if not params['skip_labels']:
+        cax.text(1.05, 1, int(color_array[-1]), fontsize=params['tick_fontsize'], ha='left', va='center',
                  transform=cax.transAxes)
+
+        if 'label' in params:
+            # cax.set_ylabel(params['label'], rotation='horizontal', va='top', ha='right',
+            #                fontsize=params['label_fontsize'], labelpad=0)
+
+            cax.text(1.05, 0, params['label'], fontsize=params['label_fontsize'], ha='left', va='center',
+                     transform=cax.transAxes)
 
     for pos in ['right', 'top', 'bottom', 'left']:
         cax.spines[pos].set_visible(False)

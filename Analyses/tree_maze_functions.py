@@ -963,7 +963,7 @@ class TreeMazeZones:
                 else:
                     alphas = np.ones(n_sub_segs) * seg_alpha
                 for ii in range(n_sub_segs):
-                    pf.plot_poly(sub_seg[ii], axis, alpha=alphas[ii], color=col, lw=sub_seg_lw)
+                    pf.plot_poly(sub_seg[ii], axis, alpha=alphas[ii], color=col, lw=sub_seg_lw, z_order=1.5)
 
         axis.axis('off')
         axis.axis('equal')
@@ -1356,7 +1356,7 @@ class BehaviorData:
         # variables to be created / stored
         n_trials = n_cues
         df = pd.DataFrame(index=range(n_trials),
-                          columns=['t0', 'tD', 'tE', 'tE_1', 'tE_2', 'dur', 'cue', 'dec', 'correct',
+                          columns=['t0', 'tD', 'tE', 'tE_1', 'tE_2', 'tR', 'dur', 'cue', 'dec', 'correct',
                                    'long', 'goal', 'grw', 'sw', 'vsw'])
         for ii in np.arange(n_trials):
             # t0 ->  current trial start time stamp
@@ -1414,7 +1414,6 @@ class BehaviorData:
             # goal wells detections'
             tE_1 = tE
             e1_goal = goal
-            tE_2 = tE
             if dec in ['L', 'R']:
                 for de in self.trial_valid_goal_detections[dec]:
                     end_ev_id2 = np.logical_and(events[de] > tD, events[de] <= t0_next)
@@ -1423,6 +1422,20 @@ class BehaviorData:
                             tE_1 = events[de][end_ev_id2][0]
                             e1_goal = int(de[2])
 
+            # return_to_home well
+            tR = t0_next
+            return_ev_id = np.logical_and(events['DE1'] > tE_1, events['DE1'] <= t0_next)
+            if any(return_ev_id):
+                tR = min(tR, events['DE1'][return_ev_id][0])
+            else:
+                pass
+
+            # last goal detection before returning home
+            tE_2 = tE_1
+            if dec in ['L', 'R']:
+                for de in self.trial_valid_goal_detections[dec]:
+                    end_ev_id2 = np.logical_and(events[de] >= tE_1, events[de] <= tR)
+                    if any(end_ev_id2):
                         tE_2 = max(tE_2, events[de][end_ev_id2][-1])  # last goal detection
 
             if corr:
@@ -1432,12 +1445,12 @@ class BehaviorData:
             if goal > 2:
                 goal = goal - 2
 
-            df.loc[ii, ['t0', 'tD', 'tE', 'tE_1', 'tE_2', 'dur',
+            df.loc[ii, ['t0', 'tD', 'tE', 'tE_1', 'tE_2', 'tR', 'dur',
                         'cue', 'dec', 'correct', 'long', 'goal', 'grw']] = \
-                t0, tD, tE, tE_1, tE_2, tE - t0, cue, dec, corr, long, goal, grw
+                t0, tD, tE, tE_1, tE_2, tR, tE - t0, cue, dec, corr, long, goal, grw
 
         # convert from time (in secs) to samples
-        for kk in ['t0', 'tD', 'tE', 'tE_1', 'tE_2']:
+        for kk in ['t0', 'tD', 'tE', 'tE_1', 'tE_2', 'tR']:
             df[kk] = ((df[kk] - self.tB) // self.time_step).astype(int)
         df['dur'] = (df['dur'] // self.time_step).astype(int)
 
@@ -1721,7 +1734,7 @@ class TrialAnalyses:
     occupation_thrs = {'bigseg': 5, 'seg': 2, 'subseg': 1, 'bigseg_nowells': 5, 'wells': 2}
 
     def __init__(self, session_info, reward_blank=False, not_inzone_blank=True, valid_transitions_blank=True,
-                 trial_end='tE', **kwargs):
+                 trial_end='tE_2', **kwargs):
         """
         class for trialwise analyses on session data
         :param session_info:
@@ -1874,37 +1887,38 @@ class TrialAnalyses:
         return trials
 
     def get_trial_time_table(self):
-        n_trials = self.n_trials
-        trials = self.all_trials
-
-        df = pd.DataFrame(np.zeros((n_trials, 6), dtype=int), columns=['t0', 'tD', 'tE', 'tE_1', 'tE_2', 'tR'])
-
-        for k in ['t0', 'tD', 'tE', 'tE_1', 'tE_2']:
-            df[k] = self.trial_table[k]
-
-        for ii, tr in enumerate(trials):
-            if tr < (self.n_trials - 1):
-                return_home_detections = self.event_table.loc[(self.event_table.out_bound == 0) &
-                                                              (self.event_table.trial_num == tr) &
-                                                              (self.event_table.event == 'DE1'), 't0'].values
-                if len(return_home_detections) > 0:
-                    df.loc[ii, 'tR'] = return_home_detections[0]
-                else:
-                    df.loc[ii, 'tR'] = self.trial_table.loc[tr + 1, 't0']
-
-            else:
-                df.loc[ii, 'tR'] = self.n_total_samps - 1
-
-        return df
+        return self.trial_table[['t0', 'tD', 'tE', 'tE_1', 'tE_2', 'tR']]
+        # n_trials = self.n_trials
+        # trials = self.all_trials
+        #
+        # df = pd.DataFrame(np.zeros((n_trials, 6), dtype=int), columns=['t0', 'tD', 'tE', 'tE_1', 'tE_2', 'tR'])
+        #
+        # for k in ['t0', 'tD', 'tE', 'tE_1', 'tE_2']:
+        #     df[k] = self.trial_table[k]
+        #
+        # for ii, tr in enumerate(trials):
+        #     if tr < (self.n_trials - 1):
+        #         return_home_detections = self.event_table.loc[(self.event_table.out_bound == 0) &
+        #                                                       (self.event_table.trial_num == tr) &
+        #                                                       (self.event_table.event == 'DE1'), 't0'].values
+        #         if len(return_home_detections) > 0:
+        #             df.loc[ii, 'tR'] = return_home_detections[0]
+        #         else:
+        #             df.loc[ii, 'tR'] = self.trial_table.loc[tr + 1, 't0']
+        #
+        #     else:
+        #         df.loc[ii, 'tR'] = self.n_total_samps - 1
+        #
+        # return df
 
     def get_trials_t0_tE(self, trial_seg='out'):
 
         assert trial_seg in ['out', 'in', 'all']
 
-        if (trial_seg == 'out'):
+        if trial_seg == 'out':
             t0 = self.trial_time_table.t0
             tE = self.trial_time_table[self.trial_end]
-        elif (trial_seg == 'in'):
+        elif trial_seg == 'in':
             t0 = self.trial_time_table.tE_2
             tE = self.trial_time_table.tR
         else:
@@ -2497,6 +2511,52 @@ class TrialAnalyses:
             tzr1 = self.get_unit_trial_zone_rates(unit=unit, trials=trials1, trial_seg=trial_seg1)
             tzr2 = self.get_unit_trial_zone_rates(unit=unit, trials=trials2, trial_seg=trial_seg2)
             out.loc[unit] = ttest_ind(tzr1, tzr2, nan_policy='omit')[0].data
+
+        mask1 = self.zones_by_trial[trial_seg1].loc[trials1].sum() < trial_occupation_thr
+        mask2 = self.zones_by_trial[trial_seg2].loc[trials2].sum() < trial_occupation_thr
+        out.loc[:, (mask1 | mask2)] = np.nan
+
+        return out
+
+    def zone_rate_maps_uz(self, cond1=None, cond2=None, trials1=None, trials2=None,
+                          trial_seg1='out', trial_seg2='out', trial_occupation_thr=2):
+        """
+        method for comparing zone rate maps across trials.
+        conditions must be in the list. generates a zone rate maps from the trials, and compares them to the other
+        condition using a t statistic by zone.
+        :param cond1: string trial condition 1
+        :param cond2: string trial condition 2
+        :param trials1:  list of trials
+        :param trials2: list of trials
+        :param trial_seg1: str ['out', 'in'], segment of the trials to use, ignored if samps1 are provided
+        :param trial_seg2: str ['out', 'in'], segment of the trials to use, ignored if samps2 are provided
+        :param trial_occupation_thr: int,  minimun number of samples in a zone in a trial
+        :return:
+        data frame of n_units x n_zones of t values across the conditions/trial sets
+
+        """
+
+        if cond1 is not None:
+            trials1 = self.get_condition_trials(condition=cond1)
+        else:
+            assert trials1 is not None
+
+        if cond2 is not None:
+            trials2 = self.get_condition_trials(condition=cond2)
+        else:
+            assert trials2 is not None
+
+        out = pd.DataFrame(np.zeros((self.n_units, self.tmz.n_all_segs)),
+                           columns=self.tmz.all_segs_names)
+
+        for unit in range(self.n_units):
+            tzr1 = self.get_unit_trial_zone_rates(unit=unit, trials=trials1, trial_seg=trial_seg1)
+            tzr2 = self.get_unit_trial_zone_rates(unit=unit, trials=trials2, trial_seg=trial_seg2)
+
+            tzr1[(tzr1.isna().sum() == tzr1.shape[0]).idxmax()] = 0
+            tzr2[(tzr2.isna().sum() == tzr2.shape[0]).idxmax()] = 0
+
+            out.loc[unit] = rs.mannwhitney_z(tzr1, tzr2)
 
         mask1 = self.zones_by_trial[trial_seg1].loc[trials1].sum() < trial_occupation_thr
         mask2 = self.zones_by_trial[trial_seg2].loc[trials2].sum() < trial_occupation_thr
@@ -3124,7 +3184,7 @@ class TrialAnalyses:
 
         return df
 
-    def get_pop_zone_rates(self, units=None, trial_seg='out'):
+    def get_pop_zone_rates(self, units=None, normalize=True, norm95=True, trial_seg='out'):
         """
         Returns a wide matrix of trials x (n_units*n_segements).
         :param units: iterable, list or array of units to include, defaults to all
@@ -3145,6 +3205,15 @@ class TrialAnalyses:
         for ii, unit in enumerate(units):
             ix = np.arange(n_segs) + ii * n_segs
             out[:, ix] = self.trial_zones_rates[trial_seg][unit].values
+            if normalize:
+                if norm95:
+                    x = out[:, ix]
+                    max_val = np.percentile(x[~np.isnan(x)], 95)
+                    x[x > max_val] = max_val
+                    out[:, ix] = x / max_val
+
+                else:
+                    out[:, ix] /= np.nanmax(out[:, ix])
 
         return pd.DataFrame(out)
 
@@ -3281,6 +3350,124 @@ class TrialAnalyses:
                         # traceback.print_exc(file=sys.stdout)
             return df
 
+    def plot_unit_seg_cond_comp(self, unit, comp, ax=None, **params):
+        """comparison between conditions for a given unit by big segment"""
+        if ax is None:
+            f, ax = plt.subplots(figsize=(1.5, 1.5), dpi=300)
+        else:
+            f = ax.figure
+
+        trial_seg_rates = {}
+        for trial_seg in ['out', 'in']:
+            trial_seg_rates[trial_seg] = self.get_trial_segment_rates(trial_seg=trial_seg, segment_type='bigseg')
+
+        params2 = dict(median_lw=1, violin_lw=0.75, fontsize=8,
+                       point_scale=0.5, err_lw=1, point_dodge=0.25, legend=False)
+        if len(params) > 0:
+            params2.update(params)
+
+        if comp == 'cue':
+            conds = ['CR', 'CL']
+            trial_segs = ['out'] * 2
+            legend_names = ['RC', 'LC']
+            palette = ['#51AD4E', '#AA4EAD']
+        elif comp == 'rw':
+            conds = ['Co', 'Inco']
+            trial_segs = ['in'] * 2
+            legend_names = ['RW', 'NRW']
+            palette = ['#2159AD', '#AD343A']
+        elif comp == 'dir':
+            conds = ['Out', 'In']
+            trial_segs = ['out', 'in']
+            legend_names = ['Out', 'In']
+            palette = ['#AD173C', '#555971']
+        else:
+            raise NotImplementedError
+
+        trials = [self.get_condition_trials(condition=conds[0]),
+                  self.get_condition_trials(condition=conds[1])]
+
+        df = pd.DataFrame()
+        for ii in range(2):
+            res = trial_seg_rates[trial_segs[ii]][unit].loc[trials[ii]].melt(value_name='FR',
+                                                                             var_name='segment',
+                                                                             ignore_index=False).reset_index(drop=True)
+            res['cond'] = conds[ii]
+            df = pd.concat((df, res))
+        df = df.reset_index(drop=True)
+
+        pf.sns.pointplot(data=df, x='segment', y='FR', hue='cond', estimator=np.median, hue_order=conds[::-1],
+                         join=False, palette=palette, ax=ax,
+                         dodge=params2['point_dodge'], scale=params2['point_scale'], errwidth=params2['err_lw'])
+
+        seg_uz = np.zeros(3)
+        df = df.astype({'cond': 'str', 'segment': 'str'})
+        for ii, seg in enumerate(['left', 'stem', 'right']):
+            x = df[(df.segment == seg) & (df.cond == conds[0])]['FR'].dropna()
+            y = df[(df.segment == seg) & (df.cond == conds[1])]['FR'].dropna()
+
+            z = rs.mannwhitney_z(x, y)
+            seg_uz[ii] = np.around(z, 2)
+
+        for ii in range(3):
+            ax.text((ii + 0.5) / 3, 1, seg_uz[ii], ha='center', va='bottom', fontsize=params2['fontsize'] * 0.75,
+                    transform=ax.transAxes)
+
+        ax.text(-0.05, 1, f"$U_Z$", ha='right', va='bottom', fontsize=params2['fontsize'], transform=ax.transAxes)
+
+        pf.sns.despine(ax=ax)
+        ax.tick_params(axis='both', bottom=True, left=True,
+                       labelsize=params2['fontsize'] * 0.75, pad=1, length=2,
+                       width=1, color='0.2', which='major')
+
+        for sp in ['bottom', 'left']:
+            ax.spines[sp].set_linewidth(1)
+            ax.spines[sp].set_color('0.2')
+
+        ax.grid(linewidth=0.5, axis='y')
+
+        if params2['legend']:
+            pass
+        else:
+            ax.get_legend().remove()
+
+        ax.set_xlabel("Segment", fontsize=params2['fontsize'], labelpad=0)
+        ax.set_ylabel(f"FR [spk/s]", fontsize=params2['fontsize'], labelpad=0)
+
+        ylims = ax.get_ylim()
+        yh = ylims[1] - ylims[0]
+        ax.set_ylim([ylims[0] - 0.05 * yh, ylims[1]])
+
+        return ax
+
+    def plot_unit_trial_traces_plus_spikes(self, unit, trials=None, cond=None, trial_seg='out', ax=None, **params):
+        if ax is None:
+            f, ax = plt.subplots(dpi=300)
+        else:
+            f = ax.figure
+
+        assert (trials is not None) or (cond is not None)
+
+        if trials is None:
+            trials = self.get_condition_trials(condition=cond)
+
+        params2 = dict(spike_scale=0.3,
+                       spike_trajectories=dict(color='r', alpha=0.1, linewidth=0, rasterized=True),
+                       trajectories_params=dict(color='0.4', lw=0.2, alpha=0.1, rasterized=True))
+        if len(params) > 0:
+            params2.update(params)
+
+        x, y, _ = self.get_trial_track_pos(trial_seg=trial_seg)
+        spikes = self.get_trial_neural_data(data_type='spikes', trial_seg=trial_seg)[unit]
+
+        self.tmz.plot_spk_trajectories(x=x[trials], y=y[trials],
+                                       spikes=spikes[trials], ax=ax,
+                                       spike_scale=params2['spike_scale'],
+                                       trajectories_params=params2['trajectories_params'],
+                                       spike_trajectories=params2['spike_trajectories'])
+
+    # def plot_unit_trial_zone_rate_cond(self, unit, trials=None, cond=None, trial_seg='out', ax=None, **params):
+
     # def zone_rate_maps_group_trials_boot_bal_corr(self, n_boot=100,
     #                                           corr_method='kendall', min_valid_trials=5, n_jobs=5,
     #                                           group_cond_sets=None, group_trial_segs=None, zr_method='trial',
@@ -3374,95 +3561,168 @@ class ZoneEncoder:
     series. Another approach is to feed in the continous data-streams and perform time-series block xvalidation. This
     approach would be useful if wanting to break the rewarding structure of the task.
     """
-    params = dict(max_trial_dur=1500,
+    params = dict(max_trial_dur=2000,
+                  max_trial_dur2=5000,
                   min_trial_dur=100,
-                  n_folds=5,
+                  n_folds=10,
                   seed=42)
 
-    feature_params = dict(cue_type='none',
-                          max_lag=50,
-                          decay='inverse')
+    feature_params_default = dict(max_lag=50,
+                                  decay='inverse',
+                                  cue_type='none',
+                                  rw_type='none',
+                                  sp_type='none',
+                                  dir_type='none',
+                                  trial_seg='out')
 
     model_params = dict(model_type='LR',
                         add_sample_weights=True,
                         metrics=['r2'])
 
-    cue_types = ['none', 'fixed', 'inter']
-    # none -> no feature
-    # fixed -> rate remapping
-    # inter -> global remapping model
+    trial_params = dict(trial_end='tE_2',
+                        trial_seg='out')
 
-    rw_types = ['none', 'fixed', 'inter', 'wells', 'wells']
+    cue_types = ['none', 'fixed', 'inter', 'cont']
+    # none -> no feature; fixed -> rate remapping; inter -> global remapping model;
+    # cont -> single signal indicating pulses of the cue
+
+    rw_types = ['none', 'fixed', 'inter', 'well']
     # wells -> reward periods during trial
 
-    trial_period = ['outbound', 'inbound']
+    dir_types = ['none', 'fixed', 'inter']
 
     sp_types = ['none', 'cont', 'bin3']
+    sp_bins = [0, 10, 50, 1000]
 
-    # TODO: add reward feautures, add time dependend model (RNN)
+    # cont -> use continous speed as a feature; bin3 - > bin speed into stationary, slow, fast
 
-    def __init__(self, session_info, data_type='fr', trial_params=None,
+    # TODO:  add time dependend model (RNN)
+    def __init__(self, session_info, data_type='fr', trial_analyses=None, trial_params=None,
                  model_params=None, feature_params=None, parallel=None, **xval_params):
 
         self.params.update(xval_params)
         self.parallel = parallel
+        self.data_type = data_type
 
-        if trial_params is None:
-            trial_params = dict(trial_end='tE_2')
+        np.random.seed(self.params['seed'])
 
-        if feature_params is not None:
-            self.feature_params.update(feature_params)
+        self.tmz = TreeMazeZones()
+        self.zones2 = self.tmz.zones2
+        self._zone_names = list(self.tmz.all_segs_names)
+        self.n_units = session_info.n_units
+
+        self.n_folds = self.params['n_folds']
+
+        if trial_params is not None:
+            self.trial_params.update(trial_params)
 
         if model_params is not None:
             self.model_params.update(model_params)
 
-        self.ta = TrialAnalyses(session_info, **trial_params)
-        self.tmz = self.ta.tmz
-        self.zones2 = self.tmz.zones2
+        self.feature_params = dict(self.feature_params_default)
+        if feature_params is not None:
+            self.feature_params.update(feature_params)
+        self.trial_seg = self.feature_params['trial_seg']
 
-        self.trial_table = self.ta.trial_table
-        self.n_trials = self.ta.n_trials
+        if trial_analyses is None:
+            trial_analyses = TrialAnalyses(session_info, **self.trial_params)
 
-        self.all_trials = np.arange(self.n_trials)
-        self.valid_trials = self.all_trials[(self.trial_table.dur <= self.params['max_trial_dur']) &
-                                            (self.trial_table.dur >= self.params['min_trial_dur']) &
-                                            (~self.trial_table.correct.isna())]
+        self.ta = trial_analyses
+        self.update_features(**self.feature_params)
 
-        self.n_units = session_info.n_units
-        self.trial_neural_data = self.ta.get_trial_neural_data(data_type=data_type)
-        self.trial_zones = self.ta.get_trial_zones()
-        self.trial_pos = self.ta.get_trial_track_pos()
+    # setup functions
+    def update_features(self, **feature_params):
+        if feature_params is None:
+            self.feature_params = dict(self.feature_params_default)
+        else:
+            self.feature_params.update(feature_params)
 
-        self.bad_samps = self.ta.all_blank_samps
+        feature_params = self.feature_params
+        feature_names = list(self._zone_names)
 
-        self.n_folds = self.params['n_folds']
+        # for now multiple intersection models are not supported
+        if (feature_params['cue_type'] == 'inter') & (feature_params['rw_type'] == 'inter'):
+            raise ValueError
 
-        self.xval_trial_table = pd.DataFrame()
-        self.get_cue_balanced_xval_table()
+        if feature_params['dir_type'] != 'none':
+            assert feature_params['trial_seg'] == 'all'
+            assert feature_params['cue_type'] != 'inter'
+            assert feature_params['rw_type'] != 'inter'
 
-        self._zone_names = list(self.tmz.all_segs_names)
+        if feature_params['cue_type'] == 'fixed':
+            feature_names += ['LC', 'RC']
+
+        elif feature_params['cue_type'] == 'inter':
+            feature_names = ['LC_' + z for z in self._zone_names]
+            feature_names += ['RC_' + z for z in self._zone_names]
+
+        if feature_params['rw_type'] == 'fixed':
+            feature_names += ['RW', 'NR']
+        elif feature_params['rw_type'] == 'inter':
+            feature_names = ['RW_' + z for z in self._zone_names]
+            feature_names += ['NR_' + z for z in self._zone_names]
+        elif feature_params['rw_type'] == 'well':
+            feature_names += ['RW']
+
+        if feature_params['sp_type'] == 'cont':
+            feature_names += ['SP']
+        elif feature_params['sp_type'] == 'bin3':
+            feature_names += ['SP1', 'SP2', 'SP3']
+
+        if feature_params['dir_type'] == 'fixed':
+            feature_names += ['Out', 'In']
+        elif feature_params['dir_type'] == 'inter':
+            feature_names = ['Out_' + z for z in self._zone_names]
+            feature_names += ['In_' + z for z in self._zone_names]
+
+        self.feature_names = feature_names
+        self.n_params = len(self.feature_names)
+
+        self.trial_seg = self.feature_params['trial_seg']
+        self.update_trial_data()
 
         self._reset_model_fits()
         self.features_by_trial = self._get_features_all_trials()
+        self._prepare_xval_data()
+
+    def update_trial_data(self):
+        ta = self.ta
+        self.n_trials = ta.n_trials
+
+        self.trial_table = ta.trial_table
+        self.all_trials = np.arange(self.n_trials)
+        if self.trial_seg == 'out':
+            trial_start_marker = 't0'
+            trial_end_marker = self.trial_params['trial_end']
+            max_trial_dur = self.params['max_trial_dur']
+        elif self.trial_seg == 'in':
+            trial_start_marker = self.trial_params['trial_end']
+            trial_end_marker = 'tR'
+            max_trial_dur = self.params['max_trial_dur']
+        elif self.trial_seg == 'all':
+            trial_start_marker = 't0'
+            trial_end_marker = 'tR'
+            max_trial_dur = self.params['max_trial_dur2']
+        else:
+            raise NotImplementedError
+
+        durs = ta.trial_time_table[trial_end_marker] - ta.trial_time_table[trial_start_marker]
+
+        self.valid_trials = self.all_trials[(durs <= max_trial_dur) &
+                                            (durs >= self.params['min_trial_dur'])]
+
+        self.valid_trials = np.setdiff1d(self.valid_trials, self.all_trials[self.trial_table.correct.isna()][0])
+        self.bad_samps = ta.all_blank_samps
+        self.get_xval_table()
+        self._trial_analyses_data()
+
+    def update_model_params(self, **model_params):
+        self.model_params.update(model_params)
+        self._reset_model_fits()
 
     def _reset_model_fits(self):
-        if self.feature_params['cue_type'] == 'inter':
-            feature_names_cue = ['LC_' + z for z in self._zone_names]
-            feature_names_cue += ['RC_' + z for z in self._zone_names]
-            self.feature_names = feature_names_cue
-
-        elif self.feature_params['cue_type'] == 'fixed':
-            self.feature_names = self._zone_names
-            self.feature_names += ['LC', 'RC']
-
-        else:
-            self.feature_names = self._zone_names
-
-        self.n_params = len(self.feature_names)
 
         self.fit_flag = False
-        self.feature_flag = False
-        self.response_flag = False
         self.samp_weights_flag = False
         self.valid_samps_flag = False
         self.zone_ts_splits_flag = False
@@ -3470,8 +3730,6 @@ class ZoneEncoder:
 
         self.model_fits = {}
         self.features_by_trial = []
-        self.zone_feature_splits = {'train': {}, 'test': {}}
-        self.response_splits = {'train': {}, 'test': {}}
         self.samp_weight_splits = {'train': {}, 'test': {}}
         self.valid_samps_loc_splits = {'train': {}, 'test': {}}
         self.zone_ts_splits = {'train': {}, 'test': {}}
@@ -3479,89 +3737,26 @@ class ZoneEncoder:
 
         self.trial_zone_perf_table = None
 
-    def update_feature_params(self, **feature_params):
-        self.feature_params.update(feature_params)
-        self._reset_model_fits()
-        self.features_by_trial = self._get_features_all_trials()
-
-    def update_model_params(self, **model_params):
-        self.model_params.update(model_params)
-        self._reset_model_fits()
-
-    def get_fold_response(self, fold_num=0, split='test'):
-        trials = self.get_fold_trials(fold_num, split)
-        Y = self.get_response_trials(trials)
-        Y = self._remove_bad_samps(Y, fold_num, split)
-        return Y
-
-    def get_response_trials(self, trials):
+    def _prepare_xval_data(self):
         """
-        takes neural data object of shape n_neuron x n_trials and returns a n_sample x n_neuron response matrix
-        :param trials: array-like
-        :return: response array Y in samples x neurons
-        """
-        Y = np.hstack(self.trial_neural_data[:, trials].flatten()).reshape(self.n_units, -1).T
-        return Y
-
-    def _get_features_all_trials(self):
-
-        trials = np.arange(self.n_trials)
-        cue_type = self.feature_params['cue_type']
-        max_lag = self.feature_params['max_lag']
-        decay_func = self._get_decay_func()
-
-        # trials by cue
-        LC_trials = trials[self.trial_table.cue[trials] == 'L']
-        RC_trials = trials[self.trial_table.cue[trials] == 'R']
-
-        X = np.zeros(self.n_trials, dtype=object)
-        for tr in trials:
-            try:
-                x_tr = self.trial_zones[tr]  # get zones
-                x_tr = self.ta.tmz.get_pos_zone_mat(x_tr)  # convert to binary mat (n_samps x n_zones)
-                x_tr = self._add_zone_lags(x_tr, max_lag=max_lag, decay_func=decay_func)  # add lags
-
-                if cue_type == 'inter':
-                    # rename columns based on the cue for that trial
-                    if tr in LC_trials:
-                        x_tr = x_tr.add_prefix('LC_')
-                    else:
-                        x_tr = x_tr.add_prefix('RC_')
-
-                elif cue_type == 'fixed':
-                    # binary signal for the trial indicating cue identity
-                    if tr in LC_trials:
-                        x_tr['LC'] = 1
-                        x_tr['RC'] = 0
-                    else:
-                        x_tr['LC'] = 0
-                        x_tr['RC'] = 1
-                else:
-                    pass
-                X[tr] = x_tr
-            except:
-                pass
-
-        return X
-
-    def get_features_trial(self, trials):
-        """
-        takes the zones continous array and returns a binary one-hot matrix in samples x zones.
-        :param max_lag: if non-zero adds future or past zones weighed by time with a function
-                that can be added in lag_params
-        :param split_cue: if true, adds a second set of columns splitting trials by cue
-        :param trials: trial ids
-        :return:
-            dataframe of samples by zones
+        prepares features and response variables for fitting encoding models.
+        does not return anything, but variables are available as attributes of the class.
         """
 
-        X = pd.DataFrame(columns=self.feature_names)
-        for tr in trials:
-            X = pd.concat((X, self.features_by_trial[tr]))
+        self._get_valid_samps_locs_splits()
+        self._get_samp_weights_splits()
+        self._get_trial_ts_splits()
 
-        X = X.fillna(0)
-        X = X.reset_index(drop=True)
-        return X
+    def _trial_analyses_data(self):
+        self.trial_neural_data = self.ta.get_trial_neural_data(data_type=self.data_type, trial_seg=self.trial_seg)
+        self.trial_zones = self.ta.get_trial_zones(trial_seg=self.trial_seg)
+        self.trial_pos = self.ta.get_trial_track_pos(trial_seg=self.trial_seg)
+
+    # trial xval functions
+    def get_xval_table(self, trial_balance='cue'):
+        self.xval_trial_table = pd.DataFrame()
+        self.get_cue_balanced_xval_table()
+        return self.xval_trial_table
 
     def get_cue_balanced_xval_table(self):
         """
@@ -3621,16 +3816,253 @@ class ZoneEncoder:
         """
         return self.all_trials[self.xval_trial_table[fold_num] == split]
 
-    def prepare_xval_data(self):
+    # neural response functions
+    def get_response_trials(self, trials):
         """
-        prepares features and response variables for fitting encoding models.
-        does not return anything, but variables are available as attributes of the class.
+        takes neural data object of shape n_neuron x n_trials and returns a n_sample x n_neuron response matrix
+        :param trials: array-like
+        :return: response array Y in samples x neurons
+        """
+        Y = np.hstack(self.trial_neural_data[:, trials].flatten()).reshape(self.n_units, -1).T
+        return Y
+
+    def get_fold_response(self, fold_num=0, split='test'):
+        trials = self.get_fold_trials(fold_num, split)
+        Y = self.get_response_trials(trials)
+        Y = self._remove_bad_samps(Y, fold_num, split)
+        return Y
+
+    # feature functions
+    # def _get_features_all_trials(self):
+    #
+    #     trials = np.arange(self.n_trials)
+    #     max_lag = self.feature_params['max_lag']
+    #     decay_func = self._get_decay_func()
+    #
+    #     cue_type = self.feature_params['cue_type']
+    #     rw_type = self.feature_params['rw_type']
+    #     sp_type = self.feature_params['sp_type']
+    #     dir_type = self.feature_params['dir_type']
+    #
+    #     # trials by cue
+    #     LC_trials = trials[self.trial_table.cue[trials] == 'L']
+    #     RC_trials = trials[self.trial_table.cue[trials] == 'R']
+    #
+    #     # trials by reward
+    #     RW_trials = trials[self.trial_table.correct[trials] == 1]
+    #     NR_trials = trials[self.trial_table.correct[trials] == 0]
+    #
+    #     trial_out_samps_bounds = self.ta.get_trials_t0_tE(trial_seg='out')
+    #     trial_out_durs = (trial_out_samps_bounds[1]-trial_out_samps_bounds[0]+1)
+    #
+    #     X = np.zeros(self.n_trials, dtype=object)
+    #     for tr in trials:
+    #         try:
+    #             x_tr = self.trial_zones[tr]  # get zones
+    #             n_samps = len(x_tr)
+    #             x_tr = self.ta.tmz.get_pos_zone_mat(x_tr)  # convert to binary mat (n_samps x n_zones)
+    #             x_tr = self._add_zone_lags(x_tr, max_lag=max_lag, decay_func=decay_func)  # add lags
+    #
+    #             if dir_type == 'fixed':
+    #                 x_tr['Out'] = 0
+    #                 x_tr['In'] = 1
+    #                 x_tr['Out'][:trial_out_samps_bounds[tr]] = 1
+    #                 x_tr['In'] = x_tr['In']-x_tr['Out']
+    #
+    #             elif dir_type == 'inter':
+    #                 out_samps = np.arange(trial_out_durs)
+    #                 in_samps = np.arange(trial_out_durs, n_samps)
+    #
+    #                 x_tr2 = x_tr.loc[out_samps].copy().add_prefix('Out_')
+    #                 x_tr3 = x_tr.loc[in_samps].copy().add_prefix('In_')
+    #                 x_tr = pd.concat((x_tr2, x_tr3))
+    #
+    #             if cue_type == 'inter':
+    #                 # rename columns based on the cue for that trial
+    #                 if tr in LC_trials:
+    #                     x_tr = x_tr.add_prefix('LC_')
+    #                 else:
+    #                     x_tr = x_tr.add_prefix('RC_')
+    #             elif cue_type == 'fixed':
+    #                 # binary signal for the trial indicating cue identity
+    #                 if tr in LC_trials:
+    #                     x_tr['LC'] = 1
+    #                     x_tr['RC'] = 0
+    #                 else:
+    #                     x_tr['LC'] = 0
+    #                     x_tr['RC'] = 1
+    #
+    #             # TODO: well rw
+    #             if rw_type == 'inter':
+    #                 # rename columns based on the rw for that trial
+    #                 if tr in RW_trials:
+    #                     x_tr = x_tr.add_prefix('RW_')
+    #                 else:
+    #                     x_tr = x_tr.add_prefix('NR_')
+    #             elif rw_type == 'fixed':
+    #                 # binary signal for the trial indicating rw identity
+    #                 if tr in RW_trials:
+    #                     x_tr['RW'] = 1
+    #                     x_tr['NR'] = 0
+    #                 else:
+    #                     x_tr['RW'] = 0
+    #                     x_tr['NR'] = 1
+    #
+    #             if sp_type == 'cont':
+    #                 x_tr['SP'] = self.trial_pos[2][tr]
+    #             elif sp_type == 'bin3':
+    #                 sp = self.trial_pos[2][tr]
+    #                 for bb in range(3):
+    #                     x_tr[f"SP{bb + 1}"] = (sp >= self.sp_bins[bb]) & (sp < self.sp_bins[bb])
+    #
+    #             X[tr] = x_tr
+    #
+    #         except:
+    #             pass
+    #
+    #     return X
+    def _get_features_all_trials(self):
+
+        trials = np.arange(self.n_trials)
+        max_lag = self.feature_params['max_lag']
+        decay_func = self._get_decay_func()
+
+        cue_type = self.feature_params['cue_type']
+        rw_type = self.feature_params['rw_type']
+        sp_type = self.feature_params['sp_type']
+        dir_type = self.feature_params['dir_type']
+
+        # trials by cue
+        LC_trials = trials[self.trial_table.cue[trials] == 'L']
+        RC_trials = trials[self.trial_table.cue[trials] == 'R']
+
+        # trials by reward
+        RW_trials = trials[self.trial_table.correct[trials] == 1]
+        NR_trials = trials[self.trial_table.correct[trials] == 0]
+
+        trial_out_samps_bounds = self.ta.get_trials_t0_tE()
+        trial_out_durs = (trial_out_samps_bounds[1] - trial_out_samps_bounds[0] + 1)
+
+        def _worker(tr):
+            try:
+                x_tr = self.trial_zones[tr]  # get zones
+                n_samps = len(x_tr)
+                x_tr = self.ta.tmz.get_pos_zone_mat(x_tr)  # convert to binary mat (n_samps x n_zones)
+                x_tr = self._add_zone_lags(x_tr, max_lag=max_lag, decay_func=decay_func)  # add lags
+
+                if dir_type == 'fixed':
+                    x_tr['Out'] = 0
+                    x_tr['In'] = 1
+                    x_tr.loc[:trial_out_durs[tr], 'Out'] = 1
+                    x_tr['In'] = x_tr['In'] - x_tr['Out']
+
+                elif dir_type == 'inter':
+                    out_samps = np.arange(trial_out_durs[tr])
+                    in_samps = np.arange(trial_out_durs[tr], n_samps)
+
+                    x_tr2 = x_tr.loc[out_samps].copy().add_prefix('Out_')
+                    x_tr3 = x_tr.loc[in_samps].copy().add_prefix('In_')
+                    x_tr = pd.concat((x_tr2, x_tr3))
+
+                if cue_type == 'inter':
+                    # rename columns based on the cue for that trial
+                    if tr in LC_trials:
+                        x_tr = x_tr.add_prefix('LC_')
+                    else:
+                        x_tr = x_tr.add_prefix('RC_')
+                elif cue_type == 'fixed':
+                    # binary signal for the trial indicating cue identity
+                    if tr in LC_trials:
+                        x_tr['LC'] = 1
+                        x_tr['RC'] = 0
+                    else:
+                        x_tr['LC'] = 0
+                        x_tr['RC'] = 1
+
+                # TODO: well rw
+                if rw_type == 'inter':
+                    # rename columns based on the rw for that trial
+                    if tr in RW_trials:
+                        x_tr = x_tr.add_prefix('RW_')
+                    else:
+                        x_tr = x_tr.add_prefix('NR_')
+                elif rw_type == 'fixed':
+                    # binary signal for the trial indicating rw identity
+                    if tr in RW_trials:
+                        x_tr['RW'] = 1
+                        x_tr['NR'] = 0
+                    else:
+                        x_tr['RW'] = 0
+                        x_tr['NR'] = 1
+
+                if sp_type == 'cont':
+                    x_tr['SP'] = self.trial_pos[2][tr]
+                elif sp_type == 'bin3':
+                    sp = self.trial_pos[2][tr]
+                    for bb in range(3):
+                        x_tr[f"SP{bb + 1}"] = (sp >= self.sp_bins[bb]) & (sp < self.sp_bins[bb])
+            except:
+                print(f"Failed on trial {tr}")
+                traceback.print_exc(file=sys.stdout)
+                x_tr = pd.DataFrame()
+            return x_tr
+
+        X = np.zeros(self.n_trials, dtype=object)
+        if isinstance(self.parallel, Parallel):
+            X_tr = self.parallel(delayed(_worker)(tr) for tr in trials)
+            # unroll models
+            for tr in trials:
+                X[tr] = X_tr[tr]
+        else:
+            for tr in trials:
+                X[tr] = _worker(tr)
+
+        return X
+
+    def get_features_trial(self, trials):
+        """
+        takes the zones continous array and returns a binary one-hot matrix in samples x zones.
+          :param trials: trial ids
+        :return:
+            dataframe of samples by zones
         """
 
-        self._get_valid_samps_locs_splits()
-        self._get_samp_weights_splits()
-        self._get_trial_ts_splits()
+        X = pd.DataFrame(columns=self.feature_names)
+        for tr in trials:
+            X = pd.concat((X, self.features_by_trial[tr]))
 
+        X = X.fillna(0)
+        X = X.reset_index(drop=True)
+        return X
+
+    def get_fold_features(self, fold_num=0, split='test'):
+        trials = self.get_fold_trials(fold_num, split)
+        X = self.get_features_trial(trials)
+        X = self._remove_bad_samps(X, fold_num, split)
+        return X
+
+    # additional features functions
+    def get_fold_speed_ts(self, fold_num=0, split='test'):
+        trials = self.get_fold_trials(fold_num, split)
+        sp = np.hstack(self.trial_pos[2][trials].flatten())
+        sp = self._remove_bad_samps(sp, fold_num, split)
+        return sp
+
+    def get_fold_track_pos(self, fold_num=0, split='test'):
+        trials = self.get_fold_trials(fold_num, split)
+        x = np.hstack(self.trial_pos[0][trials].flatten())
+        y = np.hstack(self.trial_pos[1][trials].flatten())
+        sp = np.hstack(self.trial_pos[2][trials].flatten())
+        df = pd.DataFrame(np.array((x, y, sp)).T, columns=['x', 'y', 'sp'])
+        df = self._remove_bad_samps(df, fold_num, split)
+        return df
+
+    def get_fold_zone_ts(self, fold_num=0, split='test'):
+        if not self.zone_ts_splits_flag:
+            self._get_zone_ts_splits()
+        return self.zone_ts_splits[split][fold_num]
+
+    # fit function
     def get_model_fits(self):
         """
         obtains model fits by xval fold.
@@ -3666,7 +4098,8 @@ class ZoneEncoder:
         else:
             raise ValueError
 
-        self.prepare_xval_data()
+        if len(self.features_by_trial) == 0:
+            self.update_features()
 
         def _worker(fold):
             Xtr = self.get_fold_features(fold_num=fold, split='train')
@@ -3675,32 +4108,21 @@ class ZoneEncoder:
             return fit_func(Xtr, Ytr, samp_weights)
 
         model_fits = {}
-        if isinstance(self.parallel, Parallel):
+        if False:
+            # if isinstance(self.parallel, Parallel):
             models = self.parallel(delayed(_worker)(fold) for fold in range(self.n_folds))
-
+            # unroll models
             for fold in range(self.n_folds):
                 model_fits[fold] = models[fold]
         else:
             for fold in range(self.n_folds):
                 model_fits[fold] = _worker(fold)
 
-        # for fold in range(self.n_folds):
-        #     Xtr = self.get_fold_features(fold, 'train')  # self.zone_feature_splits['train'][fold]
-        #     Ytr = self.get_fold_response(fold, 'train')  # self.response_splits['train'][fold]
-        #     samp_weights = self.samp_weight_splits['train'][fold]
-        #
-        #     model_fits[fold] = fit_func(Xtr, Ytr, samp_weights)
-
         self.model_fits = model_fits
         self.fit_flag = True
         return model_fits
 
-    def get_fold_features(self, fold_num=0, split='test'):
-        trials = self.get_fold_trials(fold_num, split)
-        X = self.get_features_trial(trials)
-        X = self._remove_bad_samps(X, fold_num, split)
-        return X
-
+    # predictions
     def get_fold_prediction(self, fold_num=0, split='test'):
         """
         return the prediction for a given fold and data split
@@ -3720,6 +4142,7 @@ class ZoneEncoder:
 
         return y_hat
 
+    # scores
     def get_fold_score(self, fold_num=0, split='test', metric_func=rs.get_r2):
         """
         obtains the score for a given xval fold and data split.
@@ -3883,6 +4306,7 @@ class ZoneEncoder:
 
         return coefs
 
+    # support functions
     def _get_metric_func(self, metric, n_params=None):
         if metric == 'r2':
             metric_func = rs.get_r2
@@ -3941,26 +4365,6 @@ class ZoneEncoder:
                 self.zone_ts_splits[split][fold] = self._remove_bad_samps(zones, fold, split)
         self.zone_ts_splits_flag = True
 
-    def get_fold_speed_ts(self, fold_num=0, split='test'):
-        trials = self.get_fold_trials(fold_num, split)
-        sp = np.hstack(self.trial_pos[2][trials].flatten())
-        sp = self._remove_bad_samps(sp, fold_num, split)
-        return sp
-
-    def get_fold_track_pos(self, fold_num=0, split='test'):
-        trials = self.get_fold_trials(fold_num, split)
-        x = np.hstack(self.trial_pos[0][trials].flatten())
-        y = np.hstack(self.trial_pos[1][trials].flatten())
-        sp = np.hstack(self.trial_pos[2][trials].flatten())
-        df = pd.DataFrame(np.array((x, y, sp)).T, columns=['x', 'y', 'sp'])
-        df = self._remove_bad_samps(df, fold_num, split)
-        return df
-
-    def get_fold_zone_ts(self, fold_num=0, split='test'):
-        if not self.zone_ts_splits_flag:
-            self._get_zone_ts_splits()
-        return self.zone_ts_splits[split][fold_num]
-
     def _get_trial_ts_splits(self):
 
         zones = self.trial_zones
@@ -3980,24 +4384,6 @@ class ZoneEncoder:
 
         return self.trial_ts_splits[split][fold_num]
 
-    def _get_zone_feature_splits(self):
-        for split in ['train', 'test']:
-            for fold in range(self.n_folds):
-                trials = self.get_fold_trials(fold, split)
-                X = self.get_zones_features(trials=trials)
-                X = self._remove_bad_samps(X, fold, split)
-                self.zone_feature_splits[split][fold] = X
-        self.feature_flag = True
-
-    def _get_response_splits(self):
-        for split in ['train', 'test']:
-            for fold in range(self.n_folds):
-                trials = self.get_fold_trials(fold, split)
-                Y = self.get_response(trials=trials)
-                Y = self._remove_bad_samps(Y, fold, split)
-                self.response_splits[split][fold] = Y
-        self.response_flag = True
-
     def _get_samp_weights_splits(self):
         for split in ['train', 'test']:
             for fold in range(self.n_folds):
@@ -4011,14 +4397,15 @@ class ZoneEncoder:
         self.samp_weights_flag = True
 
     def _get_valid_samps_locs_splits(self):
+        bad_samps = self.bad_samps
         for split in ['train', 'test']:
             self.valid_samps_loc_splits[split] = {}
             for fold in range(self.n_folds):
                 trials = self.get_fold_trials(fold, split)
 
                 # these samps are relative to the experiment
-                trial_samps = self.ta.get_trial_concat_samps(trials)  # get trial samps
-                bad_samps = self.bad_samps
+                trial_samps = self.ta.get_trial_concat_samps(trials, self.trial_seg)  # get trial samps
+
                 trial_bad_samps_bool = np.isin(trial_samps, bad_samps)
 
                 # re-index to length of trial samps
@@ -4833,48 +5220,55 @@ class ZoneDecoder:
 #     def __init__(self, session_info, n_folds):
 
 
-def zone_encoding_analyses(session_info, lags=None, decay_funcs=None, cue_types=None) -> pd.DataFrame:
+def zone_encoding_analyses(session_info, exp_sets, parallel_flag=False, **xval_params) -> pd.DataFrame:
     """
     Fit encoder models with different amounts of lag added to the representation of the current zone.
     Positive lags effectively become a look-ahead model, negative become a past zones models. lags are modeled by sample
     not by future or past zone.
     :param session_info: session info object
-    :param cue_types: list of str
-        -> fixed: fixed cue signal by trial
-        -> inter: zones modeled separetely by cue
-        -> none: only zones are modeled
-    :param lags: list like of ints, lags to evaluate, if None, lags = [-50,0,50]
-    :param decay_funcs: list like, must be one of the decay functions in Zone encoder
+    :param exp_sets: list of dicts of feature sets to be used in each analysis.
     :return:
         dataframe of R2 results.
     """
-    if lags is None:
-        lags = [-50, 0, 50]
 
-    if decay_funcs is None:
-        decay_funcs = ['inverse']
+    feature_variables = ['max_lag', 'decay_func', 'cue_type', 'rw_type', 'sp_type', 'dir_type', 'trial_seg']
+    feature_set_default = dict(max_lag=50, decay_func='inverse',
+                               cue_type='none', rw_type='none',
+                               sp_type='none', dir_type='none',
+                               trial_seg='out')
+    feature_sets = []
+    if isinstance(exp_sets, dict):
+        exp_sets = [exp_sets]
 
-    if cue_types is None:
-        cue_types = ['none']
+    n_expts = len(exp_sets)
+    for exp in exp_sets:
+        feature_set = dict(feature_set_default)  # copy default set
+        feature_set.update(exp)
+        feature_sets.append(feature_set)
 
-    ze = ZoneEncoder(session_info)
+    if xval_params is None:
+        xval_params = dict(n_folds=10)
+
+    if parallel_flag:
+        parallel = Parallel(n_jobs=5, prefer='threads')
+    else:
+        parallel = None
+
+    ta = TrialAnalyses(session_info)
+    ze = ZoneEncoder(session_info, trial_analyses=ta, parallel=parallel, **xval_params)
 
     results = pd.DataFrame()
 
-    for decay in decay_funcs:
-        for lag in lags:
-            for cue_type in cue_types:
-                ze.update_feature_params(cue_type=cue_type, max_lag=lag, decay=decay)
-                ze.prepare_xval_data()
-                ze.get_model_fits()
-                enc_scores = ze.get_scores().copy()
-                #enc_scores = ze.get_trial_zone_perf_table()
-                #enc_scores = enc_scores.groupby(['trial', 'zones', 'unit']).mean().reset_index()
-                enc_scores['lag'] = lag
-                enc_scores['decay'] = decay
-                enc_scores['cue_type'] = cue_type
+    for feature_set in feature_sets:
 
-                results = pd.concat((results, enc_scores))
+        ze.update_features(**feature_set)
+        ze.get_model_fits()
+
+        enc_scores = ze.get_scores().copy()
+
+        for var in feature_variables:
+            enc_scores[var] = feature_set[var]
+        results = pd.concat((results, enc_scores))
 
     results.reset_index(drop=True, inplace=True)
     results['unit_type'] = results.unit.map(session_info.unit_type_map)
@@ -4911,7 +5305,7 @@ def zone_decoder_analyses(session_info, feature_types=None, target_types=None, e
         ze = pd.Series(index=encoder_types)
         for encoder_type in encoder_types:
             temp = ZoneEncoder(session_info)
-            temp.update_feature_params(**encoder_params_sets[encoder_type])
+            temp.update_features(**encoder_params_sets[encoder_type])
             temp.prepare_xval_data()
             temp.get_model_fits()
             ze[encoder_type] = temp
@@ -5008,6 +5402,91 @@ def zone_decoder_analyses(session_info, feature_types=None, target_types=None, e
         return res_table, decoders_table
 
     return res_table
+
+
+def zone_encoder_comps_dict():
+    out = dict(
+        lag=dict(
+            selections=dict(cue_type='none',
+                            rw_type='none',
+                            sp_type='none',
+                            trial_seg='out',
+                            max_lag=[-50, 0, 50]),
+            comps=dict(pos_v_zero=dict(col='max_lag', test=50, null=0),
+                       zero_v_neg=dict(col='max_lag', test=0, null=-50),
+                       neg_v_pos=dict(col='max_lag', test=-50, null=50))),
+        cue=dict(
+            selections=dict(cue_type=['none', 'fixed', 'inter'],
+                            rw_type='none',
+                            sp_type='none',
+                            trial_seg='out',
+                            max_lag=50),
+            comps=dict(fixed_v_none=dict(col='cue_type', test='fixed', null='none'),
+                       none_v_inter=dict(col='cue_type', test='none', null='inter'),
+                       inter_v_fixed=dict(col='cue_type', test='inter', null='fixed'))),
+        rw=dict(
+            selections=dict(cue_type='none',
+                            rw_type=['none', 'fixed', 'inter'],
+                            sp_type='none',
+                            trial_seg='in',
+                            max_lag=50),
+            comps=dict(fixed_v_none=dict(col='rw_type', test='fixed', null='none'),
+                       none_v_inter=dict(col='rw_type', test='none', null='inter'),
+                       inter_v_fixed=dict(col='rw_type', test='inter', null='fixed'))),
+        dir=dict(
+            selections=dict(cue_type='none',
+                            rw_type='none',
+                            dir_type=['none', 'fixed', 'inter'],
+                            sp_type='none',
+                            trial_seg='all',
+                            max_lag=50),
+            comps=dict(fixed_v_none=dict(col='dir_type', test='fixed', null='none'),
+                       none_v_inter=dict(col='dir_type', test='none', null='inter'),
+                       inter_v_fixed=dict(col='dir_type', test='inter', null='fixed'))))
+
+    return out
+
+
+def rate_segment_comp_analysis(session_info, comp, ta=None):
+    if comp == 'cue':
+        cond1 = 'CR'
+        cond2 = 'CL'
+        trial_seg1 = trial_seg2 = 'out'
+    elif comp == 'rw':
+        cond1 = 'Co'
+        cond2 = 'Inco'
+        trial_seg1 = trial_seg2 = 'in'
+    elif comp == 'dir':
+        cond1 = 'Out'
+        cond2 = 'In'
+        trial_seg1 = 'out'
+        trial_seg2 = 'in'
+    else:
+        raise NotImplementedError
+
+    if ta is None:
+        ta = TrialAnalyses(session_info)
+
+    cond1_trials = ta.get_condition_trials(condition=cond1)
+    cond2_trials = ta.get_condition_trials(condition=cond2)
+
+    cond1_rates = ta.get_trial_segment_rates(trials=cond1_trials, segment_type='bigseg', trial_seg=trial_seg1)
+    cond2_rates = ta.get_trial_segment_rates(trials=cond2_trials, segment_type='bigseg', trial_seg=trial_seg2)
+
+    df_t = pd.DataFrame(index=range(ta.n_units), columns=['left', 'stem', 'right'])
+    df_u = pd.DataFrame(index=range(ta.n_units), columns=['left', 'stem', 'right'])
+    for unit in range(ta.n_units):
+        df_t.loc[unit] = ttest_ind(cond1_rates[unit], cond2_rates[unit], nan_policy='omit')[0].data
+        df_u.loc[unit] = rs.mannwhitney_z(cond1_rates[unit], cond2_rates[unit])
+
+    df = df_t.melt(value_name='t_val', var_name='segment', ignore_index=False).reset_index()
+    df = df.rename(columns=dict(index='unit'))
+    df['uz_val'] = df_u.melt()['value'].values
+    df = df.astype(dict(unit=int,
+                        segment=pd.api.types.CategoricalDtype(['left', 'stem', 'right']),
+                        t_val=float,
+                        uz_val=float))
+    return df
 
 
 def pre_process_track_data(x, y, ha, t, t_rs, track_params, return_all=False):
@@ -5221,5 +5700,6 @@ def isbefore(X, Y, thr, minTime=0):
 def logit(p):
     return np.log(p / (1 - p))
 
+
 def expit(x):
-    return np.exp(x)/(1+np.exp(x))
+    return np.exp(x) / (1 + np.exp(x))
