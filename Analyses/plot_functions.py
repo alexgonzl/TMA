@@ -2704,58 +2704,71 @@ class RemapFigures():
     fontsize = 10
 
     def __init__(self, remap_comp, unit_type='cell', **remap_params):
+
+        self.unit_type = unit_type
         self.update_panel_params(remap_comp=remap_comp)
         self.tmz = tmf.TreeMazeZones()
+        self.update_fontsize()
 
         self.summary_info = ei.SummaryInfo()
+
         zrc = self.summary_info.get_zone_rates_remap(overwrite=False, **remap_params)
         b_table = self.summary_info.get_behav_perf()
         self.zrc_b = self._combine_tables(zrc, b_table)
+        if self.unit_type != 'all':
+            self.zrc_b = self.zrc_b[self.zrc_b.unit_type == self.unit_type]
 
-        pzrc =  self.summary_info.get_pop_zone_rates_remap(overwrite=False, **remap_params)
+        pzrc = self.summary_info.get_pop_zone_rates_remap(overwrite=False, **remap_params)
         self.pzrc_b = self._combine_tables(pzrc, b_table)
 
     def update_panel_params(self, params=None, remap_comp='cue'):
+
+        if params is None:
+            params = {}
 
         if remap_comp == 'cue':
             self.cond_pair = 'CR-CL'
             self.cond_pair_bal = 'CR_bo-CL_bo'
             self.null_pair_bal = 'Even_bo-Odd_bo'
             self.cond_colors = ['Purples', 'Greens']
+            self.cond_colors_2 = {'R': 'purple', 'L': 'green'}
             self.cond_label_names = ['RC', 'LC']
             self.cond_label_order = [1, 0]
+            self.trial_segs = ['out'] * 2
 
         elif remap_comp == 'rw':
-            cond_pair = 'Co-Inco'
-            cond_pair_bal = 'Co_bi-Inco_bi'
-            null_pair_bal = 'Even_bi-Odd_bi'
-            cond_colors = ['Blues', 'Reds']
-            cond_label_names = ['Rw', 'NRw']
-            cond_label_order = [0, 1]
+            self.cond_pair = 'Co-Inco'
+            self.cond_pair_bal = 'Co_bi-Inco_bi'
+            self.null_pair_bal = 'Even_bi-Odd_bi'
+            self.cond_colors = ['Blues', 'Reds']
+            self.cond_colors_2 = {'Co': 'b', 'Inco': 'r'}
+            self.cond_label_names = ['Rw', 'NRw']
+            self.cond_label_order = [0, 1]
+            self.trial_segs = ['in'] * 2
 
         elif remap_comp == 'dir':
-            cond_pair = 'Out-In'
-            cond_pair_bal = 'Out_bo-In_bi'
-            null_pair_bal = 'Even_bo-Odd_bi'
-            cond_colors = ['Oranges', 'Greys']
-            cond_label_names = ['Out', 'In']
-            cond_label_order = [0, 1]
-
+            self.cond_pair = 'Out-In'
+            self.cond_pair_bal = 'Out_bo-In_bi'
+            self.null_pair_bal = 'Even_bo-Odd_bi'
+            self.cond_colors = ['Oranges', 'Greys']
+            self.cond_label_names = ['Out', 'In']
+            self.cond_label_order = [0, 1]
+            self.trial_segs = ['out', 'in']
         else:
             raise NotImplementedError
 
-        subject_palette = 'deep'
-        cond_pair_list = cond_pair.split("-")
-        remap_score = f"{cond_pair_bal}-{null_pair_bal}_corr_zm"
+        self.subject_palette = 'deep'
+        self.cond_pair_list = self.cond_pair.split("-")
+        self.remap_score = f"{self.cond_pair_bal}-{self.null_pair_bal}_corr_zm"
 
-        default_params = dict(example_trajectory=dict(unit_idx_track=0,
-                                                      maze_params=dict(lw=0.2, line_color='0.6', sub_segs='all',
-                                                                       sub_seg_color='None', sub_seg_lw=0.1),
-                                                      legend_params=dict(lw=0.7, markersize=1),
-                                                      trajectories_params=dict(lw=0.15, alpha=0.1),
-                                                      well_marker_size=3),
-
-                              example_cond_comp=dict(cond_pair=cond_pair,
+        default_params = dict(maze_conditions=dict(session='Li_T3g_062018',
+                                                   maze_params=dict(lw=0.2, line_color='0.6', sub_segs='all',
+                                                                    sub_seg_color='None', sub_seg_lw=0.1),
+                                                   legend_params=dict(lw=1, markersize=2),
+                                                   trajectories_params=dict(lw=0.15, alpha=0.1),
+                                                   well_marker_size=7,
+                                                   ta_params={'trial_end': 'tE_2'}),
+                              example_cond_comp=dict(cond_pair=self.cond_pair,
                                                      cm_params=dict(color_map='viridis',
                                                                     n_color_bins=25, nans_2_zeros=True, div=False,
                                                                     label='FR'),
@@ -2763,41 +2776,41 @@ class RemapFigures():
                                                      dist_n_boot=50, dist_test_color='b', dist_null_color='0.5',
                                                      dist_lw=0.9, dist_v_lw=0.7, spike_scale=0.3),
 
-                              seg_rate_comp=dict(cond_pair=cond_pair),
-                              remap_score_dist=dict(remap_score=remap_score,
+                              seg_rate_comp=dict(cond_pair=self.cond_pair),
+                              remap_score_dist=dict(remap_score=self.remap_score,
                                                     test_color='#bcbd22', null_color='#17becf', z_color='0.3',
                                                     rug_height=0.08, rug_alpha=0.75, rug_lw=0.1,
                                                     kde_lw=0.8, kde_alpha=0.8, kde_smoothing=0.5, kde_v_lw=0.5,
                                                     ),
                               remap_unit_v_behav=dict(behav_score='pct_correct', corr_method='kendall',
-                                                      remap_score=remap_score,
+                                                      remap_score=self.remap_score,
                                                       dot_sizes=(1, 5), dot_alpha=0.75, dot_lw=0.1, dot_ec='k',
                                                       reg_line_params=dict(lw=1, color='#e46c5c'), plot_ci=True,
                                                       ci_params=dict(alpha=0.4, color='#e46c5c', linewidth=0,
                                                                      zorder=10)),
 
                               remap_pop_mean_v_behav=dict(behav_score='pct_correct', corr_method='kendall',
-                                                           remap_score=remap_score,
-                                                           rescale_behav=False,
-                                                           dot_sizes=(2, 8), dot_alpha=0.75, dot_lw=0.1, dot_ec='k',
-                                                           dot_scale=1, legend_markersize=3,
-                                                           reg_line_params=dict(lw=1, color='0.3'), plot_ci=True,
-                                                           ci_params=dict(alpha=0.4, color='#86b4cb', linewidth=0,
-                                                                          zorder=-1),
-                                                           color_pal=sns.color_palette(subject_palette)),
+                                                          remap_score=self.remap_score,
+                                                          rescale_behav=False,
+                                                          dot_sizes=(2, 8), dot_alpha=0.75, dot_lw=0.1, dot_ec='k',
+                                                          dot_scale=1, legend_markersize=3,
+                                                          reg_line_params=dict(lw=1, color='0.3'), plot_ci=True,
+                                                          ci_params=dict(alpha=0.4, color='#86b4cb', linewidth=0,
+                                                                         zorder=-1),
+                                                          color_pal=sns.color_palette(self.subject_palette)),
 
                               remap_pop_corr_v_behav=dict(behav_score='pct_correct', corr_method='kendall',
-                                                            remap_score=remap_score,
-                                                            rescale_behav=False,
-                                                            dot_sizes=(2, 8), dot_alpha=0.75, dot_lw=0.1, dot_ec='k',
-                                                            dot_scale=1, legend_markersize=3,
-                                                            reg_line_params=dict(lw=1, color='0.3'), plot_ci=True,
-                                                            ci_params=dict(alpha=0.4, color='#86b4cb', linewidth=0,
-                                                                           zorder=-1),
-                                                            color_pal=sns.color_palette(subject_palette)),
+                                                          remap_score=self.remap_score,
+                                                          rescale_behav=False,
+                                                          dot_sizes=(2, 8), dot_alpha=0.75, dot_lw=0.1, dot_ec='k',
+                                                          dot_scale=1, legend_markersize=3,
+                                                          reg_line_params=dict(lw=1, color='0.3'), plot_ci=True,
+                                                          ci_params=dict(alpha=0.4, color='#86b4cb', linewidth=0,
+                                                                         zorder=-1),
+                                                          color_pal=sns.color_palette(self.subject_palette)),
 
                               remap_behav_slopes_by_subject=dict(behav_score='pct_correct', corr_method='kendall',
-                                                                 remap_score=remap_score,
+                                                                 remap_score=self.remap_score,
                                                                  rescale_behav=False,
                                                                  dot_sizes=(2, 8), dot_alpha=0.75, dot_lw=0.1,
                                                                  dot_ec='k',
@@ -2805,9 +2818,8 @@ class RemapFigures():
                                                                  reg_line_params=dict(lw=1, color='0.3'), plot_ci=True,
                                                                  ci_params=dict(alpha=0.4, color='#86b4cb', linewidth=0,
                                                                                 zorder=-1),
-                                                                 color_pal=sns.color_palette(subject_palette)))
+                                                                 color_pal=sns.color_palette(self.subject_palette)))
 
-        self.cond_pair_list = cond_pair_list
         self.remap_comp = remap_comp
         self.params = copy.deepcopy(default_params)
         self.params.update(params)
@@ -2815,8 +2827,141 @@ class RemapFigures():
     def update_fontsize(self, fontscale=1, fontsize=10):
         self.fontsize = fontsize * fontscale
         self.tick_fontsize = self.fontsize
-        self.legend_fontsize = self.fontsize * 0.8
+        self.legend_fontsize = self.fontsize * 0.77
         self.label_fontsize = self.fontsize * 1.1
+
+    # noinspection PyUnboundLocalVariable
+    def plot_maze_conditions(self, **in_params):
+
+        f, ax = plt.subplots(1, 3, figsize=(2.4, 1.4), dpi=self.dpi)
+        ax[0].set_position([0, 0, 0.5, 1])
+        ax[1].set_position([0.5, 0, 0.5, 1])
+        ax[2].set_position([0, 0, 1, 1])
+        ax[2].axis('off')
+        leg_pos = [0, 0, 1, 0.5]
+
+        params = copy.deepcopy(self.params['maze_conditions'])
+        params.update(in_params)
+
+        session = params['session']
+        subject = session.split("_")[0]
+        session_info = ei.SubjectSessionInfo(subject, session)
+        ta = tmf.TrialAnalyses(session_info, **params['ta_params'])
+        tmz = tmf.TreeMazeZones()
+
+        if self.remap_comp == 'dir':
+            plot_cue = False
+
+        else:
+            if self.remap_comp == 'cue':
+                plot_cue = True
+                cue_colors = ['L','R']
+                label_color = 'w'
+                cond_pair = ['CL', 'CR']
+                cond_label_names = ['LC', 'RC']
+                home_marker = 'o'
+                goal_marker = 'd'
+                legend_label_types = ['line', 'line', 'marker', 'marker', 'marker']
+                legend_label_names = ['L Decision', 'R Decision', 'Start', 'Correct', 'Incorrect']
+                legend_label_colors = ['g', 'purple', 'k', 'b', 'r']
+                legend_label_markers = [None, None, 'o', 'd', 'd']
+
+            elif self.remap_comp == 'rw':
+                plot_cue = True
+                cue_colors = ['w', 'w']
+                label_color = 'k'
+                cond_pair = ['Co', 'Inco']
+                cond_label_names = ['RW', 'NRW']
+                home_marker = 'd'
+                goal_marker = 'o'
+                legend_label_types = ['line', 'line', 'marker', 'marker']
+                legend_label_names = ['Reward', 'No Reward', 'Start', 'End']
+                legend_label_colors = ['b', 'r', 'k', 'k']
+                legend_label_markers = [None, None, 'o', 'd']
+                params['trajectories_params']['alpha'] = 0.25
+
+        cue_coords = tmz.cue_label_coords
+
+        trial_sets = {}
+        x = {}
+        y = {}
+        for ii, cond in enumerate(cond_pair):
+            t = ta.trial_condition_table[cond]
+            trial_sets[cond] = np.where(t)[0]
+
+            x[cond], y[cond], _ = ta.get_trial_track_pos(trial_seg=self.trial_segs[ii])
+
+            _ = tmz.plot_maze(axis=ax[ii],
+                              seg_color=None, zone_labels=False, seg_alpha=0.1,
+                              plot_cue=plot_cue, cue_color=cue_colors[ii], **params['maze_params'])
+
+            if self.remap_comp != 'dir':
+                ax[ii].text(cue_coords[0], cue_coords[1], cond_label_names[ii], fontsize=self.legend_fontsize,
+                            horizontalalignment='center', verticalalignment='center', color=label_color)
+
+        well_coords = tmz.well_coords
+        correct_cue_goals = {'CR': ['G1', 'G2'], 'CL': ['G3', 'G4']}
+
+        decisions = ta.trial_table.dec
+        correct = ta.trial_table.correct
+
+        # loop by condition
+        for ii, cond in enumerate(cond_pair):
+            for tr in trial_sets[cond]:
+                if self.remap_comp == 'cue':
+                    dec = decisions[tr]
+                    col = self.cond_colors_2[dec]
+                elif self.remap_comp == 'rw':
+                    #col = '#6A8395'
+                    col = self.cond_colors_2[cond]
+                ax[ii].plot(x[cond][tr], y[cond][tr], zorder=1, color=col, **params['trajectories_params'],
+                            rasterized=True)
+
+            # well markers
+            ax[ii].scatter(well_coords['H'][0], well_coords['H'][1], s=params['well_marker_size'], marker=home_marker,
+                           lw=0,
+                           color='k',
+                           zorder=10)
+
+            # goal markers
+            for jj in range(4):
+                goal_id = f"G{jj + 1}"
+                coords = well_coords[goal_id]
+                if self.remap_comp == 'cue':
+                    marker_end_color = 'b' if (goal_id in correct_cue_goals[cond]) else 'r'
+                elif self.remap_comp == 'rw':
+                    #marker_end_color = self.cond_colors_2[cond]
+                    marker_end_color = 'k'
+
+                ax[ii].scatter(coords[0], coords[1], s=params['well_marker_size'], marker=goal_marker, lw=0,
+                           color=marker_end_color,
+                           zorder=10,
+                           rasterized=False)
+
+        for ii in range(2):
+            ax[ii].axis("square")
+            ax[ii].axis("off")
+            ax[ii].set_xlim(ta.x_edges[0] * 1.24, ta.x_edges[-1] * 1.24)
+
+        # legend
+        legend_params = params['legend_params']
+        legend_elements = []
+        for ii, leg_type in enumerate(legend_label_types):
+            if leg_type == 'line':
+                element = mpl.lines.Line2D([0], [0], color=legend_label_colors[ii],
+                                           lw=legend_params['lw'],
+                                           label=legend_label_names[ii])
+            else:
+                element = mpl.lines.Line2D([0], [0], marker=legend_label_markers[ii],
+                                           color=legend_label_colors[ii], lw=0, label=legend_label_names[ii],
+                                           markerfacecolor=legend_label_colors[ii],
+                                           markersize=legend_params['markersize'])
+            legend_elements.append(element)
+
+        ax[2].legend(handles=legend_elements, loc='lower center', bbox_to_anchor=leg_pos, frameon=False,
+                     fontsize=self.legend_fontsize, labelspacing=0.01, handlelength=0.5, handletextpad=0.4)
+
+        return f, ax
 
     def plot_unit_remap_v_beh(self, ax=None, **in_params):
 
@@ -3038,7 +3183,7 @@ class RemapFigures():
         l2 = ax.add_artist(plt.legend(handles=legend_size_marker_handles, **legend_params))
         ax.add_artist(l1)
 
-        return f,ax
+        return f, ax
 
     def plot_pop_corr_remap_v_beh(self, ax=None, **in_params):
         pass
@@ -3133,7 +3278,6 @@ class RemapFigures():
         ax[1].tick_params(axis='y', left=False)
         ax[1].set_yticklabels([''] * 3)
 
-
     def _combine_tables(self, zrc, b_table):
         zrc_b = zrc.copy()
         b_table = b_table.copy()
@@ -3146,8 +3290,6 @@ class RemapFigures():
 
         zrc_b['task'] = zrc_b.session.apply(self._get_task_from_session)
 
-        if self.unit_type != 'all':
-            zrc_b = zrc_b[zrc_b.unit_type == self.unit_type]
         return zrc_b
 
     @staticmethod
@@ -3157,6 +3299,7 @@ class RemapFigures():
     @staticmethod
     def _get_task_from_session(session):
         return session.split("_")[1]
+
 
 ################################################################################
 # Plot Functions
