@@ -2,30 +2,22 @@ import copy
 
 import numpy as np
 import pandas as pd
-from scipy import signal, ndimage, interpolate, stats
-
-import Pre_Processing.pre_process_functions as pp_funcs
-import Utils.filter_functions as filt_funcs
+from scipy import stats
 
 import seaborn as sns
-from seaborn.utils import remove_na
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import Utils.robust_stats as rs
-import matplotlib.ticker as ticker
-from matplotlib.text import Text
 from matplotlib import transforms, lines
-import matplotlib.transforms as mtransforms
-from matplotlib.font_manager import FontProperties
+import matplotlib.collections as mcoll
 
-from shapely.geometry import Point
 from shapely.geometry.polygon import LinearRing, Polygon
-from collections import Counter
 from descartes import PolygonPatch
 
 from Analyses import experiment_info as ei
 from Analyses import tree_maze_functions as tmf
 
+from matplotlib_venn import venn2, venn3
 
 # import spatial_tuning as ST
 # import stats_functions as StatsF
@@ -2855,7 +2847,7 @@ class RemapFigures():
         else:
             if self.remap_comp == 'cue':
                 plot_cue = True
-                cue_colors = ['L','R']
+                cue_colors = ['L', 'R']
                 label_color = 'w'
                 cond_pair = ['CL', 'CR']
                 cond_label_names = ['LC', 'RC']
@@ -2912,7 +2904,7 @@ class RemapFigures():
                     dec = decisions[tr]
                     col = self.cond_colors_2[dec]
                 elif self.remap_comp == 'rw':
-                    #col = '#6A8395'
+                    # col = '#6A8395'
                     col = self.cond_colors_2[cond]
                 ax[ii].plot(x[cond][tr], y[cond][tr], zorder=1, color=col, **params['trajectories_params'],
                             rasterized=True)
@@ -2930,13 +2922,13 @@ class RemapFigures():
                 if self.remap_comp == 'cue':
                     marker_end_color = 'b' if (goal_id in correct_cue_goals[cond]) else 'r'
                 elif self.remap_comp == 'rw':
-                    #marker_end_color = self.cond_colors_2[cond]
+                    # marker_end_color = self.cond_colors_2[cond]
                     marker_end_color = 'k'
 
                 ax[ii].scatter(coords[0], coords[1], s=params['well_marker_size'], marker=goal_marker, lw=0,
-                           color=marker_end_color,
-                           zorder=10,
-                           rasterized=False)
+                               color=marker_end_color,
+                               zorder=10,
+                               rasterized=False)
 
         for ii in range(2):
             ax[ii].axis("square")
@@ -3301,9 +3293,250 @@ class RemapFigures():
         return session.split("_")[1]
 
 
+class OpenFieldFigures():
+    dpi = 1500
+    fontsize = 10
+
+    colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown', 'tab:pink', 'tab:gray',
+              'tab:olive', 'tab:cyan']
+    analyses_colors = sns.color_palette(palette='deep', as_cmap=True)
+    type_color = {'hd': analyses_colors[0],
+                  'speed': analyses_colors[1],
+                  'border': analyses_colors[2],
+                  'grid': analyses_colors[3],
+                  'pos': analyses_colors[4]}
+
+    def __int__(self):
+        pass
+
+    @staticmethod
+    def make_segments(x, y):
+        """
+        Create list of line segments from x and y coordinates, in the correct format
+        for LineCollection: an array of the form numlines x (points per line) x 2 (x
+        and y) array
+        """
+        points = np.array([x, y]).T.reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        return segments
+
+class CrossTaskFigures():
+    dpi = 1500
+    fontsize = 10
+    colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple',
+              'tab:brown', 'tab:pink', 'tab:gray', 'tab:olive', 'tab:cyan']
+
+    def __init__(self):
+        self.info = ei.SummaryInfo()
+        self.unit_table = self.info.get_unit_table()
+        self.update_fontsize()
+        self.update_panel_params()
+
+    def update_panel_params(self, params=None):
+
+        if params is None:
+            params = {}
+
+        self.subject_palette = 'deep'
+        default_params = dict()
+
+        self.params = copy.deepcopy(default_params)
+        self.params.update(params)
+
+    def update_fontsize(self, fontscale=1, fontsize=10):
+        self.fontsize = fontsize * fontscale
+        self.tick_fontsize = self.fontsize
+        self.legend_fontsize = self.fontsize * 0.77
+        self.label_fontsize = self.fontsize * 1.1
+
+    def unit_overlap(self, match_type='lib', ax=None):
+
+        if ax is None:
+            f, ax = plt.subplots(figsize=(1.5, 1), dpi=self.dpi)
+        else:
+            f = ax.figure
+
+        unit_table = self.unit_table
+        n_TM_cells = unit_table[(unit_table.unit_type == 'cell') & (unit_table.task2 == 'T3')].shape[0]
+        n_OF_cells = unit_table[(unit_table.unit_type == 'cell') & (unit_table.task2 == 'OF')].shape[0]
+
+        if match_type == 'lib':
+            n_matches = unit_table.match_lib_multi_task_id.max() + 1
+        elif match_type == 'con':
+            n_matches = unit_table.match_con_multi_task_id.max() + 1
+        else:
+            raise ValueError
+
+        out = venn2((n_TM_cells - n_matches, n_OF_cells - n_matches, n_matches),
+                    set_labels=['TM', 'OF'], set_colors=self.colors[:2], alpha=0.75, ax=ax)
+
+        for text in out.set_labels:
+            text.set_fontsize(self.label_fontsize)
+        for x in range(len(out.subset_labels)):
+            if out.subset_labels[x] is not None:
+                out.subset_labels[x].set_fontsize(self.legend_fontsize)
+
+        return f, ax
+
+
+
 ################################################################################
 # Plot Functions
 ################################################################################
+def setup_axes(ax, fontsize=10):
+
+    sns.set_style(rc={"axes.edgecolor":'k',
+                     'xtick.bottom': True,
+                     'ytick.left': True})
+
+    sns.despine(ax=ax)
+    for sp in ['bottom', 'left']:
+        ax.spines[sp].set_linewidth(1)
+        ax.spines[sp].set_color('k')
+
+    ax.tick_params(axis="both", direction="out", length=2, width=1, color='0.2', which='major',
+                   pad=0.5, labelsize=fontsize)
+
+    ax.grid(linewidth=0.5)
+
+
+def plot_sp_fr(sp_bins, sp_fr_m, sp_fr_s=None, ax=None, **params):
+    plot_params = dict(lw=3,
+                       color='b',
+                       alpha=0.5,
+                       xlabel='Speed [cm/s]',
+                       ylabel='FR',
+                       xlims=[0, 81],
+                       fontsize=12)
+
+    plot_params.update(params)
+
+    if ax is None:
+        f, ax = plt.subplots()
+
+    ax.plot(sp_bins, sp_fr_m, lw=plot_params['lw'], color=plot_params['color'])
+
+    if sp_fr_s is not None:
+        ax.fill_between(sp_bins, sp_fr_m - sp_fr_s, sp_fr_m + sp_fr_s, alpha=plot_params['alpha'])
+
+    ax.set_xlabel(plot_params['xlabel'], fontsize=plot_params['fontsize'])
+    ax.set_ylabel(plot_params['ylabel'], fontsize=plot_params['fontsize'])
+    return ax
+
+
+def plot_ang_fr(ang_bins, ang_fr_m, plot_mean_vec=False, ax=None, **params):
+    plot_params = dict(lw=3,
+                       color='b',
+                       alpha=0.5,
+                       fontsize=12,
+                       xtick_locations=np.arange(0, 2 * np.pi, np.pi / 4),
+                       xtick_labels=['E', '', '', '', 'W'],
+                       cmap='magma_r',
+                       cax_pos=[0.95, 0, 0.05, 0.2])
+
+    plot_params.update(params)
+    if ax is None:
+        f, ax = plt.subplots(projection='polar')
+
+    norm_ang_fr = ang_fr_m / ang_fr_m.max()
+    colors = plt.cm.get_cmap(plot_params['cmap'])(norm_ang_fr)
+
+    ax.scatter(ang_bins, ang_fr_m, color=colors, zorder=2)
+    colorline(np.append(ang_bins, ang_bins[0]), np.append(ang_fr_m, ang_fr_m[0]),
+              colors=np.append(colors, [colors[0]], axis=0), ax=ax)
+
+    if plot_mean_vec:
+        vec = np.sum(ang_fr_m * np.exp(ang_bins * 1j))
+        mean_vec_length = np.abs(vec)
+        mean_vec_ang = np.angle(vec)
+
+        ax.plot([0, mean_vec_ang], [0, mean_vec_length], color=plot_params['color'], lw=plot_params['lw'],
+                solid_capstyle='round')
+
+    ax.set_xticks(plot_params['xtick_locations'])
+    ax.set_xticklabels(plot_params['xtick_labels'], fontsize=plot_params['fontsize'])
+
+    ax.set_yticks([])
+    ax.set_ylim([0, np.max(ang_fr_m) * 1.1])
+
+    # colorbar to indicate magnitude
+    cax_pos = plot_params['cax_pos']
+    pos = ax.get_position()
+    cax = ax.figure.add_axes(
+        [pos.x0 + pos.width * cax_pos[0], pos.y0 + cax_pos[1], pos.width * cax_pos[2], pos.height * cax_pos[3]])
+    get_color_bar_axis(ax, ang_fr_m, color_map=plot_params['cmap'],
+                       **dict(tick_fontsize=plot_params['fontsize'],
+                              label_fontsize=plot_params['fontsize'],
+                              label='FR'))
+
+    return ax, cax
+
+
+def plot_xy_spks(x, y, spikes, ax=None, **params):
+    plot_params = dict(trace_color='0.2',
+                       trace_alpha='0.3',
+                       trace_lw = 1,
+                       spike_color='r',
+                       spike_alpha=0.5,
+                       spike_scale=3,)
+
+    plot_params.update(params)
+
+    if ax is None:
+        f, ax = plt.subplots()
+
+    ax.plot(x, y, linewidth=plot_params['trace_lw'],
+            color=plot_params['trace_color'], alpha=plot_params['trace_alpha'])
+    ax.scatter(x, y, s=spikes*plot_params['spike_scale'],
+               color=plot_params['spike_color'], alpha=plot_params['spike_alpha'])
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_axis_off()
+
+    return ax
+
+
+def plot_firing_rate_map(fr_map, cmap='viridis', min_val=0, max_val=None, ax=None, show_colorbar=False, **params):
+    """
+    Plot a firing rate map for a single unit.
+    :param fr_map: 2d array of firing rate
+    :param cmap: colormap
+    :param min_val: minimum value, default 0
+    :param max_val: maximum value, default max data value
+    :param ax: axis to plot
+    :param show_colorbar: bool,
+    :param params:
+    :return:
+    """
+
+    plot_params = dict(fontsize=12,
+                       cax_pos=[0.95, 0, 0.05, 0.2])
+
+    plot_params.update(params)
+
+    if ax is None:
+        f, ax = plt.subplots()
+
+    if max_val is None:
+        max_val = fr_map.max()
+
+    im = sns.heatmap(fr_map, cmap=cmap, vmin=min_val, vmax=max_val, ax=ax,
+                     square=True, cbar=False, xticklabels=[], yticklabels=[])
+
+    if show_colorbar:
+        cax_pos = plot_params['cax_pos']
+        pos = ax.get_position()
+        cax = ax.figure.add_axes(
+            [pos.x0 + pos.width * cax_pos[0], pos.y0 + cax_pos[1], pos.width * cax_pos[2], pos.height * cax_pos[3]])
+        get_color_bar_axis(ax, fr_map.flatten(), color_map=cmap,
+                           **dict(tick_fontsize=plot_params['fontsize'],
+                                  label_fontsize=plot_params['fontsize'],
+                                  label='FR'))
+    else:
+        cax = None
+
+    return ax, cax
+
+
 def plot_poly(poly, ax, alpha=0.3, color='g', lw=1.5, line_alpha=1, line_color='0.5', z_order=2):
     p1x, p1y = poly.exterior.xy
     ax.plot(p1x, p1y, color=line_color, linewidth=lw, alpha=line_alpha, zorder=z_order)
@@ -3477,9 +3710,6 @@ def get_color_bar_axis(cax, color_array, color_map='cividis', **args):
                  transform=cax.transAxes)
 
         if 'label' in params:
-            # cax.set_ylabel(params['label'], rotation='horizontal', va='top', ha='right',
-            #                fontsize=params['label_fontsize'], labelpad=0)
-
             cax.text(1.05, 0, params['label'], fontsize=params['label_fontsize'], ha='left', va='center',
                      transform=cax.transAxes)
 
@@ -3487,6 +3717,51 @@ def get_color_bar_axis(cax, color_array, color_map='cividis', **args):
         cax.spines[pos].set_visible(False)
     color_bar.outline.set_color("None")
 
+
+def colorline(x, y, z=None, colors=None, cmap=plt.get_cmap('copper'),
+              norm=plt.Normalize(0.0, 1.0), linewidth=3, alpha=1.0, ax=None):
+    """
+    http://nbviewer.ipython.org/github/dpsanders/matplotlib-examples/blob/master/colorline.ipynb
+    http://matplotlib.org/examples/pylab_examples/multicolored_line.html
+    Plot a colored line with coordinates x and y
+    Optionally specify colors in the array z
+    Optionally specify a colormap, a norm function and a line width
+    """
+
+    # Default colors equally spaced on [0,1]:
+    if z is None:
+        z = np.linspace(0.0, 1.0, len(x))
+
+    # Special case if a single number:
+    if not hasattr(z, "__iter__"):  # to check for numerical input -- this is a hack
+        z = np.array([z])
+
+    z = np.asarray(z)
+
+    segments = make_segments(x, y)
+    if colors is None:
+        lc = mcoll.LineCollection(segments, array=z, cmap=cmap, norm=norm,
+                                  linewidth=linewidth, alpha=alpha, zorder=1)
+    else:
+        lc = mcoll.LineCollection(segments, colors=colors,
+                                  linewidth=linewidth, alpha=alpha, zorder=1)
+    if ax is None:
+        ax = plt.gca()
+    ax.add_collection(lc)
+
+    return lc
+
+
+def make_segments(x, y):
+    """
+    Create list of line segments from x and y coordinates, in the correct format
+    for LineCollection: an array of the form numlines x (points per line) x 2 (x
+    and y) array
+    """
+
+    points = np.array([x, y]).T.reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    return segments
 # def plotCounts(counts, names,ax):
 #     nX = len(names)
 #     ab=sns.barplot(x=np.arange(nX),y=counts,ax=ax, ci=[],facecolor=(0.4, 0.6, 0.7, 1))

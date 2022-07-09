@@ -1000,6 +1000,7 @@ class AllSpatialEncodingModels:
                     coefs[fold, unit] = model_obj.coef_
         return coefs
 
+def cluster_
 
 def get_session_track_data(session_info):
     """
@@ -1409,3 +1410,4 @@ def default_OF_params():
     params['height'] = params['n_y_bins']
 
     return params
+

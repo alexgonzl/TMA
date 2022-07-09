@@ -1087,6 +1087,26 @@ def get_speed_encoding_features(speed, speed_bin_edges):
     return sp_design_matrix, sp_bin_idx, valid_samps
 
 
+def get_binned_sp_fr(sp, fr, sp_bin_size=3, min_speed=0, max_speed=100, sp_bins=None):
+    """
+    Obtains the speed binned firing rates.
+    :param sp: speed array n_samps, floats [cm/s]
+    :param fr: firing rate array n_samps, floats [Hz]
+    :param min_speed: minimum speed to include in the binning [cm/s]
+    :param max_speed: maximum speed to include in the binning [cm/s]
+    :param sp_bin_size: speed bin size [cm/s]
+    :param sp_bins: list of speed bin edges, if provided, will use these instead of min_speed and max_speed
+    :return: fr_by_bin: array n_bins, floats, firing rate in each speed bin
+    """
+    if sp_bins is None:
+        sp_bins = np.arange(min_speed, max_speed + sp_bin_size, sp_bin_size)
+
+    # get binned firing rate
+    temp = var_binned_fr_info(fr, sp, sp_bins)
+    temp.rename(columns={'bin_center': 'sp'}, inplace=True)
+    return temp
+
+
 # ------------------------------------------------- ANGLE METRICS ------------------------------------------------------
 def get_angle_stats(theta, step, weights=None):
     """
@@ -1184,6 +1204,37 @@ def angle_score_traditional(theta, fr, speed=None, min_speed=None, max_speed=Non
                 scores.loc[unit, key] = val
 
     return scores
+
+
+def get_binned_angle_fr(theta, fr, speed=None, min_speed=None, max_speed=None, ang_bin_step=np.pi/36, angle_bins=None):
+    """
+    computes angle by firing rate with binning
+    :param theta: angle vector [radians]
+    :param fr: firing rate vector [Hz]
+    :param speed: speed vector [cm/s]
+    :param min_speed: minimum speed threshold [cm/s]
+    :param max_speed: maximal speed threshold [cm/s]
+    :param ang_bin_step: angle bin size [radians]
+    :param angle_bins: list of bins to use. If None, will use np.arange(0, 2*np.pi, bin_step)
+    :return:
+        firing rate by binned angle
+    """
+    if angle_bins is None:
+        angle_bins = np.arange(0, 2 * np.pi + ang_bin_step, ang_bin_step)
+
+    valid_samps = np.ones(len(theta), dtype=bool)
+    if min_speed is not None:
+        valid_samps = np.logical_and(speed >= min_speed, valid_samps)
+    if max_speed is not None:
+        valid_samps = np.logical_and(speed <= max_speed, valid_samps)
+
+    theta = theta[valid_samps]
+    fr = fr[valid_samps]
+
+    # get binned firing rate
+    temp = var_binned_fr_info(fr, theta, angle_bins)
+    temp.rename(columns={'bin_center': 'theta'}, inplace=True)
+    return temp
 
 
 def get_angle_encoding_model_old(theta, fr, ang_bin_edges, speed=None, min_speed=None, max_speed=None, sig_alpha=0.02):
@@ -2623,3 +2674,26 @@ def detect_img_peaks(image, background_thr=0.01):
     detected_peaks = local_max * ~eroded_background
 
     return detected_peaks
+
+
+def var_binned_fr_info(fr, var, var_bins):
+    """
+    obtain the binned firing rate information as a function a given binned variable
+    :param fr: firing rate
+    :param var: variable of interestred to be binned
+    :param var_bins: bins of the variable
+    :return:
+    dataframe of the binned firing rate information
+    """
+    n_bins = len(var_bins) - 1
+    out_df = pd.DataFrame(index=range(n_bins), columns=['bin_center', 'mean', 'std', 'n', 'median', 'ci_95', 'ci_5'])
+    for ii, bin_idx in enumerate(range(n_bins)):
+        bin_mask = np.logical_and(var >= var_bins[bin_idx], var < var_bins[bin_idx + 1])
+        out_df.loc[ii, 'var'] = (var_bins[bin_idx + 1]+var_bins[bin_idx])/2
+        out_df.loc[ii, 'mean'] = fr[bin_mask].mean()
+        out_df.loc[ii, 'std'] = fr[bin_mask].std()
+        out_df.loc[ii, 'n'] = fr[bin_mask].size
+        out_df.loc[ii, 'median'] = np.median(fr[bin_mask])
+        out_df.loc[ii, 'ci_95'] = np.percentile(fr[bin_mask], 95)
+        out_df.loc[ii, 'ci_5'] = np.percentile(fr[bin_mask], 5)
+    return out_df

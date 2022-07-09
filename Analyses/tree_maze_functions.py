@@ -1715,35 +1715,33 @@ class TrialAnalyses:
                       'Even_bo-Odd_bo',
                       'Even_bi-Odd_bi']
 
-    # bal_conds_sets = { 'CR_bo': {'cond': 'CR', 'sub_conds': ['Co', 'Inco'], 'trial_seg': 'out'},
-    #                 'CL_bo': {'cond':'CL', 'sub_conds': ['Co', 'Inco'], 'trial_seg': 'out'},
-    #                 'Co_bo': {'cond':'Co', 'sub_conds': ['CL','CR'], 'trial_seg': 'out'},
-    #                 'Co_bi': {'cond': 'Co', 'sub_conds': ['CL', 'CR'], 'trial_seg': 'in'},
-    #                 'Inco_bo': {'cond':'Inco', 'sub_conds': ['CL','CR'], 'trial_seg': 'out'},
-    #                 'Inco_bi': {'cond': 'Inco', 'sub_conds': ['CL', 'CR'], 'trial_seg': 'in'},
-    #                 'Even_bo': {'cond':'Even', 'sub_conds': ['CL','CR'], 'trial_seg': 'out'},
-    #                 'Even_bi': {'cond': 'Even', 'sub_conds': ['CL', 'CR'], 'trial_seg': 'in'},
-    #                 'Odd_bo': {'cond': 'Odd', 'sub_conds': ['CL', 'CR'], 'trial_seg': 'out'},
-    #                 'Odd_bi': {'cond': 'Odd', 'sub_conds': ['CL', 'CR'], 'trial_seg': 'in'},
-    #                 }
-
     test_null_bal_cond_pairs = {'CR_bo-CL_bo': 'Even_bo-Odd_bo',
                                 'Co_bo-Inco_bo': 'Even_bo-Odd_bo',
                                 'Co_bi-Inco_bi': 'Even_bi-Odd_bi'}
 
     occupation_thrs = {'bigseg': 5, 'seg': 2, 'subseg': 1, 'bigseg_nowells': 5, 'wells': 2}
 
-    def __init__(self, session_info, reward_blank=False, not_inzone_blank=True, valid_transitions_blank=True,
-                 trial_end='tE_2', **kwargs):
+    def __init__(self, session_info, trial_end='tE_2', reward_blank=False, not_inzone_blank=True, speed_blank=False,
+                 valid_transitions_blank=True, sp_valid_limits=None, **kwargs):
         """
         class for trialwise analyses on session data
         :param session_info:
-        :param reward_blank: blank samples near reward period
-        :param not_inzone_blank: blank samples that are not in the defined zones
+        :param reward_blank: bool. blank samples near reward period
+        :param not_inzone_blank: bool. blank samples that are not in the defined zones
+        :param speed_blank: bool. blank speeds not within sp_valid_limits
+        :param valid_transitions_blank: bool. blanks samples from invalid transitions
+        :param sp_valid_limit: tuple like, speed limits for blanking invalid speed samples [mm/s].
+                                this is ignored if speed_blank is False.
+                                default is 20mm/s to 1000mm/s (or 2cm/s to 100cm/s).
         """
 
         self.si = session_info
         self.tmz = TreeMazeZones()
+
+        if sp_valid_limits is None:
+            self.sp_valid_limits = [20, 1000]  # mm/s
+        else:
+            self.sp_valid_limits = sp_valid_limits
 
         assert trial_end in ['tE', 'tD', 'tE_1', 'tE_2']
         self.trial_end = trial_end
@@ -1769,6 +1767,7 @@ class TrialAnalyses:
         self.spikes = self.si.get_binned_spikes()
 
         self.all_blank_samps = np.empty(0)
+
         if not_inzone_blank:
             self._blank_data(self.pz_invalid_samps)
             self.all_blank_samps = self.pz_invalid_samps
@@ -1785,6 +1784,14 @@ class TrialAnalyses:
             self._blank_data(self.blank_transition_samps)
 
             self.all_blank_samps = np.concatenate((self.all_blank_samps, self.blank_transition_samps))
+
+        if speed_blank:
+            self.valid_sp_samps = (self.track_data['sp'] >= self.track_data['sp'][0]) &\
+                                  (self.track_data['sp'] <= self.track_data['sp'][1])
+            self.blank_sp_samps = np.where(~self.valid_sp_samps)[0]
+            self._blank_data(self.blank_sp_samps)
+
+            self.all_blank_samps = np.concatenate((self.all_blank_samps, self.blank_sp_samps))
 
         self.x_edges = self.si.task_params['x_bin_edges_'] * 10  # edges are in cm
         self.y_edges = self.si.task_params['y_bin_edges_'] * 10  # edges are in cm
@@ -1927,7 +1934,7 @@ class TrialAnalyses:
 
         return t0, tE
 
-    def get_trial_concat_samps(self, trials, trial_seg='out'):
+    def get_trial_concat_samps(self, trials=None, trial_seg='out'):
         """
         function that returns the samples for the given trials
         :param trials: list, array
@@ -2616,7 +2623,7 @@ class TrialAnalyses:
 
         return pd.DataFrame(np.array(corr).T)
 
-    def zone_rate_maps_comparison_analyses(self):
+    def zone_rate_maps_comparison_analyses(self, corr_method='kendall'):
         """
         :return:
         """
@@ -2652,7 +2659,8 @@ class TrialAnalyses:
             zp = zc / zc.sum()
 
             df[f"{group}_corr"] = self.zone_rate_maps_corr(trials1=trials1, trials2=trials2,
-                                                           trial_seg1=trial_seg1, trial_seg2=trial_seg2)
+                                                           trial_seg1=trial_seg1, trial_seg2=trial_seg2,
+                                                           corr_method=corr_method)
 
             try:
                 ts = self.zone_rate_maps_t(trials1=trials1, trials2=trials2,
@@ -2883,7 +2891,7 @@ class TrialAnalyses:
                 cnt += 1
         return out
 
-    def all_zone_remapping_analyses(self, corr_method='kendall', n_boot=100, n_jobs=5, zr_method='trial'):
+    def all_zone_remapping_analyses(self, corr_method='kendall', n_boot=100, n_jobs=5, zr_method='trial', parallel=False):
         """
         Runs zone_rate_maps_comparison_analyses and zone_rate_maps_bal_conds_boot_corr and puts them into a single
         data frame.
@@ -2896,17 +2904,27 @@ class TrialAnalyses:
         """
         with np.errstate(divide='ignore'):
             # main analyses
-            df = self.zone_rate_maps_comparison_analyses()
+            df = self.zone_rate_maps_comparison_analyses(corr_method=corr_method)
 
             n_zones = self.tmz.n_all_segs
-            with Parallel(n_jobs=n_jobs) as parallel:
+
+            def _inner_loop(_parallel):
                 bcorrs = {}
                 for cond_pair in self.bal_cond_pairs:
                     bcorrs[cond_pair] = self.zone_rate_maps_bal_conds_boot_corr(bal_cond_pair=cond_pair,
                                                                                 corr_method=corr_method,
                                                                                 n_boot=n_boot,
                                                                                 zr_method=zr_method,
-                                                                                parallel=parallel)
+                                                                                parallel=_parallel)
+                return bcorrs
+
+            if isinstance(parallel, Parallel):
+                bcorrs = _inner_loop(parallel)
+            elif parallel == True:
+                with Parallel(n_jobs=n_jobs) as parallel2:
+                    bcorrs = _inner_loop(parallel2)
+            else:
+                bcorrs = _inner_loop(parallel)
 
             if corr_method == 'kendall':
                 def _transform_corr(_c):
@@ -5218,7 +5236,6 @@ class ZoneDecoder:
 
 # class DataFolds:
 #     def __init__(self, session_info, n_folds):
-
 
 def zone_encoding_analyses(session_info, exp_sets, parallel_flag=False, **xval_params) -> pd.DataFrame:
     """
