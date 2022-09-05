@@ -342,6 +342,11 @@ def load_hp_binary_data(file_name, n_channels=4, data_type=np.float16):
     :param data_type: dtype for loading data, default np.float16
     :return: n
     """
+    ### bug found on 7/27/2022. recording.dat is not in the right format, hence loading in this manner produces garbage.
+    ### workaround is to use SubjectInfo Class and the get_tt_data() function to load the data,
+    #  and then use _spk_filter_data() to get the high pass data.
+    raise NotImplementedError
+
     data = np.fromfile(file_name, dtype=data_type)
     data = data.reshape(-1, n_channels).T
     return data

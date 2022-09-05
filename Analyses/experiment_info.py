@@ -23,6 +23,10 @@ import Analyses.plot_functions as pf
 
 import scipy.signal as signal
 
+import ipywidgets as widgets
+from ipywidgets import interact, fixed, interact_manual
+from IPython.display import display
+
 """
 Classes in this file will have several retrieval processes to acquire the required information for each
 subject and session. 
@@ -66,6 +70,25 @@ class SummaryInfo:
         for s in self.subjects:
             self.sessions_by_subject[s] = self.unit_table[self.unit_table.subject == s].session.unique()
             self.tasks_by_subject[s] = self.unit_table[self.unit_table.subject == s].task.unique()
+
+    def select_session(self):
+        subject_widget = widgets.Dropdown(options=self.subjects)
+        session_widget = widgets.Dropdown(options=self.sessions_by_subject[subject_widget.value])
+        task_widget = widgets.Dropdown(options=['T3', 'OF'])
+
+        def update_sessions(*args):
+            all_sessions = self.sessions_by_subject[subject_widget.value]
+            task_sessions = [session for session in all_sessions if task_widget.value in session]
+            session_widget.options = task_sessions
+
+        def get_session(subject, task, session):
+            return SubjectSessionInfo(subject, session)
+
+        subject_widget.observe(update_sessions, names='value')
+        task_widget.observe(update_sessions, names='value')
+        o = widgets.interactive(get_session, subject=subject_widget, task=task_widget, session=session_widget)
+        display(o)
+        return o
 
     def run_analyses(self, task='all', which='all', verbose=False, overwrite=False,
                      overwrite_old=False, overwrite_old_days=1, parallel=False, n_jobs=5, **params):
@@ -185,6 +208,8 @@ class SummaryInfo:
             behavior=results_path / 'behavior_session_perf.csv',
             units=results_path / 'all_units_table.csv',
             match_table=results_path / "match_table.csv",
+            matched_of_cell_clusters=results_path / "matched_of_cell_clusters.csv",
+            matched_of_cell_cluster_error_table=results_path / "matched_of_cell_cluster_error_table.csv",
             combined_scores_table=results_path / "combined_scores_table.csv",
             of_metric_scores=results_path / 'of_metric_scores_summary_table.csv',
             of_model_scores=results_path / 'of_model_scores_summary_table_agg.csv',
@@ -209,6 +234,10 @@ class SummaryInfo:
         for subject in self.subjects:
             si = SubjectInfo(subject)
             si.update_paths()
+
+    def overwrite_subj_obj(self):
+        for subject in self.subjects:
+            si = SubjectInfo(subject, overwrite=True)
 
     def get_zone_rates_comps(self, overwrite=False, **params):
         """
@@ -750,137 +779,6 @@ class SummaryInfo:
 
         return out_df
 
-    # def get_zone_encoder_lag(self, overwrite=False):
-    #
-    #     fn = self.paths['zone_encoder_lag']
-    #
-    #     valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_encoder_lag == True].index)
-    #     if not fn.exists() or overwrite:
-    #         encoder_res = pd.DataFrame()
-    #
-    #         unit_count = 0
-    #         for subject in self.subjects:
-    #             subject_info = SubjectInfo(subject)
-    #             for session in subject_info.sessions:
-    #                 session_info = SubjectSessionInfo(subject, session)
-    #
-    #                 try:
-    #                     if session not in valid_sessions:
-    #                         continue
-    #
-    #                     if not (session_info.session_analyses_table.zone_encoder_lag == 1).values[0]:
-    #                         # skip if it hasn't been run
-    #                         continue
-    #                     if session_info.n_units == 0:
-    #                         # skip if no units
-    #                         continue
-    #
-    #                     n_session_units = session_info.n_units
-    #
-    #                     # session_encoder_res = session_info.get_zone_encoder_lag()
-    #                     session_encoder_res = session_info.get_zone_encoder()
-    #                     session_encoder_res = session_encoder_res[(session_encoder_res.cue_type == 'none') &
-    #                                                               (session_encoder_res.rw_type == 'none') &
-    #                                                               (session_encoder_res.trial_seg == 'out')
-    #                                                               ]
-    #                     session_encoder_res.rename(columns={'unit': 'session_unit_id'}, inplace=True)
-    #                     session_table = session_info.session_unit_table
-    #
-    #                     s_enc_table = pd.concat((session_encoder_res,
-    #                                              session_table.loc[session_encoder_res.session_unit_id].reset_index(
-    #                                                  drop=True)), axis=1)
-    #                     s_enc_table = s_enc_table.loc[:, ~s_enc_table.columns.duplicated()]
-    #                     s_enc_table['unit_id'] = s_enc_table['session_unit_id'] + unit_count
-    #                     unit_count += n_session_units
-    #                 except:
-    #                     print(f'Error Processing Session {session}')
-    #                     traceback.print_exc(file=sys.stdout)
-    #                     continue
-    #                 encoder_res = encoder_res.append(s_enc_table)
-    #
-    #         encoder_res = encoder_res.reset_index(drop=True)
-    #
-    #         encoder_res.to_csv(fn)
-    #     else:
-    #         encoder_res = pd.read_csv(fn, index_col=0)
-    #
-    #     # encoder_res = encoder_res.astype(dtype=dict(trial='int16', zones='category', session_unit_id='int16',
-    #     #                                             sp='float16', fr='float16', fr_hat='float16', resid='float16',
-    #     #                                             r2='float16', nrmse='float16', fold='float16', lag='category',
-    #     #                                             decay='category', cue_type='category', unit_type='category',
-    #     #                                             subject='category', session='category', session_pct_cov='float16',
-    #     #                                             task='category', unit_id='int16'), errors='ignore')
-    #     return encoder_res
-    #
-    # def get_zone_encoder_cue(self, overwrite=False):
-    #     fn = self.paths['zone_encoder_cue']
-    #
-    #     valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_encoder_cue == True].index)
-    #     if not fn.exists() or overwrite:
-    #         encoder_res = pd.DataFrame()
-    #
-    #         unit_count = 0
-    #         for subject in self.subjects:
-    #             subject_info = SubjectInfo(subject)
-    #             for session in subject_info.sessions:
-    #                 session_info = SubjectSessionInfo(subject, session)
-    #
-    #                 try:
-    #                     if session not in valid_sessions:
-    #                         continue
-    #
-    #                     if not (session_info.session_analyses_table.zone_encoder_cue == 1).values[0]:
-    #                         # skip if it hasn't been run
-    #                         continue
-    #                     if session_info.n_units == 0:
-    #                         # skip if no units
-    #                         continue
-    #
-    #                     n_session_units = session_info.n_units
-    #
-    #                     # session_encoder_res = session_info.get_zone_encoder_cue()
-    #                     session_encoder_res = session_info.get_zone_encoder()
-    #                     session_encoder_res = session_encoder_res[(session_encoder_res.max_lag == 50) &
-    #                                                               (session_encoder_res.rw_type == 'none') &
-    #                                                               (session_encoder_res.trial_seg == 'out')
-    #                                                               ]
-    #                     session_encoder_res.rename(columns={'unit': 'session_unit_id'}, inplace=True)
-    #                     session_table = session_info.session_unit_table
-    #
-    #                     s_enc_table = pd.concat((session_encoder_res,
-    #                                              session_table.loc[session_encoder_res.session_unit_id].reset_index(
-    #                                                  drop=True)), axis=1)
-    #                     s_enc_table = s_enc_table.loc[:, ~s_enc_table.columns.duplicated()]
-    #                     s_enc_table['unit_id'] = s_enc_table['session_unit_id'] + unit_count
-    #                     unit_count += n_session_units
-    #                 except:
-    #                     print(f'Error Processing Session {session}')
-    #                     traceback.print_exc(file=sys.stdout)
-    #                     continue
-    #                 encoder_res = encoder_res.append(s_enc_table)
-    #
-    #         encoder_res = encoder_res.reset_index(drop=True)
-    #         # encoder_res = encoder_res.astype(dtype=dict(trial='int16', zones='category', session_unit_id='int16',
-    #         #                                             sp='float16', fr='float16', fr_hat='float16', resid='float16',
-    #         #                                             r2='float16', nrmse='float16', fold='float16', lag='category',
-    #         #                                             decay='category', cue_type='category', unit_type='category',
-    #         #                                             subject='category', session='category', task='category',
-    #         #                                             session_pct_cov='float16', tt='category', tt_cl='category',
-    #         #                                             cl_name='category', unit_id='int16'), errors='ignore')
-    #
-    #         encoder_res.to_csv(fn)
-    #         # encoder_res.to_pickle(fn)
-    #     else:
-    #         encoder_res = pd.read_csv(fn, index_col=0)
-    #         # encoder_res = pd.read_pickle(fn, index_col=0)
-    #
-    #     # tmz = tmf.TreeMazeZones()
-    #     # encoder_res['zones'] = encoder_res['zones'].astype(pd.api.types.CategoricalDtype(tmz.zones2))
-    #     encoder_res['cue_type'] = encoder_res['cue_type'].astype(
-    #         pd.api.types.CategoricalDtype(['none', 'fixed', 'inter']))
-    #
-    #     return encoder_res
-
     def get_zone_decoder(self, overwrite=False):
         fn = self.paths['zone_decoder']
 
@@ -993,7 +891,7 @@ class SummaryInfo:
         decoder_res['zones'] = decoder_res['zones'].astype(pd.api.types.CategoricalDtype(tmz.zones2))
         return decoder_res
 
-    def get_of_results(self, overwrite=False):
+    def get_of_results(self, model_analyses='orig', overwrite=False):
 
         curate_flag = False
         # get metrics
@@ -1004,11 +902,16 @@ class SummaryInfo:
             metric_scores = pd.read_csv(self.paths['of_metric_scores'], index_col=0)
 
         # get models
-        if not self.paths['of_model_scores'].exists() or overwrite:
-            model_scores = self._get_of_models_scores()
+        fn = self.paths['of_model_scores']
+        if model_analyses != 'orig':
+            fn = self.paths['of_model_scores']
+            fn = fn.parent / (fn.stem + str(2) + fn.suffix)
+
+        if not fn.exists() or overwrite:
+            model_scores = self._get_of_models_scores(analysis=model_analyses)
             curate_flag = True
         else:
-            model_scores = pd.read_csv(self.paths['of_model_scores'], index_col=0)
+            model_scores = pd.read_csv(fn, index_col=0)
 
         if curate_flag:
             metric_scores, model_scores = self._match_unit_ids(metric_scores, model_scores)
@@ -1019,7 +922,7 @@ class SummaryInfo:
                 model_scores.loc[model_scores.cl_name.isin(unit_idx), 'session_valid'] = False
 
             metric_scores.to_csv(self.paths['of_metric_scores'])
-            model_scores.to_csv(self.paths['of_model_scores'])
+            model_scores.to_csv(fn)
 
         return metric_scores, model_scores
 
@@ -1099,12 +1002,18 @@ class SummaryInfo:
             metric_scores = pd.read_csv(self.paths['of_metric_scores'], index_col=0)
         return metric_scores
 
-    def _get_of_models_scores(self):
+    def _get_of_models_scores(self, analysis='orig'):
 
         models = ['speed', 'hd', 'border', 'grid', 'pos', 'agg_all', 'agg_sdp', 'agg_sdbg']
         metrics = ['r2', 'map_r', 'n_err', 'coef', 'agg_all_coef', 'agg_sdbg_coef', 'agg_sdp_coef']
         splits = ['train', 'test']
 
+        fn = self.paths['of_model_scores']
+        if analysis == 'orig':
+            method = 'get_encoding_models_scores'
+        else:
+            method = 'get_encoding_models_scores2'
+            fn = fn.parent / (fn.stem + str(2) + fn.suffix)
         unit_count = 0
         model_scores = pd.DataFrame()
         for subject in self.subjects:
@@ -1115,8 +1024,7 @@ class SummaryInfo:
                     n_session_units = session_info.n_units
                     if n_session_units > 0:
                         try:
-
-                            temp = session_info.get_encoding_models_scores()
+                            temp = getattr(session_info, method)()
                             if temp.empty:
                                 continue
                             # noinspection PyTypeChecker
@@ -1169,7 +1077,7 @@ class SummaryInfo:
         #
         model_scores = model_scores.reset_index(drop=True)
         model_scores = model_scores.astype({"value": float})
-        model_scores = model_scores.to_csv(self.paths['of_model_scores'])
+        model_scores.to_csv(fn)
 
         return model_scores
 
@@ -1193,9 +1101,6 @@ class SummaryInfo:
         session_unit_id_array = model_scores[['session', 'session_unit_id']].values
         session_unit_id_tuple = [tuple(ii) for ii in session_unit_id_array]
         model_scores['unit_id'] = [sid_2_uid[suid] for suid in session_unit_id_tuple]
-
-        metric_scores.to_csv(self.paths['of_metric_scores'])
-        model_scores = model_scores.to_csv(self.paths['of_model_scores'])
 
         return metric_scores, model_scores
 
@@ -1321,20 +1226,25 @@ class SummaryInfo:
 
         return match_table
 
-    def get_combined_scores_matched_units(self, overwrite=False, trial_remap_params=None):
+    def get_combined_scores_matched_units(self, overwrite=False, match_type='lib',
+                                          of_model_analyses='orig', mean_multi_matches=True, trial_remap_params=None):
         """
-
-        :param overwrite:
-        :param trial_remap_params:
-        :return:
+        combines OF and TM results by matched unit.
+        :param overwrite: bool, if True, re-computes table
+        :param match_type: str, ['lib', 'con']
+        :param trial_remap_params: parameters for trial, will overwrite previous instance of table.
+        :return: table indexed by matched unit
         """
 
         fn = self.paths['combined_scores_table']
+        params = dict(match_type=match_type, of_model_analyses=of_model_analyses, mean_multi_matches=mean_multi_matches)
+        fn = append_analysis_mods_2_filename(fn, params)
+
         if fn.exists() and not overwrite:
             match_table = pd.read_csv(fn, index_col=0)
             return match_table
 
-        match_table = self.get_unit_match_table()
+        match_table = self.get_unit_match_table(match_type=match_type)
         tm_tables = {}
         if trial_remap_params is None:
             trial_remap_params = dict()
@@ -1381,7 +1291,7 @@ class SummaryInfo:
 
         ########## ----- OF results ----- ##########
         of_tables = {}
-        of_metric_scores, of_model_scores = self.get_of_results()
+        of_metric_scores, of_model_scores = self.get_of_results(model_analyses=of_model_analyses)
         of_selection = dict(split='train',
                             metric=['r2', 'map_r', 'agg_sdp_coef', 'coef'],
                             unit_type='cell',
@@ -1432,9 +1342,129 @@ class SummaryInfo:
         combined_table[combined_columns] = combined_table[combined_columns].astype(float)
         combined_table.rename(columns={c: f'TM-{c}' for c in tm_columns}, inplace=True)
         combined_table.rename(columns={c: f'OF-{c}' for c in of_columns}, inplace=True)
+
+        # compute mean across multi session matches
+        if mean_multi_matches:
+            combined_table = combined_table.groupby(['match_cl_id', 'subject'], observed=True).mean().reset_index()
+
+        ########## ----- Save ----- ##########
         combined_table.to_csv(fn)
 
         return combined_table
+
+    def get_matched_of_cell_cluster_error_table(self, overwrite=False, score_key='agg_sdp_coef', z_score=False,
+                                                **matched_table_params):
+
+        from Analyses.cross_task_functions import umap_kmeans_cluster_error_table
+
+        fn = self.paths['matched_of_cell_cluster_error_table']
+
+        params = dict(score_key=score_key, z_score=z_score)
+        fn = append_analysis_mods_2_filename(fn, params)
+
+        if fn.exists() and not overwrite:
+            cluster_table = pd.read_csv(fn, index_col=0)
+            return cluster_table
+
+        table = self.get_combined_scores_matched_units(**matched_table_params)
+        of_score_names = [c for c in table.columns if 'OF' in c]
+        selected_columns = [c for c in of_score_names if score_key in c]
+
+        cluster_table = umap_kmeans_cluster_error_table(table[selected_columns], z_score)
+
+        cluster_table.to_csv(fn)
+
+        return cluster_table
+
+    def get_matched_of_cell_clusters(self, overwrite=False, score_key='agg_sdp_coef', z_score=False, n_clusters=3,
+                                     random_state=None, **matched_table_params):
+
+        from Analyses.cross_task_functions import umap_cluster
+
+        fn = self.paths['matched_of_cell_clusters']
+
+        params = dict(score_key=score_key, z_score=z_score, n_clusters=n_clusters)
+        fn = append_analysis_mods_2_filename(fn, params)
+
+        if fn.exists() and not overwrite:
+            cluster_table = pd.read_csv(fn, index_col=0)
+            return cluster_table
+
+        table = self.get_combined_scores_matched_units(**matched_table_params)
+        of_score_names = [c for c in table.columns if 'OF' in c]
+        selected_columns = [c for c in of_score_names if score_key in c]
+
+        cluster_table = umap_cluster(table[selected_columns], z_score=z_score, n_clusters=n_clusters,
+                                     random_state=random_state)
+
+        # hard code cluster names for aesthetics
+        if (z_score == False) & (n_clusters == 3):
+            cluster_table['Cluster'] *= 2
+            cluster_table.loc[cluster_table['Cluster'] == 4, 'Cluster'] = 1
+
+        cluster_table.to_csv(fn)
+
+        return cluster_table
+
+    def get_hd_tm_scores_matched_clusters_data(self):
+        cluster_table = self.get_matched_of_cell_clusters()
+        match_table = self.get_unit_match_table()
+
+        unique_TM_sessions = match_table.session_T3.unique()
+        unique_OF_sessions = match_table.session_OF.unique()
+
+        n_matches = len(match_table)
+        n_clusters = len(cluster_table)
+
+        combined_table = match_table.copy()
+        combined_table['Cluster'] = combined_table.match_cl_id.map(cluster_table.Cluster)
+
+        out_table = pd.DataFrame(index=range(n_matches), columns=['match_cl_id', 'match_pair_number',
+                                                                  'cluster', 'subject',
+                                                                  'umap_1', 'umap_2',
+                                                                  'of_hd_ang', 'of_hd_score',
+                                                                  'tm_uz_stem_cue', 'tm_uz_left_cue', 'tm_uz_right_cue',
+                                                                  'tm_uz_stem_rw', 'tm_uz_left_rw', 'tm_uz_right_rw',
+                                                                  'tm_remap_cue', 'tm_remap_rw'])
+
+        out_table[['match_cl_id', 'match_pair_number', 'subject']] = \
+            match_table[['match_cl_id', 'match_pair_number', 'subject']]
+
+        out_table['cluster'] = out_table.match_cl_id.map(cluster_table.Cluster)
+        out_table['umap_1'] = out_table.match_cl_id.map(cluster_table['UMAP-1'])
+        out_table['umap_2'] = out_table.match_cl_id.map(cluster_table['UMAP-2'])
+
+        # OF scpres
+        for se in unique_OF_sessions:
+            si = self.get_session(se)
+            session_unit_ids = match_table.loc[match_table.session_OF == se, 'session_cl_id_OF']
+            units_table_idx = session_unit_ids.index
+            session_metric_scores = si.get_scores()
+            out_table.loc[units_table_idx, ['of_hd_ang', 'of_hd_score']] = session_metric_scores.loc[
+                session_unit_ids, ['hd_ang', 'hd_score']].values
+
+        # TM scores
+        segment_scores = self.get_segment_rate_comps()
+        remap_scores = self.get_zone_rates_remap()
+        for ii in range(n_matches):
+            cl_name = match_table.loc[ii, 'cl_name_T3']
+
+            unit_seg_scores = segment_scores[segment_scores.cl_name == cl_name]
+            if len(unit_seg_scores) > 0:
+                for c in ['cue', 'rw']:
+                    for s in ['left', 'stem', 'right']:
+                        out_table.loc[ii, f"tm_uz_{s}_{c}"] = \
+                            unit_seg_scores.loc[
+                                (unit_seg_scores.segment == s) & (unit_seg_scores.comp == c), 'uz_val'].values[0]
+
+            unit_remap_idx = remap_scores.cl_name == cl_name
+            if unit_remap_idx.sum() > 0:
+                out_table.loc[ii, ['tm_remap_cue']] = \
+                    remap_scores.loc[unit_remap_idx, 'CR_bo-CL_bo-Even_bo-Odd_bo-corr_zm'].values[0]
+                out_table.loc[ii, ['tm_remap_rw']] = \
+                    remap_scores.loc[unit_remap_idx, 'Co_bi-Inco_bi-Even_bi-Odd_bi-corr_zm'].values[0]
+
+        return out_table
 
     def plot(self, fig_id=1, save=False, dpi=1000, root_dir=None, fig_format='jpg'):
 
@@ -1465,6 +1495,10 @@ class SummaryInfo:
             else:
                 idx &= table[k] == v
         return table[idx].reset_index(drop=True)
+
+    def get_session(self, session):
+        subject = session.split('_')[0]
+        return SubjectSessionInfo(subject, session)
 
 
 class SubjectInfo:
@@ -1633,7 +1667,7 @@ class SubjectInfo:
     def get_depth_wf(self):
         raise NotImplementedError
 
-    def get_session_tt_wf(self, session, tt, cluster_ids=None, wf_lims=None, n_wf=200):
+    def get_session_tt_wf(self, session, tt, cluster_ids=None, wf_lims=None, n_wf=200, load_phy_out=False):
         import Sorting.sort_functions as sort_funcs
 
         if wf_lims is None:
@@ -1645,7 +1679,7 @@ class SubjectInfo:
         _cluster_spike_ids_fn = _sort_path / 'spike_clusters.npy'
         _hp_data_fn = _sort_path / 'recording.dat'
 
-        if _hp_data_fn.exists():
+        if (_hp_data_fn.exists()) and load_phy_out:
             hp_data = sort_funcs.load_hp_binary_data(_hp_data_fn)
         else:  # filter data
             hp_data = self._spk_filter_data(session, tt)
@@ -1750,8 +1784,11 @@ class SubjectInfo:
 
                 for ii, session in enumerate(tt_d_sessions):
                     session_cell_ids = self.session_clusters[session]['cell_IDs']
-                    if tt in session_cell_ids.keys():
+                    keys = session_cell_ids.keys()
+                    if (tt in keys):
                         n_cells_session[ii] = len(session_cell_ids[tt])
+                    elif (str(tt) in keys):
+                        n_cells_session[ii] = len(session_cell_ids[str(tt)])
 
                 sessions_with_cells = np.where(n_cells_session > 0)[0]
                 n_units = n_cells_session[sessions_with_cells].sum()
@@ -1785,7 +1822,14 @@ class SubjectInfo:
                 # Obtain cluster labels & mapping between labels [this part can be improved]
                 cl_names = []
                 for session_num, session in enumerate(sessions):
-                    cluster_ids = self.session_clusters[session]['cell_IDs'][tt]
+                    try:
+                        cluster_ids = self.session_clusters[session]['cell_IDs'][tt]
+                    except KeyError:
+                        cluster_ids = self.session_clusters[session]['cell_IDs'][str(tt)]
+                    except:
+                        cluster_ids = []
+                        pass
+
                     for cl_num, cl_id in enumerate(cluster_ids):
                         cl_name = f"{session}-tt{tt}_d{d}_cl{cl_id}"
                         cl_names.append(cl_name)
@@ -1793,7 +1837,13 @@ class SubjectInfo:
                 # load waveforms
                 X = np.empty((0, n_wf, n_samps), dtype=np.float16)
                 for session in sessions:
-                    cluster_ids = self.session_clusters[session]['cell_IDs'][tt]
+                    try:
+                        cluster_ids = self.session_clusters[session]['cell_IDs'][tt]
+                    except KeyError:
+                        cluster_ids = self.session_clusters[session]['cell_IDs'][str(tt)]
+                    except:
+                        cluster_ids = []
+                        pass
                     session_cell_wf = self.get_session_tt_wf(session, tt, cluster_ids=cluster_ids, n_wf=n_wf)
                     X = np.concatenate((X, session_cell_wf), axis=0)
 
@@ -1837,7 +1887,7 @@ class SubjectInfo:
 
         return cluster_dists
 
-    def match_clusters(self, overwrite=False, require_subsets=True, **kwargs):
+    def match_clusters(self, overwrite=False, require_subsets=False, **kwargs):
         import Analyses.cluster_match_functions as cmf
         params = {'dist_metric': 'pe', 'dist_metric_thr': 0.5, 'select_lower': True}
         params.update(kwargs)
@@ -2073,7 +2123,9 @@ class SubjectInfo:
         if task == 'OF':
             paths['cluster_OF_metrics'] = paths['Results'] / 'OF_metrics.csv'
             paths['cluster_OF_encoding_models'] = paths['Results'] / 'OF_encoding.csv'
+            paths['cluster_OF_encoding_models2'] = paths['Results'] / 'OF_encoding2.csv'
             paths['cluster_OF_encoding_agg_coefs'] = paths['Results'] / 'OF_encoding_agg_coefs.csv'
+            paths['OF_encoding_models_obj'] = paths['Results'] / 'OF_encoding_obj.pkl'
         else:
 
             paths['trial_table'] = paths['Results'] / 'trial_table.csv'
@@ -2413,7 +2465,9 @@ class SubjectSessionInfo(SubjectInfo):
                 'binned_spikes': (self.get_binned_spikes, self.paths['cluster_binned_spikes'].exists()),
                 'fr': (self.get_fr, self.paths['cluster_fr'].exists()),
                 'scores': (self.get_scores, self.paths['cluster_OF_metrics'].exists()),
-                'encoding_models': (self.get_encoding_models, self.paths['cluster_OF_encoding_models'].exists())
+                'encoding_models': (self.get_encoding_models, self.paths['cluster_OF_encoding_models'].exists()),
+                'encoding_models2': (
+                    self.get_encoding_models_scores2, self.paths['cluster_OF_encoding_models2'].exists())
             }
         elif self.task[:2] == 'T3':
             analyses = {
@@ -2904,22 +2958,33 @@ class SubjectSessionInfo(SubjectInfo):
             else:
                 print()
 
-    def get_encoding_models(self, overwrite=False):
+    def get_encoding_models(self, overwrite=False, save_flag=False, load_flag=False, **params):
         """
         obtains a object with all the models
         :returns: enc_models object
         """
-        if (self.enc_models is None) or overwrite:
-            if self.n_units == 0:
-                print('No units.')
-                return None
 
+        if self.n_units == 0:
+            print('No units.')
+            return None
+
+        fn = self.paths['OF_encoding_models_obj']
+        if (fn.exists()) & load_flag:
+            with fn.open(mode="rb") as f:
+                self.enc_models = pickle.load(f)
+            return self.enc_models
+
+        if (self.enc_models is None) or overwrite:
             if self.task == 'OF':
                 print("Getting Encoding Models")
-                self.enc_models = of_funcs.get_session_encoding_models(self)
+                self.enc_models = of_funcs.get_session_encoding_models(self, **params)
             else:
                 print('Method not develop for other tasks.')
                 raise NotImplementedError
+
+            if save_flag:
+                with fn.open(mode="wb") as f:
+                    pickle.dump(self.enc_models, f, protocol=pickle.HIGHEST_PROTOCOL)
 
         return self.enc_models
 
@@ -2935,12 +3000,40 @@ class SubjectSessionInfo(SubjectInfo):
 
         if self.task == 'OF':
             if not self.paths['cluster_OF_encoding_models'].exists() or overwrite:
-                sem = self.get_encoding_models()
+                params = dict(smooth_data=False)
+                sem = self.get_encoding_models(**params)
                 # get scores and save
                 scores = sem.scores
                 scores.to_csv(self.paths['cluster_OF_encoding_models'])
             else:
                 scores = pd.read_csv(self.paths['cluster_OF_encoding_models'], index_col=0)
+        else:
+            print('Method not develop for other tasks.')
+            raise NotImplementedError
+
+        return scores
+
+    def get_encoding_models_scores2(self, overwrite=False):
+        """
+        obtains a series of pandas data frames quantifying the extent of coding to environmental variables
+        :param overwrite:
+        :returns: dictionary of pandas data frames.
+        """
+        if self.n_units == 0:
+            print('No units.')
+            return None, None
+
+        if self.task == 'OF':
+            if not self.paths['cluster_OF_encoding_models2'].exists() or overwrite:
+                params = dict(models='sdp',
+                              norm_resp='zscore',
+                              secs_per_split=30.0)
+                sem = self.get_encoding_models(**params)
+                # get scores and save
+                scores = sem.scores
+                scores.to_csv(self.paths['cluster_OF_encoding_models2'])
+            else:
+                scores = pd.read_csv(self.paths['cluster_OF_encoding_models2'], index_col=0)
         else:
             print('Method not develop for other tasks.')
             raise NotImplementedError

@@ -206,14 +206,14 @@ def get_sos_filter_bank(f_types, fs=32000.0, hp_edge_freq=None, lp_edge_freq=Non
 
         # settings for low pass and bandpass
         if f in ['LP', 'HP']:
-            if f is 'LP':
+            if f == 'LP':
                 if lp_edge_freq is None:
                     cut_freq = 5000.0
                     cut_buffer = 5500.0
                 else:
                     cut_freq = lp_edge_freq
                     cut_buffer = lp_edge_freq + lp_edge_freq * 0.1
-            elif f is 'HP':
+            elif f == 'HP':
                 if hp_edge_freq is None:
                     cut_freq = 2.0
                     cut_buffer = 0.2
@@ -224,7 +224,7 @@ def get_sos_filter_bank(f_types, fs=32000.0, hp_edge_freq=None, lp_edge_freq=Non
             sos = scipy.signal.iirdesign(cut_freq / (fs / 2), cut_buffer / (fs / 2), gpass, gstop, output='sos')
             SOS = np.vstack((SOS, sos))
 
-        if f is 'Notch':
+        if f == 'Notch':
 
             n_notches = notch_harmonics + 1
 
@@ -251,7 +251,7 @@ def get_sos_filter_bank(f_types, fs=32000.0, hp_edge_freq=None, lp_edge_freq=Non
                 sos = scipy.signal.tf2sos(b, a)
                 SOS = np.vstack((SOS, sos))
 
-        if f is 'Sp':
+        if f == 'Sp':
             if sp_edge_freq is None:
                 cut_freq = 350.0
                 cut_buffer = 300.0

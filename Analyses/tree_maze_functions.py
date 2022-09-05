@@ -5464,6 +5464,40 @@ def zone_encoder_comps_dict():
     return out
 
 
+def mean_rates_segment_analysis(session_info, ta=None):
+
+    if ta is None:
+        ta = TrialAnalyses(session_info)
+
+    conds = ['CR', 'CL', 'Co', 'Inco', 'All']
+    trial_segs = ['out', 'in']
+    segs = ['left', 'stem', 'right']
+
+    cols = []
+    for c in conds:
+        for ts in trial_segs:
+            for s in segs:
+                cols += [f'{c}_{ts}_{s}_m', f'{c}_{ts}_{s}_z', f'{c}_{ts}_{s}_n']
+
+    df = pd.DataFrame(index=range(ta.n_units), columns=cols)
+    for c in conds:
+        cond_trials = ta.get_condition_trials(condition=c)
+        for ts in trial_segs:
+            cond_rates = ta.get_trial_segment_rates(trials=cond_trials, segment_type='bigseg', trial_seg=ts)
+            for unit in range(ta.n_units):
+                m = cond_rates[unit].mean()
+                n = (~cond_rates[0].isna()).sum()
+                if n > 1:
+                    s = cond_rates[unit].std()
+                    z = m / s
+                else:
+                    z = np.nan
+                for s in segs:
+                    df.loc[unit, f'{c}_{ts}_{s}_m'] = m[s]
+                    df.loc[unit, f'{c}_{ts}_{s}_z'] = z[s]
+                    df.loc[unit, f'{c}_{ts}_{s}_n'] = n[s]
+    return df
+
 def rate_segment_comp_analysis(session_info, comp, ta=None):
     if comp == 'cue':
         cond1 = 'CR'

@@ -133,6 +133,10 @@ def zscore(signal, axis=None):
     mu = np.nanmean(signal, axis=axis)
     s = np.nanstd(signal, axis=axis)
     z = np.zeros_like(signal)
+
+    if signal.ndim == 1:
+        return (signal - mu) / s
+
     for ii, s_ii in enumerate(s):
         if s_ii > 0:
             z[ii] = (signal[ii] - mu[ii]) / s_ii
@@ -986,6 +990,7 @@ def multiple_testing_correction(pvalues, correction_type="FDR"):
             pvalue, index = vals
             qvalues[index] = new_values[i]
     return qvalues
+
 # def getDirZoneSpikeMaps(spikes, PosDat, sp_thr=[5, 2000]):
 #     SegSeq = PosDat['SegDirSeq']
 #

@@ -1,23 +1,28 @@
 import copy
 
+import matplotlib as mpl
+import matplotlib.collections as mcoll
+import matplotlib.pyplot as plt
+from statannotations.Annotator import Annotator
+
 import numpy as np
 import pandas as pd
-from scipy import stats
-
 import seaborn as sns
-import matplotlib as mpl
-import matplotlib.pyplot as plt
+from matplotlib import lines
+from matplotlib_venn import venn2
+import matplotlib.patches as mpatches
+from shapely.geometry import Polygon
+from descartes.patch import PolygonPatch
+
+from scipy import stats
 import Utils.robust_stats as rs
-from matplotlib import transforms, lines
-import matplotlib.collections as mcoll
-
-from shapely.geometry.polygon import LinearRing, Polygon
-from descartes import PolygonPatch
-
 from Analyses import experiment_info as ei
 from Analyses import tree_maze_functions as tmf
+from Analyses import cluster_match_functions as cmf
+from Analyses import spatial_functions as sf
 
-from matplotlib_venn import venn2, venn3
+mpl.rcParams['axes.unicode_minus'] = False
+
 
 # import spatial_tuning as ST
 # import stats_functions as StatsF
@@ -3300,38 +3305,47 @@ class OpenFieldFigures():
     colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown', 'tab:pink', 'tab:gray',
               'tab:olive', 'tab:cyan']
     analyses_colors = sns.color_palette(palette='deep', as_cmap=True)
-    type_color = {'hd': analyses_colors[0],
-                  'speed': analyses_colors[1],
-                  'border': analyses_colors[2],
-                  'grid': analyses_colors[3],
-                  'pos': analyses_colors[4]}
+    var_color = {'d': analyses_colors[0],
+                 'h': analyses_colors[0],
+                 's': analyses_colors[1],
+                 'b': analyses_colors[2],
+                 'g': analyses_colors[3],
+                 'p': analyses_colors[4],
+                 'sdp': analyses_colors[5],
+                 'a': analyses_colors[5]}
+    # unique_unit_ids = [1064, 521, 589, 243, 890, 464, 1915, 834, 1686, 3454, 3528, 465, 463]
+    unique_unit_ids = [648, 462, 465, 463, 1288, 3829, 3528, 1064]
+    var_map = dict(s='speed', d='hd', p='pos', g='grid', b='border', sdp='agg_sdp', a='agg_sdp')
+    var_map2 = dict(s='s', d='h', p='p', g='g', b='b', sdp='a', a='a')
 
-    def __int__(self):
-        pass
+    model_examp_units = np.array([648, 462, 1288, 3829, 314, 465])
+    model_examps_params = [dict(uuid=648, fold=4, idx=0, wl=2000),
+                           dict(uuid=462, fold=2, idx=0, wl=2000),
+                           dict(uuid=1288, fold=0, idx=0, wl=2250),
+                           dict(uuid=3829, fold=1, idx=0, wl=2250),
+                           dict(uuid=314, fold=3, idx=500, wl=1500),
+                           dict(uuid=465, fold=3, idx=0, wl=2000),]
 
-    @staticmethod
-    def make_segments(x, y):
-        """
-        Create list of line segments from x and y coordinates, in the correct format
-        for LineCollection: an array of the form numlines x (points per line) x 2 (x
-        and y) array
-        """
-        points = np.array([x, y]).T.reshape(-1, 1, 2)
-        segments = np.concatenate([points[:-1], points[1:]], axis=1)
-        return segments
+    def __init__(self, fig_path=None, model_analyses='orig', **kwargs):
 
-class CrossTaskFigures():
-    dpi = 1500
-    fontsize = 10
-    colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple',
-              'tab:brown', 'tab:pink', 'tab:gray', 'tab:olive', 'tab:cyan']
-
-    def __init__(self):
         self.info = ei.SummaryInfo()
-        self.unit_table = self.info.get_unit_table()
-        self.update_fontsize()
-        self.update_panel_params()
+        if fig_path is None:
+            self.fig_path = self.info.paths['figures'] / 'OF'
+            self.fig_path.mkdir(parents=True, exist_ok=True)
+        else:
+            self.fig_path = fig_path
 
+        # load default tables
+        self.unit_table = self.info.get_unit_table()
+        self.match_table = self.info.get_unit_match_table()
+        self.match_scores_table = self.info.get_combined_scores_matched_units()
+        self.metric_scores, self.model_scores = self.info.get_of_results(model_analyses=model_analyses)
+
+        self.update_fontsize()
+
+        self.sem = {}
+
+    #### class update methods #####
     def update_panel_params(self, params=None):
 
         if params is None:
@@ -3345,14 +3359,538 @@ class CrossTaskFigures():
 
     def update_fontsize(self, fontscale=1, fontsize=10):
         self.fontsize = fontsize * fontscale
-        self.tick_fontsize = self.fontsize
+        self.tick_fontsize = self.fontsize*0.9
         self.legend_fontsize = self.fontsize * 0.77
         self.label_fontsize = self.fontsize * 1.1
 
-    def unit_overlap(self, match_type='lib', ax=None):
+    def plot_of_tunning(self, cell_id=None, ax=None, figsize=None, score_panel='model', model_metric='r2',
+                        model_split='train',
+                        save_flag=False, save_format='png', **in_params):
+
+        d_params = dict(
+            fr_map=dict(cmap='viridis', vmin=0,
+                        fontsize=self.fontsize, cbar_fontsize=self.legend_fontsize * 0.9, show_colorbar=False,
+                        cax_pos=[1.02, 0.1, 0.2, 0.3], c_label=''),
+            ang=dict(cmap='magma_r', plot_mean_vec=True, lw=1.5, c_lw=0.5, color='0.15', dot_size=0.5,
+                     min_speed=3, max_speed=80, xticks=np.arange(0, 2 * np.pi, np.pi / 4), xtick_labels=[''] * 8,
+                     fontsize=self.fontsize, cbar_fontsize=self.legend_fontsize * 0.8,
+                     cax_pos=[1.02, 0.1, 0.2, 0.3], c_label='FR'),
+            sp=dict(color='0.15', lw=1.2, er_band=None, xlabel='s cm/s', fontsize=self.legend_fontsize)
+        )
 
         if ax is None:
-            f, ax = plt.subplots(figsize=(1.5, 1), dpi=self.dpi)
+            if figsize is None:
+                figsize = (1.5, 1.5)
+            f = plt.figure(figsize=figsize, dpi=self.dpi)
+
+            gs = f.add_gridspec(2, 2)
+            ax = [[]] * 4
+            ax[0] = f.add_subplot(gs[0])
+            # ap = ax[0].get_position()
+            # pos = [ap.x0, ap.y0, ap.width, ap.height * 09]
+            # ax[0].set_position(pos)
+
+            ax[1] = f.add_subplot(gs[1], projection='polar')  # , position=[0.42, 0.42, 0.25, 0.25])
+            ap = ax[1].get_position()
+            pos = [ap.x0 + 0.05, ap.y0 + 0.02, ap.width * 0.75, ap.height * 0.8]
+            ax[1].set_position(pos)
+
+            ax[2] = f.add_subplot(gs[2])
+            ap = ax[2].get_position()
+            pos = [ap.x0 + 0.02, ap.y0 + 0.05, ap.width * 0.9, ap.height * 0.9]
+            ax[2].set_position(pos)
+            ax[3] = f.add_subplot(gs[3])
+
+            ap = ax[3].get_position()
+            pos = [ap.x0 + 0.05, ap.y0 + 0.05, ap.width * 0.9, ap.height * 0.9]
+            ax[3].set_position(pos)
+        else:
+            f = ax.figure
+
+        if cell_id is None:
+            cell_id = self.unique_unit_ids[0]
+        track_data, spikes, fr, fr_map = self.load_cell_info(cell_id)
+
+        # map
+        fr_map = sf.smooth_2d_map(fr_map)
+        ax[0], _ = plot_firing_rate_map(fr_map, ax=ax[0], **d_params['fr_map'])
+        # ax[0].text(1, 1,  f"{np.around(fr_map.max(),1)}", fontsize=self.legend_fontsize, va='center', transform=ax[0].transAxes)
+        ax[0].text(1, 0.5, f"{np.around(fr_map.max(), 1)} spk/s", fontsize=self.legend_fontsize * 0.9, va='center',
+                   rotation=270,
+                   transform=ax[0].transAxes)
+
+        # angle
+        min_sp = d_params['ang']['min_speed']
+        max_sp = d_params['ang']['max_speed']
+        res = sf.get_binned_angle_fr(track_data['hd'], fr, speed=track_data['sp'],
+                                     min_speed=min_sp, max_speed=max_sp)
+        ax[1].tick_params(labelsize=self.legend_fontsize, pad=0)
+        ax[1], cax = plot_ang_fr(res['theta'], res['mean'], bin_weights=res['n'] / res['n'].sum(), ax=ax[1],
+                                 **d_params['ang'])
+        ax[1].spines['polar'].set_linewidth(0.5)
+        ax[1].text(0.5, 1.02, 'N', fontsize=self.legend_fontsize, ha='center', transform=ax[1].transAxes)
+        cax.yaxis.set_label_position('right')
+        cax.set_ylabel("FR", fontsize=self.legend_fontsize * 0.8, rotation=0, labelpad=3, va='center')
+
+        setup_axes(ax[1], fontsize=self.legend_fontsize, spine_lw=0.5, spine_color='0.4',
+                   spine_list=['polar'], grid_lw=0.3)
+
+        # speed
+        res = sf.get_binned_sp_fr(track_data['sp'], fr, max_speed=max_sp)
+        sp_fr_s = None
+        sp_fr_ci = None
+        if d_params['sp']['er_band'] == 'se':
+            sp_fr_s = res['std'] / (res['n'] - len(res))
+            sp_fr_ci = None
+        elif d_params['sp']['er_band'] == 'std':
+            sp_fr_s = res['std']
+        elif d_params['sp']['er_band'] == 'ci':
+            # sp_fr_ci = (res['ci_5'],
+            pass
+        ax[2] = plot_sp_fr(res['sp'], res['mean'], sp_fr_s=sp_fr_s, sp_fr_ci=sp_fr_ci, ax=ax[2], **d_params['sp'])
+        ax[2].tick_params(labelsize=self.legend_fontsize, pad=0)
+        setup_axes(ax[2], fontsize=self.legend_fontsize, spine_lw=0.75, spine_color='0.2',
+                   spine_list=['bottom', 'right'], grid_lw=0.5,
+                   tick_params=dict(axis="both", direction="out", length=1, width=0.5, color='0.2', which='major',
+                                    pad=0.5, labelsize=self.legend_fontsize))
+
+        ax[2].yaxis.tick_right()
+        ax[2].set_ylabel('')
+
+        # metric scores
+        if score_panel == 'model':
+            self.plot_model_scores(cell_id, metric=model_metric, split=model_split, ax=ax[3])
+        else:
+            self.plot_metric_scores(cell_id, ax=ax[3], sig_star=True)
+
+        setup_axes(ax[3], fontsize=self.legend_fontsize, spine_lw=0.75, spine_color='0.2',
+                   spine_list=['bottom', 'right'], grid_lw=0.5,
+                   tick_params=dict(axis="both", direction="out", length=1, width=0.5, color='0.2', which='major',
+                                    pad=0.5, labelsize=self.legend_fontsize))
+        ax[3].yaxis.tick_right()
+        ax[3].yaxis.set_label_position("right")
+
+        if save_flag:
+            fn = f"of_tunning-{cell_id}_s-{score_panel}"
+            if score_panel == 'model':
+                fn += f"split-{model_split}_metric-{model_metric}"
+            fn += f".{save_format}"
+            f.savefig(self.fig_path / fn, format=save_format, dpi=self.dpi, facecolor=None,
+                      pad_inches=0, bbox_inches='tight')
+        return f, ax
+
+    def plot_metric_scores(self, cell_id, vars='sdp', sig_star=False, ax=None, figsize=None):
+
+        vars_list = [s for s in vars]
+        vars_name_list = [self.var_map[s] for s in vars_list if s in self.var_map.keys()]
+        vars_name_list2 = [self.var_map2[s] for s in vars_list if s in self.var_map.keys()]
+
+        vars_name_dict = {s: self.var_map[s] for s in vars_list if s in self.var_map.keys()}
+        if 'p' in vars:
+            vars_name_list.append('stability')
+            vars_name_dict['p'] = 'stability'
+        vars_name_map_r = {v: k for k, v in vars_name_dict.items()}
+
+        if ax is None:
+            if figsize is None:
+                figsize = (1, 1)
+            f, ax = plt.subplots(figsize=figsize, dpi=self.dpi)
+
+        setup_axes(ax, self.fontsize)
+
+        scores = self.get_unit_metric_scores(uuid=cell_id)
+        scores = scores[['analysis_type', 'score', 'sig']]
+        scores = scores[scores.analysis_type.isin(vars_name_list)]
+        scores = scores.fillna(0)
+
+        vmap = list(map(lambda k: vars_name_map_r, scores.analysis_type))
+        scores['analysis_type2'] = scores.analysis_type.map(vars_name_map_r)
+        scores['color'] = scores.analysis_type2.map(self.var_color)
+
+        ax.bar(x=scores.analysis_type2, height=scores.score, color=scores.color, lw=0)
+        vmin, vmax = scores.score.min(), scores.score.max()
+        vrange = vmax - vmin
+        ylims = np.array((vmin - np.abs(vrange) * 0.1, vmax + np.abs(vrange) * 0.1))
+
+        ax.set_ylim(ylims)
+        ylim_range = ylims[1] - ylims[0]
+
+        if sig_star:
+            star_loc = ylims[1] + 0.1 * ylim_range
+            for ii in np.arange(len(scores)):
+                if scores.iloc[ii].sig:
+                    ax.text(ii, ylims[1], r'$\star$', fontsize=self.legend_fontsize, va='center', ha='center')
+
+        yticks, yticklabels = format_numerical_ticks([0, vmax / 2, vmax])
+        yticks[1] = vmax / 2
+        ax.set_yticks(yticks)
+        yticklabels[1] = ''
+        ax.set_yticklabels(yticklabels, fontsize=self.legend_fontsize)
+
+        ax.set_xticklabels(vars_name_list2, fontsize=self.legend_fontsize, rotation=0)
+        ax.set_xlabel('score', fontsize=self.legend_fontsize, labelpad=0)
+
+    def plot_model_scores(self, cell_id, models='sdp', metric='r2', split='train', ax=None, figsize=None):
+        vars_list = [s for s in models]
+        vars_list += [models]
+        vars_name_list = [self.var_map[s] for s in vars_list if s in self.var_map.keys()]
+        vars_name_list += ['agg_' + models]
+        vars_name_list2 = [self.var_map2[s] for s in vars_list if s in self.var_map.keys()]
+        vars_name_list += [models]
+
+        vars_name_dict = {s: self.var_map[s] for s in vars_list if s in self.var_map.keys()}
+        vars_name_map_r = {v: k for k, v in vars_name_dict.items()}
+
+        if ax is None:
+            if figsize is None:
+                figsize = (1, 1)
+            f, ax = plt.subplots(figsize=figsize, dpi=self.dpi)
+
+        setup_axes(ax, self.fontsize)
+
+        scores = self.get_unit_model_scores(uuid=cell_id)
+        scores = scores[(scores.model.isin(vars_name_list)) & (scores.split == split) & (scores.metric == metric)]
+
+        scores['model2'] = scores.model.map(vars_name_map_r)
+        scores['color'] = scores.model2.map(self.var_color)
+
+        ax.bar(x=scores.model2, height=scores.value, color=scores.color, lw=0)
+
+        ax.set_xticklabels(vars_name_list2, fontsize=self.legend_fontsize, rotation=0)
+
+        vmin, vmax = scores.value.min(), scores.value.max()
+        yticks, yticklabels = format_numerical_ticks([0, vmax / 2, vmax])
+        vmin, vmax = yticks[0], yticks[2]
+        vrange = vmax - vmin
+        ylims = np.array((vmin - np.abs(vrange) * 0.1, vmax + np.abs(vrange) * 0.1))
+        ax.set_ylim(ylims)
+        yticks[1] = vmax / 2
+        ax.set_yticks(yticks)
+
+        if metric == 'r2':
+            ylabel = f"$R^2$"
+        elif 'agg' in metric:
+            ylabel = "a.u."
+        elif metric == 'map_r':
+            ylabel = 'f"$RM_r$"'
+        else:
+            ylabel = ''
+        yticklabels[1] = ylabel
+        ax.set_yticklabels(yticklabels, fontsize=self.legend_fontsize)
+        ax.set_xlabel('model', fontsize=self.legend_fontsize, labelpad=0)
+
+    def load_cell_info(self, cell_id):
+        subject, session, session_unit_id = self._get_uuid_session(cell_id)
+        session_info = ei.SubjectSessionInfo(subject, session)
+
+        track_data = session_info.get_track_data()
+        spikes = session_info.get_binned_spikes()[session_unit_id]
+        fr = session_info.get_fr()[session_unit_id]
+        fr_map = session_info.get_fr_maps()[session_unit_id]
+
+        return track_data, spikes, fr, fr_map
+
+    def get_unit_model_scores(self, uuid):
+        cl_name = self.unit_table.loc[uuid, 'unique_cl_name']
+        return self.model_scores[self.model_scores.cl_name == cl_name]
+
+    def get_unit_metric_scores(self, uuid):
+        cl_name = self.unit_table.loc[uuid, 'unique_cl_name']
+        return self.metric_scores[self.metric_scores.cl_name == cl_name]
+
+    def _get_uuid_session(self, cell_id):
+        table = self.unit_table
+        subject, session, session_unit_id = table.loc[cell_id, ['subject', 'session', 'session_cl_id']]
+
+        return subject, session, session_unit_id
+
+    def get_unit_encoder_models(self, cell_id, **in_params):
+        subject, session, session_unit_id = self._get_uuid_session(cell_id)
+
+        if session not in self.sem:
+            params = dict(models='sdp', secs_per_split=45, norm_agg_features='zscore')
+            params.update(in_params)
+            si = ei.SubjectSessionInfo(subject, session)
+            self.sem[session] = si.get_encoding_models(overwrite=True, **params)
+
+        return self.sem[session]
+
+    def plot_model_resp_tw(self, cell_id, fold=3, idx=0, wl=1000, figsize=None, plot_o=True, plot_rm=True, 
+                           save_flag=False, save_format='png', **params):
+
+        subject, session, session_unit_id = self._get_uuid_session(cell_id)
+        self.get_unit_encoder_models(cell_id, **params)
+
+        if cell_id in self.model_examp_units:
+            unit_idx = np.where(self.model_examp_units == cell_id)[0]
+            unit_plot_params = self.model_examps_params[int(unit_idx)]
+            assert (unit_plot_params['uuid'] == cell_id)
+        else:
+            unit_plot_params = dict(fold=fold, idx=idx, wl=wl)
+
+        if figsize is None:
+            figsize = (2, 2)
+
+        unit_plot_params.update(dict(figsize=figsize, dpi=self.dpi,
+                                     tick_fontsize=self.legend_fontsize, label_fontsize=self.fontsize))
+
+        f, ax = plot_models_resp_tw(self.sem[session], unit=session_unit_id, plot_o=plot_o, plot_rm=plot_rm, **unit_plot_params)
+
+        if save_flag:
+            fn = f"of_tw_c-{cell_id}_f-{fold}_i-{idx}"
+            fn += f".{save_format}"
+            f.savefig(self.fig_path / fn, format=save_format, dpi=self.dpi, facecolor=None,
+                      pad_inches=0, bbox_inches='tight')
+        return f, ax
+
+    def plot_group_model_scores_v(self, models='sdp', unit_type='cell', figsize=None, save_flag=False, save_format='png'):
+
+        if figsize is None:
+            figsize = (1.5, 2)
+
+        f, ax = plt.subplots(4, 2, figsize=figsize, dpi=self.dpi)
+
+        table = self.model_scores
+        if unit_type != 'all':
+            table = table[table.unit_type==unit_type]
+
+        vars_list = [s for s in models]
+        vars_name_list = [self.var_map[s] for s in vars_list if s in self.var_map.keys()]
+        vars_name_list += ['agg_' + models]
+        vars_list += ['a']
+
+        vars_name_map = {s: self.var_map[s] for s in vars_list if s in self.var_map.keys()}
+        vars_name_map_r = {v: k for k, v in vars_name_map.items()}
+
+        for jj, metric in enumerate(['r2', 'map_r']):
+            for ii, analysis in enumerate(vars_name_list):
+                var = vars_name_map_r[analysis]
+                color = self.var_color[var]
+
+                setup_axes(ax[ii, jj], self.fontsize, spine_lw=0.5, grid_lw=0.3, tick_params=dict(width=0.5, length=1, pad=0.2))
+                data_subset = table[(table['model'] == analysis) &
+                                    (table['metric'] == metric) &
+                                    (table['session_valid'])
+                                    ]
+                data_subset = data_subset[~data_subset.isin([np.nan, np.inf, -np.inf]).any(1)]
+
+                sns.violinplot(data=data_subset, x='value', y='split', color='white', order=['train', 'test'], cut=0,
+                               ax=ax[ii, jj], inner='quartile', linewidth=0.5)
+
+                for l in ax[ii, jj].lines:
+                    l.set_linestyle('--')
+                    l.set_linewidth(0.5)
+                    l.set_color('0.3')
+                    l.set_alpha(0.8)
+                for l in ax[ii, jj].lines[1::3]:
+                    l.set_linestyle('-')
+                    l.set_linewidth(1)
+                    l.set_color('0.1')
+                    l.set_alpha(0.9)
+                for c in ax[ii, jj].collections:
+                    c.set_edgecolor('0.2')
+                    # c.set_linewidth(1.5)
+                    c.set_alpha(0.8)
+
+                split_points = data_subset.split == 'train'
+                ax[ii, jj].scatter(x=data_subset['value'][split_points],
+                                   y=-0.5 + 0.05 * (np.random.rand(split_points.sum()) - 0.5),
+                                   s=1, facecolor=color, alpha=0.1, edgecolors=None, linewidth=0)
+
+                split_points = data_subset.split == 'test'
+                ax[ii, jj].scatter(x=data_subset['value'][split_points],
+                                   y=1.5 + 0.05 * (np.random.rand(split_points.sum()) - 0.5),
+                                   s=1, facecolor=color, alpha=0.1, edgecolors=None, linewidth=0)
+
+                if metric == 'r2':
+                    ax[ii, jj].set_xlabel(r'$R^2$', fontsize=self.label_fontsize, labelpad=0)
+                    ax[ii, jj].set_xlim([-0.2, 0.6])
+                    ax[ii, jj].set_xticks([0, 0.25, 0.5])
+                elif metric == 'map_r':
+                    ax[ii, jj].set_xlabel(r'$r_p[m,\hat{m}]$', fontsize=self.label_fontsize, labelpad=0)
+                    ax[ii, jj].set_xlim([-0.2, 1.05])
+                    ax[ii, jj].set_xticks([0, 0.5, 1])
+
+                if ii == 3:
+                    xticks = ax[ii, jj].get_xticks()
+                    if metric == 'map_r':
+                        ax[ii, jj].set_xticklabels([0, '', '1'], fontsize=self.tick_fontsize)
+                    else:
+                        _, xticklabels = format_numerical_ticks(xticks)
+                        xticklabels[1] = ''
+                        ax[ii, jj].set_xticklabels(xticklabels, fontsize=self.tick_fontsize)
+
+                else:
+                    ax[ii, jj].set_xticklabels([])
+
+                if ii < 3:
+                    ax[ii, jj].set_xlabel('')
+
+                ax[ii, jj].tick_params(left=False)
+                if jj == 0:
+                    ax[ii, jj].set_ylabel(var, fontsize=self.label_fontsize, rotation=0)
+                    ax[ii, jj].set_yticklabels([])
+                else:
+                    ax[ii, jj].yaxis.tick_right()
+                    ax[ii, jj].tick_params(right=False)
+                    ax[ii, jj].set_yticklabels(['tr', 'te'], fontsize=self.legend_fontsize)
+                    ax[ii, jj].set_ylabel('')
+
+                for pos in ['right', 'top', 'left']:
+                    ax[ii, jj].spines[pos].set_visible(False)
+
+
+        if save_flag:
+            fn = f"of_model_scores_u-{unit_type}_f"
+            fn += f".{save_format}"
+            f.savefig(self.fig_path / fn, format=save_format, dpi=self.dpi, facecolor=None,
+                      pad_inches=0, bbox_inches='tight')
+        return f,ax
+
+    def plot_group_model_scores_h(self, models='sdp', unit_type='cell', metric='r2', figsize=None, save_flag=False, save_format='png'):
+
+        if figsize is None:
+            figsize = (2.1,1.2)
+
+        f, ax = plt.subplots(1, 4, figsize=figsize, dpi=self.dpi)
+
+        table = self.model_scores
+        if unit_type in ['cell', 'mua']:
+            table = table[table.unit_type==unit_type]
+        elif unit_type == 'matched':
+            mt = self.match_table
+            table = table[table.cl_name.isin(mt.cl_name_OF)]
+
+        vars_list = [s for s in models]
+        vars_name_list = [self.var_map[s] for s in vars_list if s in self.var_map.keys()]
+        vars_name_list += ['agg_' + models]
+        vars_list += ['a']
+
+        vars_name_map = {s: self.var_map[s] for s in vars_list if s in self.var_map.keys()}
+        vars_name_map_r = {v: k for k, v in vars_name_map.items()}
+
+        for ii, analysis in enumerate(vars_name_list):
+            var = self.var_map2[vars_name_map_r[analysis]]
+            color = self.var_color[var]
+
+            setup_axes(ax[ii], self.fontsize, spine_lw=0.5, tick_params=dict(width=0.5, length=1, pad=0.2))
+            data_subset = table[(table['model'] == analysis) &
+                                (table['metric'] == metric) &
+                                (table['session_valid'])
+                                ]
+            data_subset = data_subset[~data_subset.isin([np.nan, np.inf, -np.inf]).any(1)]
+
+            sns.violinplot(data=data_subset, y='value', x='split', color='white', order=['train', 'test'], cut=0,
+                           ax=ax[ii], inner='quartile', linewidth=0.5)
+
+            for l in ax[ii].lines:
+                l.set_linestyle('--')
+                l.set_linewidth(0.5)
+                l.set_color('0.3')
+                l.set_alpha(0.8)
+            for l in ax[ii].lines[1::3]:
+                l.set_linestyle('-')
+                l.set_linewidth(1)
+                l.set_color('0.1')
+                l.set_alpha(0.8)
+            for c in ax[ii].collections:
+                c.set_edgecolor('0.2')
+                # c.set_linewidth(1.5)
+                c.set_alpha(0.8)
+
+            split_points = data_subset.split == 'train'
+            ax[ii].scatter(y=data_subset['value'][split_points],
+                               x=-0.5 + 0.05 * (np.random.rand(split_points.sum()) - 0.5),
+                               s=1, facecolor=color, alpha=0.1, edgecolors=None, linewidth=0)
+
+            split_points = data_subset.split == 'test'
+            ax[ii].scatter(y=data_subset['value'][split_points],
+                               x=1.5 + 0.05 * (np.random.rand(split_points.sum()) - 0.5),
+                               s=1, facecolor=color, alpha=0.1, edgecolors=None, linewidth=0)
+
+            if metric == 'r2':
+                ax[ii].set_ylim([-0.2, 0.6])
+                ax[ii].set_yticks([0, 0.25, 0.5])
+            elif metric == 'map_r':
+                ax[ii].set_ylim([-0.2, 1.05])
+                ax[ii].set_yticks([0, 0.5, 1])
+
+            if ii == 0:
+                if metric == 'map_r':
+                    ax[ii].set_yticklabels([0, '', '1'], fontsize=self.tick_fontsize)
+                    ax[ii].set_ylabel(f'$r_p[m,\hat{{m}}]$', fontsize=self.label_fontsize, labelpad=6, va='center')
+                else:
+                    yticks = ax[ii].get_yticks()
+                    _, yticklabels = format_numerical_ticks(yticks)
+                    yticklabels[1] = ''
+                    ax[ii].set_yticklabels(yticklabels, fontsize=self.tick_fontsize)
+                    ax[ii].set_ylabel(f'$R^2$', fontsize=self.label_fontsize, labelpad=0, rotation=0, va='center')
+
+            else:
+                ax[ii].tick_params(left=False)
+                ax[ii].set_yticklabels([])
+                ax[ii].set_ylabel('')
+                ax[ii].spines['left'].set_visible(False)
+
+            ax[ii].set_xlabel(var, fontsize=self.label_fontsize, rotation=0, labelpad=0)
+            ax[ii].set_xticklabels(['tr', 'te'], fontsize=self.tick_fontsize)
+
+            for pos in ['right', 'top']:
+                ax[ii].spines[pos].set_visible(False)
+
+
+        if save_flag:
+            fn = f"of_model_scores_u-{unit_type}_m-{metric}"
+            fn += f".{save_format}"
+            f.savefig(self.fig_path / fn, format=save_format, dpi=self.dpi, facecolor=None,
+                      pad_inches=0, bbox_inches='tight')
+        return f,ax
+
+
+
+class CrossTaskFigures():
+    dpi = 1500
+    fontsize = 10
+    colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple',
+              'tab:brown', 'tab:pink', 'tab:gray', 'tab:olive', 'tab:cyan']
+    cluster_palette = "colorblind"
+    cm_subj = 'Li'
+    cm_analysis = 18
+    cm_dist_thr = 0.5
+
+    def __init__(self, fig_path=None, of_model_analyses='orig'):
+        self.info = ei.SummaryInfo()
+
+        if fig_path is None:
+            self.fig_path = self.info.paths['figures'] / 'xTaskFigs'
+            self.fig_path.mkdir(parents=True, exist_ok=True)
+        else:
+            self.fig_path = fig_path
+
+        # load default tables
+        self.unit_table = self.info.get_unit_table()
+        self.match_table = self.info.get_unit_match_table()
+        self.match_of_cluster_error_table = self.info.get_matched_of_cell_cluster_error_table()
+        self.match_of_clusters = self.info.get_matched_of_cell_clusters()
+        self.match_scores_table = self.info.get_combined_scores_matched_units(of_model_analyses=of_model_analyses)
+
+        self.cm_si = ei.SubjectInfo(self.cm_subj)
+        self.of_score_names = [c for c in self.match_scores_table.columns if 'OF' in c]
+        self.tm_score_names = [c for c in self.match_scores_table.columns if 'TM' in c]
+
+        self.update_fontsize()
+        self.update_panel_params()
+        self.cm_wf = None
+        self.cm_wf_full_names = None
+
+    #### plotting functions ####
+    def plot_unit_overlap(self, match_type='lib', ax=None, figsize=None,
+                          save_flag=False, save_format='png'):
+
+        if ax is None:
+            if figsize is None:
+                figsize = (1.5, 1)
+            f, ax = plt.subplots(figsize=figsize, dpi=self.dpi)
         else:
             f = ax.figure
 
@@ -3376,35 +3914,1034 @@ class CrossTaskFigures():
             if out.subset_labels[x] is not None:
                 out.subset_labels[x].set_fontsize(self.legend_fontsize)
 
+        if save_flag:
+            fn = f"crosstask_unit_overlap.{save_format}"
+            f.savefig(self.fig_path / fn, format=save_format, dpi=self.dpi, facecolor=None,
+                      pad_inches=0, bbox_inches='tight')
+
         return f, ax
 
+    def plot_error_vs_OF_clusters(self, score_type='cosine', hue_var='split', table=None, ax=None, figsize=None,
+                                  save_flag=False, save_format='png'):
+
+        if ax is None:
+            if figsize is None:
+                figsize = (2, 1.5)
+            f, ax = plt.subplots(figsize=figsize, dpi=self.dpi)
+        else:
+            f = ax.figure
+
+        if table is None:
+            table = self.info.get_matched_of_cell_cluster_error_table()
+
+        if score_type == 'MSE':
+            table = table.copy()
+            table[score_type] = np.log10(table[score_type].astype(float))
+        sns.pointplot(data=table, x='n_clusters', y=score_type, hue=hue_var, dodge=True,
+                      errwidth=1, scale=0.4, ax=ax, palette="deep")
+        setup_axes(ax, fontsize=self.fontsize)
+
+        h, l = ax.get_legend_handles_labels()
+
+        leg = ax.legend(h, l, loc='lower left', bbox_to_anchor=(1, 0), frameon=False,
+                        fontsize=self.legend_fontsize, labelspacing=0.1, handlelength=0.5, handletextpad=0.4)
+
+        if hue_var == 'umap_neighbor':
+            leg.set_title("umap_n", prop={'size': self.fontsize})
+
+        ax.set_xlabel("# Clusters")
+
+        if score_type == 'cosine':
+            ax.set_ylabel("C.D. Error")
+        elif score_type == 'MSE':
+            ax.set_ylabel(r"$log_{10}(MSE)$")
+        else:
+            ax.set_ylabel("Error")
+
+        if save_flag:
+            fn = f"crosstask_cluster_error_s-{score_type}_hue-{hue_var}.{save_format}"
+            f.savefig(self.fig_path / fn, format=save_format, dpi=self.dpi, facecolor=None,
+                      pad_inches=0, bbox_inches='tight')
+        return f, ax
+
+    def plot_umap_clusters(self, hue_var="Cluster", table=None, ax=None, figsize=None,
+                           save_flag=False, save_format='png'):
+        if ax is None:
+            if figsize is None:
+                figsize = (1.2, 1.2)
+            f, ax = plt.subplots(figsize=figsize, dpi=self.dpi)
+        else:
+            f = ax.figure
+
+        if table is None:
+            table = self.match_of_clusters
+
+        setup_axes(ax, fontsize=self.fontsize)
+
+        marker_size = 4
+        marker_lw = 0.2
+        marker_ec = '0.7'
+        marker_alpha = 0.75
+
+        sns.scatterplot(x='UMAP-1', y='UMAP-2', hue=hue_var, data=table, s=marker_size,
+                        alpha=marker_alpha, edgecolor=marker_ec, linewidth=marker_lw,
+                        palette=self.cluster_palette, ax=ax)
+
+        ax.set_xlabel(f"$UMAP_1$", fontsize=self.fontsize, labelpad=0)
+        ax.set_ylabel(f"$UMAP_2$", fontsize=self.fontsize, labelpad=0)
+
+        h, l = ax.get_legend_handles_labels()
+        for hh in h:
+            hh.set_sizes([marker_size * 4])
+            hh.set_lw(marker_lw)
+            hh.set_alpha(marker_alpha)
+        for ii in range(len(l)):
+            l[ii] = f"$Cl_{ii}$"
+
+        ax.legend(h, l, loc='lower left', bbox_to_anchor=(1, 0), frameon=False,
+                  fontsize=self.legend_fontsize, labelspacing=0.2, handlelength=0.5, handletextpad=0.4)
+
+        if save_flag:
+            fn = f"crosstask_scatter_umap_matched_clusters_hue-{hue_var}.{save_format}"
+            f.savefig(self.fig_path / fn, format=save_format, dpi=self.dpi, facecolor=None,
+                      pad_inches=0, bbox_inches='tight')
+        return f, ax
+
+    def plot_scores_by_cluster(self, score_group, table=None, ax=None, figsize=None, test='Mann-Whitney',
+                               save_flag=False, save_format='png'):
+
+        if ax is None:
+            if figsize is None:
+                figsize = (2, 1.5)
+            f, ax = plt.subplots(figsize=figsize, dpi=self.dpi)
+        else:
+            f = ax.figure
+
+        if score_group == 'fr':
+            select_columns = ['TM-fr_uz_cue', 'TM-fr_uz_rw']
+            ylabel = f'$|U_Z|$'
+            legend_labels = ['Cue', 'RW']
+            palette = "muted"
+        elif score_group == 'of_metric':
+            select_columns = ['OF-metric_score_' + s for s in ['pos', 'speed', 'hd']]
+            ylabel = "Metric Score (a.u.)"
+            legend_labels = ['pos', 'sp', 'hd']
+            palette = "Set2"
+
+        elif score_group == 'of_metric_np':
+            select_columns = ['OF-metric_score_' + s for s in ['speed', 'hd']]
+            ylabel = "Metric Score (a.u.)"
+            legend_labels = ['sp', 'hd']
+            palette = sns.palettes.color_palette(palette="Set2")[1:][:2]
+
+        elif score_group == 'of_model':
+            select_columns = [f"OF-{s}-agg_sdp_coef" for s in ['pos', 'speed', 'hd']]
+            ylabel = "Model Coef. (a.u)"
+            legend_labels = ['pos', 'sp', 'hd']
+            palette = "Set2"
+
+        elif score_group == 'of_model_np':
+            select_columns = [f"OF-{s}-agg_sdp_coef" for s in ['speed', 'hd']]
+            ylabel = "Model Coef. (a.u)"
+            legend_labels = ['sp', 'hd']
+            palette = sns.palettes.color_palette(palette="Set2")[1:][:2]
+
+        elif score_group == 'remap':
+            select_columns = ['TM-remap_cue', 'TM-remap_rw']
+            ylabel = r"$\bar{z}_{\Delta \tau}$"
+            legend_labels = ['Cue', 'RW']
+            palette = "muted"
+
+        elif score_group == 'enc':
+            select_columns = ['TM-rate_cue', 'TM-global_cue', 'TM-rate_rw', 'TM-global_rw', ]
+            ylabel = r"$R^2$"
+            legend_labels = [r'$Z+C$', r'$ZxC$', r'$Z_i+R$', r'$Z_ixR$']
+            palette = 'tab20'
+
+        elif score_group == 'delta_enc':
+            select_columns = ['TM-enc_uz_cue', 'TM-enc_uz_rw']
+            ylabel = r"$U_{\Delta R^2}$"
+            legend_labels = ['Cue', 'RW']
+            palette = "muted"
+        else:
+            raise ValueError
+
+        if table is None:
+            table = self.match_scores_table[select_columns].copy()
+            table['Cluster'] = self.match_of_clusters['Cluster']
+            table = table.rename(columns={s1: s2 for s1, s2 in zip(select_columns, legend_labels)})
+
+        y_var = 'value'
+        x_var = 'Cluster'
+        x_vals = np.arange(len(table.Cluster.unique()))
+
+        hue_var = 'hvar'
+        hue_vals = legend_labels
+
+        table = table.melt(id_vars=['Cluster'], var_name=hue_var, value_name=y_var)
+
+        marker_size = 2
+        marker_ec = '0.7'
+        marker_lw = 0.2
+        marker_alpha = 0.3
+
+        mean_lw = 1.5
+        mean_lc = 0.25
+
+        sns.stripplot(data=table, x=x_var, y=y_var, hue=hue_var, order=x_vals, hue_order=hue_vals, dodge=True,
+                      palette=palette, size=marker_size, alpha=marker_alpha, edgecolor=marker_ec, linewidth=marker_lw,
+                      ax=ax)
+
+        h, l = ax.get_legend_handles_labels()
+        for hh in h:
+            hh.set_sizes([marker_size * 4])
+            hh.set_lw(marker_lw)
+        ax.legend(h, legend_labels, loc='lower left', bbox_to_anchor=(1, 0), frameon=False,
+                  fontsize=self.legend_fontsize, labelspacing=0.2, handlelength=0.5, handletextpad=0.4)
+
+        self._add_measure_ci(ax, table, x_var, x_vals, y_var, hue_var, hue_vals=hue_vals,
+                             mean_lw=mean_lw, mean_lc=mean_lc, func=np.nanmean)
+
+        self._add_significance_annot(ax=ax, data=table, y_var=y_var, x_var=x_var, x_vals=x_vals,
+                                     hue_var=hue_var, hue_vals=hue_vals, test=test)
+
+        setup_axes(ax, self.fontsize)
+
+        ax.set_ylabel(ylabel, fontsize=self.fontsize)
+        ax.set_xlabel("Cluster", fontsize=self.fontsize)
+
+        if save_flag:
+            fn = f"crosstask_score-{score_group}_by_cluster-{test}.{save_format}"
+            f.savefig(self.fig_path / fn, format=save_format, dpi=self.dpi, facecolor=None,
+                      pad_inches=0, bbox_inches='tight')
+        return f, ax
+
+    def plot_scores_by_group(self, score_group, table=None, ax=None, figsize=None, test='Mann-Whitney',
+                             save_flag=False, save_format='png'):
+
+        if ax is None:
+            if figsize is None:
+                figsize = (2, 1.5)
+            f, ax = plt.subplots(figsize=figsize, dpi=self.dpi)
+        else:
+            f = ax.figure
+
+        palette = self.cluster_palette
+        select_columns, x_vals = self.get_score_table_columns_by_group(score_group)
+        if 'metric' in score_group:
+            y_label = "Metric Score (a.u.)"
+            x_var = "var"
+            x_label = ""
+            x_ticklabels = ['p', 's', 'h']
+        elif 'of_model' in score_group:
+            y_label = " Model Coef. (a.u.)"
+            x_var = "var"
+            x_label = ""
+            x_ticklabels = ['p', 's', 'h']
+        elif 'remap' in score_group:
+            y_label = r"$\bar{z}_{\Delta \tau}$"
+            x_var = ''
+            x_label = x_var
+        elif 'enc' in score_group:
+            y_label = r"$R^2$"
+            x_var = ""
+            x_label = x_var
+        elif 'delta_enc' in score_group:
+            y_label = r"$U_{\Delta R^2}$"
+            x_var = "Remap"
+            x_label = x_var
+        elif 'fr' in score_group:
+            y_label = f'$|U_Z|$'
+            x_var = 'var'
+            x_label = ""
+        else:
+            raise ValueError
+
+        if table is None:
+            table = self.match_scores_table[select_columns].copy()
+            table['Cluster'] = self.match_of_clusters['Cluster']
+            table = table.rename(columns={s1: s2 for s1, s2 in zip(select_columns, x_vals)})
+
+        y_var = 'value'
+
+        hue_vals = np.arange(len(table.Cluster.unique()))
+        hue_var = "Cluster"
+
+        table = table.melt(id_vars=['Cluster'], var_name=x_var, value_name=y_var)
+
+        marker_size = 2
+        marker_ec = '0.7'
+        marker_lw = 0.2
+        marker_alpha = 0.3
+
+        mean_lw = 1.5
+        mean_lc = 0.25
+
+        sns.stripplot(data=table, x=x_var, y=y_var, hue=hue_var, order=x_vals, hue_order=hue_vals, dodge=True,
+                      palette=palette, size=marker_size, alpha=marker_alpha, edgecolor=marker_ec, linewidth=marker_lw,
+                      ax=ax)
+
+        legend_labels = [f'$Cl_{ii}$' for ii in hue_vals]
+        h, l = ax.get_legend_handles_labels()
+        for hh in h:
+            hh.set_sizes([marker_size * 4])
+            hh.set_lw(marker_lw)
+        ax.legend(h, legend_labels, loc='lower left', bbox_to_anchor=(1, 0), frameon=False,
+                  fontsize=self.legend_fontsize, labelspacing=0.2, handlelength=0.5, handletextpad=0.4)
+
+        self._add_measure_ci(ax, table, x_var, x_vals, y_var, hue_var, hue_vals=hue_vals,
+                             mean_lw=mean_lw, mean_lc=mean_lc, func=np.nanmean)
+
+        setup_axes(ax, self.fontsize)
+
+        self._add_significance_annot(ax=ax, data=table, y_var=y_var, x_var=x_var, x_vals=x_vals,
+                                     hue_var=hue_var, hue_vals=hue_vals, test=test)
+
+        ax.set_ylabel(y_label, fontsize=self.fontsize)
+        ax.set_xlabel(x_label, fontsize=self.fontsize)
+
+        if ('metric' in score_group) | ('of_model' in score_group):
+            ax.set_xticklabels(x_ticklabels)
+
+        if save_flag:
+            fn = f"crosstask_score-{score_group}_hue-cluster_t-{test}.{save_format}"
+            f.savefig(self.fig_path / fn, format=save_format, dpi=self.dpi, facecolor=None,
+                      pad_inches=0, bbox_inches='tight')
+        return f, ax
+
+    def plot_scatter_scores_by_cluster(self, score_group, table=None, cluster_table=None, figsize=None,
+                                       save_flag=False, save_format='png'):
+
+        select_columns, x_vals = self.get_score_table_columns_by_group(score_group)
+
+        if cluster_table is None:
+            cluster_table = self.match_of_clusters
+
+        if table is None:
+            table = self.match_scores_table[select_columns].copy()
+            table['Cluster'] = cluster_table['Cluster']
+            table = table.rename(columns={s1: s2 for s1, s2 in zip(select_columns, x_vals)})
+
+        n_clusters = len(table['Cluster'].unique())
+
+        if figsize is None:
+            fig_height = 1.5
+        else:
+            fig_height = figsize[0]
+
+        density_bw = 0.8
+        marker_size = 2
+        marker_lw = marker_size / 10
+        marker_ec = '0.3'
+        marker_alpha = 0.7
+
+        jdensity_lw = marker_size / 5
+        jdensity_alpha = 0.7
+
+        g = sns.jointplot(data=table, x=x_vals[0], y=x_vals[1], hue='Cluster', palette=self.cluster_palette,
+                          height=fig_height, ratio=6,
+                          marginal_kws={'bw': density_bw, 'lw': jdensity_lw})
+        g.ax_joint.collections[0].set(
+            **dict(ec=marker_ec, sizes=[marker_size], linewidth=marker_lw, alpha=marker_alpha))
+
+        g.plot_joint(sns.kdeplot, levels=4, **{'bw': density_bw})
+        for l in g.ax_joint.collections:
+            if isinstance(l, mpl.collections.LineCollection):
+                l.set(**dict(lw=jdensity_lw, alpha=jdensity_alpha))
+
+        axes = [g.ax_joint, g.ax_marg_x, g.ax_marg_y]
+        for a in axes:
+            setup_axes(a, self.fontsize)
+        g.ax_marg_x.spines['left'].set_visible(False)
+        g.ax_marg_x.spines['bottom'].set_linewidth(0.75)
+        g.ax_marg_x.grid(False)
+        g.ax_marg_y.spines['bottom'].set_visible(False)
+        g.ax_marg_y.spines['left'].set_linewidth(0.75)
+        g.ax_marg_y.grid(False)
+
+
+        legend_labels = [f'$Cl_{ii}$' for ii in range(n_clusters)]
+        h, l = g.ax_joint.get_legend_handles_labels()
+        for hh in h:
+            hh.set_sizes([marker_size * 4])
+            hh.set_lw(marker_lw)
+            hh.set_ec(marker_ec)
+            hh.set_alpha(marker_alpha)
+
+        g.ax_joint.legend(h, legend_labels, loc='lower left', bbox_to_anchor=(0, 0), frameon=False,
+                          fontsize=self.legend_fontsize, labelspacing=0.2, handlelength=0.5, handletextpad=0.4)
+
+        g.ax_joint.set_xlabel('s', fontsize=self.label_fontsize, labelpad=0)
+        g.ax_joint.set_ylabel('h', fontsize=self.label_fontsize, labelpad=0)
+        f = g.figure
+        f.set_dpi(self.dpi)
+
+        g.ax_joint.xaxis.label.set_size(self.label_fontsize)
+        g.ax_joint.yaxis.label.set_size(self.label_fontsize)
+
+        if save_flag:
+            fn = f"crosstask_scatter-{score_group}_hue-cluster_.{save_format}"
+            f.savefig(self.fig_path / fn, format=save_format, dpi=self.dpi, facecolor=None,
+                      pad_inches=0, bbox_inches='tight')
+        return f, axes
+
+    def plot_dist_mat_session_clusters(self, cmap='RdGy', ax=None, figsize=None,
+                                       save_flag=False, save_format='png'):
+
+        m = self.get_match_dist_mat()
+
+        c = m.columns
+        mask = np.zeros_like(m)
+        mask[np.triu_indices_from(mask)] = True
+
+        if ax is None:
+            if figsize is None:
+                figsize = (1.5, 1.5)
+            f, ax = plt.subplots(figsize=figsize, dpi=self.dpi)
+        else:
+            f = ax.figure
+
+        # plot dist matrix on heatmap
+        sns.heatmap(m, mask=mask, center=0.5, cmap=cmap, square=True, cbar=False, linewidths=0.05, ax=ax,
+                    rasterized=True)
+
+        c2 = np.array([f"${s.split('_')[0]}_{{s{s.split('_')[1][0]}}}^{{c{s.split('-')[1]}}}$" for s in c])
+        # tick aesthetics
+        xt = np.arange(0, len(m), 2)
+        yt = np.arange(1, len(m), 2)
+        ax.set_xticks(xt + 0.5)
+        ax.set_yticks(yt + 0.5)
+        ax.set_xticklabels(c2[xt])
+        ax.set_yticklabels(c2[yt])
+
+        ax.tick_params(labelsize=self.legend_fontsize, pad=1, tickdir='out', tick1On=True, length=1, width=0.5)
+
+        # colormap
+        cmap_obj = mpl.cm.get_cmap(cmap)
+        norm = mpl.colors.Normalize(vmin=0, vmax=1)
+
+        cax = f.add_axes([0.65, 0.6, 0.08, 0.24])
+        plt.colorbar(mpl.cm.ScalarMappable(norm=norm, cmap=cmap_obj), cax=cax)
+        cax.tick_params(labelsize=self.legend_fontsize, pad=1, tickdir='out', length=1, width=0.5)
+        cax.set_aspect(3)
+
+        cax.yaxis.set_ticks([0, 0.5, 1])
+        cax.set_yticklabels([0.0, 0.5, 1.0])
+        cax.set_frame_on(False)
+        cax.set_ylabel('PE', fontsize=self.legend_fontsize, labelpad=0)
+        cax.yaxis.set_label_position('left')
+
+        # add identifiers to matches:
+        s = self._get_cm_dist_mat_thr_idx(m)
+        for ii in s.index:
+            ax.text(s.rows[ii] + 0.5, s.cols[ii] + 0.5, f"$M_{ii}$", fontsize=self.legend_fontsize * 0.5, ha='center',
+                    va='center')
+
+        if save_flag:
+            fn = f"crosstask_cm_dist_heatmap_s-{self.cm_subj}_a-{self.cm_analysis}.{save_format}"
+            f.savefig(self.fig_path / fn, format=save_format, dpi=self.dpi, facecolor=None,
+                      pad_inches=0, bbox_inches='tight')
+        return f, ax
+
+    def plot_match_units_ellipsoids(self, cm=None, dm=None, analysis_num=None, ax=None, figsize=None,
+                                    save_flag=False, save_format='png'):
+
+        if analysis_num is None:
+            analysis_num = self.cm_analysis
+
+        if cm is None:
+            cm, dm = self.get_cm_dm_dicts(analysis_num)
+
+        linewidths = [0.25, 0.3]
+        edgecolor = '0.3'
+        alpha = 0.75
+        marker_size = 2
+
+        if ax is None:
+            if figsize is None:
+                figsize = (1.5, 1.5)
+            f, ax = plt.subplots(figsize=figsize, dpi=self.dpi)
+        else:
+            f = ax.figure
+
+        setup_axes(ax)
+
+        session_name_map, matched_sets = self.extract_task_match_sets(cm, dm)
+        session_name_map2 = {v: k for k, v in session_name_map.items()}
+
+        dist_mat = self.get_match_dist_mat(analysis_num=analysis_num)
+        cl_names = dist_mat.columns
+
+        sorted_match_idx = self._get_cm_dist_mat_thr_idx(dist_mat)
+
+        n_matches = len(matched_sets)
+
+        pair_cols = mpl.cm.get_cmap("tab20")(np.arange(n_matches * 2))
+        unmatched_cols = '0.75'
+
+        matched_cl_names = []
+        for ii in range(n_matches):
+            cl1_num = sorted_match_idx.rows[ii]
+            cl2_num = sorted_match_idx.cols[ii]
+
+            matched_cl_names.append(cl_names[int(cl1_num)])
+            matched_cl_names.append(cl_names[int(cl2_num)])
+
+        matched_cl_locs = [dm['clusters_loc'][session_name_map2[cl]]
+                           for cl in matched_cl_names]
+        matched_cl_cov = [dm['clusters_cov'][session_name_map2[cl]]
+                          for cl in matched_cl_names]
+
+        unmatched_cl_names = np.setdiff1d(cl_names, matched_cl_names)
+        unmatched_cl_locs = [dm['clusters_loc'][session_name_map2[cl]]
+                             for cl in unmatched_cl_names]
+        unmatched_cl_cov = [dm['clusters_cov'][session_name_map2[cl]]
+                            for cl in unmatched_cl_names]
+
+        plot_2d_cluster_ellipsoids(unmatched_cl_locs, unmatched_cl_cov, std_levels=[2],
+                                   cl_colors=unmatched_cols, linewidths=[0], ax=ax)
+
+        plot_2d_cluster_ellipsoids(matched_cl_locs, matched_cl_cov, legend=False,
+                                   cl_colors=pair_cols, std_levels=[1, 2], linewidths=linewidths,
+                                   edgecolor=edgecolor, alpha=alpha, ax=ax)
+
+        legend_elements = []
+        for ii in range(n_matches):
+            legend_elements.append(
+                mpl.lines.Line2D([0], [0], marker='o', color=pair_cols[ii * 2], lw=0, label=f"$M_{ii}$",
+                                 markersize=marker_size))
+
+        ax.legend(handles=legend_elements, loc='center left', bbox_to_anchor=[0.85, 0, 0.1, 1], frameon=False,
+                  fontsize=self.legend_fontsize, labelspacing=0, handletextpad=0, handlelength=1)
+
+        ax.set_xlabel(f"$WF_{{UMAP_1}}$", fontsize=self.label_fontsize)
+        ax.set_ylabel(f"$WF_{{UMAP_2}}$", fontsize=self.label_fontsize)
+
+        if save_flag:
+            fn = f"crosstask_cm_ellipsoids_s-{self.cm_subj}_a-{self.cm_analysis}.{save_format}"
+            f.savefig(self.fig_path / fn, format=save_format, dpi=self.dpi, facecolor=None,
+                      pad_inches=0, bbox_inches='tight')
+        return f, ax
+
+    def plot_match_units_wf(self, cm=None, dm=None, analysis_num=None, ax=None, figsize=None,
+                            save_flag=False, save_format='png'):
+
+        alpha = 0.7
+        lw = 1.2
+
+        if analysis_num is None:
+            analysis_num = self.cm_analysis
+
+        if cm is None:
+            cm, dm = self.get_cm_dm_dicts(analysis_num)
+
+        if ax is None:
+            if figsize is None:
+                figsize = (2, 1)
+            f, ax = plt.subplots(figsize=figsize, dpi=self.dpi)
+        else:
+            f = ax.figure
+
+        # load wf
+        wf, cl_full_names = self.get_match_units_wf()
+        mwf = wf.mean(axis=1)
+
+        # load matches
+        session_name_map, matched_sets = self.extract_task_match_sets(cm, dm)
+        dist_mat = self.get_match_dist_mat()
+
+        # sort and get correct index for wf
+        sorted_match_idx = self._get_cm_dist_mat_thr_idx(dist_mat)
+        matched_array_idx = []
+        for m in sorted_match_idx.rows:
+            ms = cm['matches_sets'][int(m)]
+            if len(ms) < 2:
+                raise ValueError
+            for ss in ms:
+                bool_idx = np.array(cl_full_names) == ss
+                matched_array_idx.append(np.where(bool_idx)[0][0])
+        matched_array_idx = np.array(matched_array_idx)
+
+        # paired color map
+        n_matches = len(sorted_match_idx)
+        n_cl = n_matches * 2
+        cmap = mpl.cm.get_cmap("tab20")(np.arange(n_cl))
+
+        # line labels
+        labels = []
+        for ii in range(n_cl):
+            s = session_name_map[cl_full_names[matched_array_idx[ii]]]
+            labels.append(f"${s.split('_')[0]}_{{s{s.split('_')[1][0]}}}^{{c{s.split('-')[1]}}}$")
+
+        ls = ['-', '--']
+        for ii in range(n_matches * 2):
+            ax.plot(mwf[matched_array_idx[ii]], color=cmap[ii], alpha=alpha, lw=lw, ls=ls[ii % 2],
+                    label=labels[ii])
+
+        setup_axes(ax)
+
+        ax.set_xticks([])
+        for jj in range(5):
+            ax.axvline(32 * jj, linestyle='--', color='0.3', lw=0.75, zorder=-1)
+
+        ax.set_ylabel(r"Amp [$\mu$V] ", fontsize=self.fontsize)
+
+        aa = np.arange(0, 129, 32)
+        ax.set_xticks(aa[:-1] + 12)
+        ax.set_xticklabels([f"$ch_{ch}$" for ch in range(1, 5)])
+
+        ax.legend(loc='center left', bbox_to_anchor=[1, 0, 0.1, 1], frameon=False,
+                  fontsize=self.legend_fontsize, labelspacing=0.2, handletextpad=0.2, handlelength=1.2)
+
+        if save_flag:
+            fn = f"crosstask_cm_wf_s-{self.cm_subj}_a-{self.cm_analysis}.{save_format}"
+            f.savefig(self.fig_path / fn, format=save_format, dpi=self.dpi, facecolor=None,
+                      pad_inches=0, bbox_inches='tight')
+        return f, ax
+
+    #### class update methods #####
+    def update_panel_params(self, params=None):
+
+        if params is None:
+            params = {}
+
+        self.subject_palette = 'deep'
+        default_params = dict()
+
+        self.params = copy.deepcopy(default_params)
+        self.params.update(params)
+
+    def update_fontsize(self, fontscale=1, fontsize=10):
+        self.fontsize = fontsize * fontscale
+        self.tick_fontsize = self.fontsize
+        self.legend_fontsize = self.fontsize * 0.77
+        self.label_fontsize = self.fontsize * 1.1
+
+    ### internal calls that might be useful outside plotting class (might need to move for generalizability)####
+    def get_match_dist_mat(self, dist_kind='pe', analysis_num=None):
+
+        cm, dm = self.get_cm_dm_dicts(analysis_num)
+        m = dm['dists_mats'][dist_kind]
+
+        cols, sets = self.extract_task_match_sets(cm, dm)
+        m = m.rename(columns=cols, index=cols)
+        m = m.loc[cols.values(), cols.values()]
+        return m
+
+    def get_cm_dm_dicts(self, analysis_num=None):
+        if analysis_num is None:
+            analysis_num = self.cm_analysis
+
+        cm = self.cm_si.match_clusters()[analysis_num]
+        dm = self.cm_si.get_cluster_dists()[analysis_num]
+        return cm, dm
+
+    def get_match_units_wf(self, cm=None, dm=None, analysis_num=None):
+
+        if self.cm_wf is not None:
+            return self.cm_wf, self.cm_wf_full_names
+
+        if analysis_num is None:
+            analysis_num = self.cm_analysis
+
+        if cm is None:
+            cm, dm = self.get_cm_dm_dicts(analysis_num)
+
+        tt, d, n_cl, sessions, n_cl_session = dm['analysis'].values()
+
+        n_wf = 100
+        n_wf_samps = 128
+
+        np.random.seed(100)
+        wf = np.zeros((n_cl, n_wf, n_wf_samps))
+
+        cl_full_names = dm['cl_names']
+        cl_cnt = 0
+        for session_num, session in enumerate(sessions):
+            tt_str = str(tt)
+            try:
+                cl_tt_ids = self.cm_si.session_clusters[session]['cell_IDs'][tt]
+            except KeyError:
+                cl_tt_ids = self.cm_si.session_clusters[session]['cell_IDs'][tt_str]
+            finally:
+                pass
+
+            cl_idx = np.arange(n_cl_session[session_num]) + cl_cnt
+            wf[cl_idx] = self.cm_si.get_session_tt_wf(session, tt, cluster_ids=cl_tt_ids, n_wf=n_wf)
+            cl_cnt += n_cl_session[session_num]
+
+        self.cm_wf = wf
+        self.cm_wf_full_names = cl_full_names
+        return wf, cl_full_names
+
+    def get_score_table_columns_by_group(self, score_group):
+
+        if score_group == 'fr':
+            select_columns = ['TM-fr_uz_cue', 'TM-fr_uz_rw']
+            abbreviation = ['Cue', 'RW']
+        elif score_group == 'of_metric':
+            select_columns = ['OF-metric_score_' + s for s in ['pos', 'speed', 'hd']]
+            abbreviation = ['pos', 'sp', 'hd']
+        elif score_group == 'of_metric_np':
+            select_columns = ['OF-metric_score_' + s for s in ['speed', 'hd']]
+            abbreviation = ['sp', 'hd']
+        elif score_group == 'of_model':
+            select_columns = [f"OF-{s}-agg_sdp_coef" for s in ['pos', 'speed', 'hd']]
+            abbreviation = ['pos', 'sp', 'hd']
+        elif score_group == 'of_model_np':
+            select_columns = [f"OF-{s}-agg_sdp_coef" for s in ['speed', 'hd']]
+            abbreviation = ['sp', 'hd']
+        elif score_group == 'remap':
+            select_columns = ['TM-remap_cue', 'TM-remap_rw']
+            abbreviation = ['Cue', 'RW']
+        elif score_group == 'enc':
+            select_columns = ['TM-rate_cue', 'TM-global_cue', 'TM-rate_rw', 'TM-global_rw', ]
+            abbreviation = [r'$Z+C$', r'$ZxC$', r'$Z_i+R$', r'$Z_ixR$']
+        elif score_group == 'delta_enc':
+            select_columns = ['TM-enc_uz_cue', 'TM-enc_uz_rw']
+            abbreviation = ['Cue', 'RW']
+        else:
+            raise ValueError
+
+        return select_columns, abbreviation
+
+    def _add_significance_annot(self, ax, data, y_var, x_var, x_vals, hue_var, hue_vals,
+                                test='Mann-Whitney', pair_str='within_x', sig_thr=0.05):
+
+        pairs = self._get_comparison_pairs(x_vals, hue_vals, pairs=pair_str)
+        pairs, p_vals = self._correct_sig_comp_pairs(data, y_var, x_var, hue_var, pairs, p_val_thr=sig_thr, test=test)
+        print(pairs, p_vals)
+        line_offset = -20
+
+        annot = Annotator(ax=ax, pairs=pairs, data=data, x=x_var, y=y_var, order=x_vals, hue=hue_var,
+                          hue_order=hue_vals)
+        annot.configure(test=None, verbose=0, loc='outside', fontsize=self.legend_fontsize - 2,
+                        line_width=0.5, line_height=0.01, text_offset=-2,
+                        line_offset=line_offset, line_offset_to_group=line_offset)
+
+        # annot.apply_test()
+        annot.set_pvalues_and_annotate(p_vals)
+
+    def _get_cm_dist_mat_thr_idx(self, m, cm_dist_thr=None):
+
+        if cm_dist_thr is None:
+            cm_dist_thr = self.cm_dist_thr
+
+        mask = np.zeros_like(m)
+        mask[np.triu_indices_from(mask)] = True
+        c = m.columns
+
+        m2 = ((m < cm_dist_thr) & (~mask.astype(bool)))
+        idx = np.where(m2)
+        vals = m.lookup(c[idx[0]], c[idx[1]])
+        s = pd.DataFrame(np.array((idx[1], idx[0], vals)).T, columns=['rows', 'cols', 'val'], )
+
+        return s
+
+    #### internal static methods #####
+    @staticmethod
+    def extract_task_match_sets(cm, dm):
+        """ utility function renaming outputs from cluster match and distance match dictionaries as produced by
+        SubjectInfo.match_clusters and SubjectInfo.get_cluster_dists."""
+
+        sessions = cm['analysis']['sessions']
+
+        cluster_map = {}
+        cluster_session_cnt = np.zeros(len(sessions), dtype=int)
+        for kk in dm['dists_mats']['pe']:
+            for ii, se in enumerate(sessions):
+                if se in kk:
+                    if 'OF' in se:
+                        cluster_map[kk] = f"OF_{ii}-{cluster_session_cnt[ii]}"
+                    else:
+                        cluster_map[kk] = f"TM_{ii}-{cluster_session_cnt[ii]}"
+                    cluster_session_cnt[ii] += 1
+
+        matches_sets = cm['matches_sets']
+
+        task_match_set_idx = []
+        for ii, match_set in enumerate(matches_sets):
+            TM_flag = False
+            OF_flag = False
+            for jj, element in enumerate(match_set):
+                if ('T3' in element):
+                    TM_flag = True
+                if ('OF' in element):
+                    OF_flag = True
+
+            if TM_flag & OF_flag:
+                task_match_set_idx += [ii]
+
+        return cluster_map, task_match_set_idx
+
+    @staticmethod
+    def _correct_sig_comp_pairs(table, y_var, x_var, hue_var, pairs, p_val_thr=0.05,
+                                test='Mann-Whitney'):
+
+        new_pairs = []
+        p_vals = []
+
+        if test == 'Mann-Whitney':
+            test_func = stats.mannwhitneyu
+        elif test == 'ttest':
+            test_func = stats.ttest_ind
+        else:
+            raise NotImplementedError
+
+        for p1, p2 in pairs:
+            idx1 = (table[x_var] == p1[0]) & (table[hue_var] == p1[1])
+            idx2 = (table[x_var] == p2[0]) & (table[hue_var] == p2[1])
+
+            r = test_func(table[y_var][idx1].dropna(), table[y_var][idx2].dropna())
+
+            if r.pvalue < p_val_thr:
+                new_pairs.append((p1, p2))
+                p_vals.append(r.pvalue)
+        return new_pairs, p_vals
+
+    @staticmethod
+    def _get_comparison_pairs(x_vals, hue_vals, pairs='within_x'):
+        def _get_within_x_pairs():
+            within_x_pairs = []
+            for xx in x_vals:
+                for ii, h1 in enumerate(hue_vals):
+                    for jj, h2 in enumerate(hue_vals):
+                        if ii > jj:
+                            within_x_pairs.append(((xx, h1), (xx, h2)))
+            return within_x_pairs
+
+        def _get_across_x_pairs():
+            across_x_pairs = []
+            for hh in hue_vals:
+                for ii, x1 in enumerate(x_vals):
+                    for jj, x2 in enumerate(x_vals):
+                        if ii > jj:
+                            across_x_pairs.append(((x1, hh), (x2, hh)))
+            return across_x_pairs
+
+        def _get_inter_x_pairs():
+            inter_x_pairs = []
+            for ii, x1 in enumerate(x_vals):
+                for jj, x2 in enumerate(x_vals):
+                    if ii > jj:
+                        inter_x_pairs.append((x1, x2))
+            return inter_x_pairs
+
+        func_map = {'within_x': _get_within_x_pairs, 'across_x': _get_across_x_pairs, 'inter_x': _get_inter_x_pairs}
+
+        comp_pairs = []
+        if pairs == 'all':
+            for v in func_map.values():
+                comp_pairs += v()
+        elif isinstance(pairs, list):
+            for k in pairs:
+                comp_pairs += func_map[k]()
+        else:
+            comp_pairs += func_map[pairs]()
+
+        return comp_pairs
+
+    @staticmethod
+    def _add_measure_ci(ax, t2, x_var, x_vals, y_var, hue_var, hue_vals, mean_lw=1.0, mean_lc=0.2, func=np.nanmedian):
+        mean_err_lw = mean_lw * 4 / 5
+        mean_err_lc = mean_lc * 1.5
+
+        n_x_vals = len(x_vals)
+        n_hue_vals = len(hue_vals)
+
+        adj = 0
+        if n_hue_vals == 2:
+            adj = 0.07
+        elif n_hue_vals == 3:
+            adj = 0.035
+
+        hue_locs = np.linspace(-0.5 - adj, 0.5 + adj, n_hue_vals + 2)[1:-1]
+        hue_spacing = hue_locs[1] - hue_locs[0]
+        err_width = hue_spacing / 3
+
+        for ii, xx in enumerate(x_vals):
+            for jj, hh in enumerate(hue_vals):
+                idx = (t2[x_var] == xx) & (t2[hue_var] == hh)
+                x_loc = ii + hue_locs[jj]
+
+                vals = t2[y_var][idx]
+                y_val = func(vals)
+
+                ax.plot([x_loc - err_width, x_loc + err_width], [y_val] * 2, color=str(mean_lc), lw=mean_lw,
+                        zorder=10)
+                ci = stats.bootstrap(data=(vals,), statistic=func)
+
+                ax.plot([x_loc] * 2, ci.confidence_interval, color=str(mean_err_lc), lw=mean_err_lw, zorder=9)
 
 
 ################################################################################
 # Plot Functions
 ################################################################################
-def setup_axes(ax, fontsize=10):
+def setup_axes(ax, fontsize=10, spine_lw=1, spine_color='k', grid_lw=0.5, spine_list=None, tick_params=None):
+    sns.set_style(rc={"axes.edgecolor": 'k',
+                      'xtick.bottom': True,
+                      'ytick.left': True})
 
-    sns.set_style(rc={"axes.edgecolor":'k',
-                     'xtick.bottom': True,
-                     'ytick.left': True})
+    if tick_params is None:
+        tick_params = dict(axis="both", direction="out", length=2, width=1, color='0.2', which='major',
+                           pad=0.5, labelsize=fontsize)
+    ax.spines[:].set_visible(False)
 
-    sns.despine(ax=ax)
-    for sp in ['bottom', 'left']:
-        ax.spines[sp].set_linewidth(1)
-        ax.spines[sp].set_color('k')
+    if spine_list is None:
+        spine_list = ['bottom', 'left']
 
-    ax.tick_params(axis="both", direction="out", length=2, width=1, color='0.2', which='major',
-                   pad=0.5, labelsize=fontsize)
+    for sp in spine_list:
+        ax.spines[sp].set_visible(True)
+        ax.spines[sp].set_linewidth(spine_lw)
+        ax.spines[sp].set_color(spine_color)
 
-    ax.grid(linewidth=0.5)
+    ax.tick_params(**tick_params)
+
+    ax.grid(linewidth=grid_lw)
 
 
-def plot_sp_fr(sp_bins, sp_fr_m, sp_fr_s=None, ax=None, **params):
+def plot_models_resp_tw(sem, unit, fold, idx=0, wl=1000, plot_o=False, plot_rm=True, **plot_params):
+
+    models_resp = sem.get_models_predictions(unit)
+    for model in models_resp.keys():
+        models_resp[model] /= np.nanmax(models_resp[model])
+
+    if 'figsize' in plot_params:
+        figsize = plot_params['figsize']
+    else:
+        figsize = (2,2)
+    if 'dpi' in plot_params:
+        dpi = plot_params['dpi']
+    else:
+        dpi = 600
+    f = plt.figure(figsize=figsize, dpi=dpi)
+
+    if 'tick_fontsize' not in plot_params:
+        tick_fontsize = 7
+    else:
+        tick_fontsize = plot_params['tick_fontsize']
+
+    if 'label_fontsize' not in plot_params:
+        label_fontsize = 7
+    else:
+        label_fontsize = plot_params['label_fontsize']
+
+    models = ['o', 's', 'd', 'p', 'a']
+    n_models = len(models)
+    row_offset = 0
+    if not plot_o:
+        row_offset = -1
+        n_models = len(models)-1
+
+    samp_window = np.arange(wl)+idx
+    fold_samps = np.where(sem.crossval_samp_ids==fold)[0]
+    train_samps = np.where(sem.crossval_samp_ids!=fold)[0]
+    tw_samps = fold_samps[samp_window]
+
+    x_tw = sem.x[tw_samps]
+    y_tw = sem.y[tw_samps]
+
+    x_train = sem.x[train_samps]
+    y_train = sem.y[train_samps]
+
+    gs = f.add_gridspec(n_models+1, 3, )
+    ax = []
+    for ii in range(n_models+1):
+        ax.append(f.add_subplot(gs[ii, :2]))
+        ax.append(f.add_subplot(gs[ii, 2]))
+
+    analyses_colors = sns.color_palette(palette='deep', as_cmap=True)
+    type_color = {'o': 'k',
+                  'd': analyses_colors[0],
+                  'h': analyses_colors[0],
+                  's': analyses_colors[1],
+                  'p': analyses_colors[4],
+                  'a': analyses_colors[5]}
+    cmap = 'rainbow'
+    colors = plt.cm.get_cmap(cmap)(np.arange(wl) / wl)
+    n_time = np.arange(wl) / wl
+
+    # time
+    colorline(n_time, np.ones_like(n_time), colors=colors, linewidth=5, ax=ax[0])
+    ax[0].set_ylim([0.8, 1.2])
+    ax[0].text(1, 0.8, f"{wl * 0.02:0.0f}s", fontsize=tick_fontsize, ha='right')
+    for pos in ['left', 'top', 'right', 'bottom']:
+        ax[0].spines[pos].set_visible(False)
+    ax[0].set_yticks([])
+    ax[0].set_yticklabels('')
+    ax[0].set_xticks([])
+    ax[0].set_xticklabels('')
+    ax[0].set_xlim([0, 1])
+    ax[0].set_ylabel('t', fontsize=label_fontsize, va='center', ha='right', rotation=0)
+
+    colorline(x_tw, y_tw, colors=colors, linewidth=1, ax=ax[1], alpha=1)
+    ax[1].plot(x_train, y_train, linewidth=0.1, color='0.7', zorder=-1)
+    ax[1].scatter(x_tw, y_tw, s=models_resp['o'][tw_samps] * .5, color='0.1', alpha=0.3, edgecolors=None, linewidth=0)
+    ax[1].axis("off")
+    ax[1].set_rasterized(True)
+    ax[1].set_aspect('equal', 'box')
+    p = ax[1].get_position()
+    ax[1].set_position([p.x0 - 0.06, p.y0, p.width * 1.1, p.height * 1.1])
+
+    # plot models
+    if plot_rm:
+        models_sm = sem.get_models_sm_predictions(models_resp, select_samps=tw_samps)
+        for ii, model in enumerate(models):
+            if (model=='o') and (not plot_o):
+                continue
+            jj = (ii - row_offset) * 2 + 3
+            sns.heatmap(models_sm[model], ax=ax[jj], cbar=False, square=True, vmin=0, vmax=1, cmap='gist_heat')
+            ax[jj].axis('off')
+            ax[jj].invert_yaxis()
+            ax[jj].set_rasterized(True)
+
+            p = ax[jj].get_position()
+            ax[jj].set_position([p.x0 - 0.06, p.y0, p.width * 1.1, p.height * 1.1])
+    else:
+        for ii, model in enumerate(models):
+            if (model=='o') and (not plot_o):
+                continue
+            jj = (ii - row_offset) * 2 + 3
+            colorline(x_tw, y_tw, colors=colors, linewidth=1, ax=ax[jj], alpha=1)
+            ax[jj].scatter(x_tw, y_tw, s=models_resp[model][tw_samps] * .2, color='0.1', alpha=0.3, edgecolors=None,
+                          linewidth=0)
+            ax[jj].axis("off")
+            ax[jj].set_rasterized(True)
+            ax[jj].set_aspect('equal', 'box')
+            p = ax[jj].get_position()
+            ax[jj].set_position([p.x0 - 0.06, p.y0, p.width * 1.1, p.height * 1.1])
+
+    for ii, model in enumerate(models):
+        if (model == 'o') and (not plot_o):
+            continue
+        jj = (ii - row_offset) * 2 + 2
+
+        ax[jj].plot(n_time, models_resp['o'][tw_samps], linewidth=0.5, ls='--', color=type_color['o'], alpha=0.7)
+        ax[jj].plot(n_time, models_resp[model][tw_samps], linewidth=0.75, color=type_color[model])
+        ax[jj].set_yticks([])
+        ax[jj].set_xticks([])
+        ax[jj].set_yticklabels('')
+        ax[jj].set_xticklabels('')
+        ax[jj].grid(False)
+        ax[jj].set_xlim([0, 1])
+        for pos in ['left', 'top', 'right', 'bottom']:
+            ax[jj].spines[pos].set_visible(False)
+
+        if model=='d':
+            ax[jj].set_ylabel(f"$\hat{{fr}}_h$", fontsize=label_fontsize, rotation=0, ha='right', va='center')
+        elif model != 'o':
+            ax[jj].set_ylabel(f"$\hat{{fr}}_{model}$", fontsize=label_fontsize, rotation=0, ha='right', va='center')
+        else:
+            ax[jj].set_ylabel(f"$fr$", fontsize=label_fontsize, rotation=0, ha='right', va='center')
+
+    return f, ax
+
+
+def plot_sp_fr(sp_bins, sp_fr_m, sp_fr_s=None, sp_ci=None, ax=None, **params):
     plot_params = dict(lw=3,
                        color='b',
                        alpha=0.5,
-                       xlabel='Speed [cm/s]',
+                       xlabel='sp [cm/s]',
                        ylabel='FR',
                        xlims=[0, 81],
                        fontsize=12)
@@ -3416,58 +4953,95 @@ def plot_sp_fr(sp_bins, sp_fr_m, sp_fr_s=None, ax=None, **params):
 
     ax.plot(sp_bins, sp_fr_m, lw=plot_params['lw'], color=plot_params['color'])
 
+    max_val = np.nanmax(sp_fr_m)
     if sp_fr_s is not None:
-        ax.fill_between(sp_bins, sp_fr_m - sp_fr_s, sp_fr_m + sp_fr_s, alpha=plot_params['alpha'])
+        ax.fill_between(sp_bins, sp_fr_m - sp_fr_s, sp_fr_m + sp_fr_s, alpha=plot_params['alpha'],
+                        color=plot_params['color'], lw=0)
+        max_val = np.nanmax(sp_fr_m + sp_fr_s)
+    elif sp_ci is not None:
+        ax.fill_between(sp_bins, sp_ci[0], sp_ci[1], alpha=plot_params['alpha'], color=plot_params['color'], lw=0)
+        max_val = np.nanmax(sp_ci[1])
 
-    ax.set_xlabel(plot_params['xlabel'], fontsize=plot_params['fontsize'])
-    ax.set_ylabel(plot_params['ylabel'], fontsize=plot_params['fontsize'])
+    vmin = 0
+    vmax = max_val
+    yticks, yticklabels = format_numerical_ticks([0, vmax / 2, vmax])
+    vmax = yticks[2]
+
+    ylims = np.array((vmin - np.abs(vmin) * 0.1, vmax + np.abs(vmax) * 0.1))
+    ax.set_ylim(ylims)
+    ylim_range = ylims[1] - ylims[0]
+
+    yticks[1] = vmax / 2
+    ax.set_yticks(yticks)
+    yticklabels[1] = 'FR'
+    ax.set_yticklabels(yticklabels)
+
+    ax.tick_params(labelsize=plot_params['fontsize'], pad=0)
+    ax.set_xlabel(plot_params['xlabel'], fontsize=plot_params['fontsize'], labelpad=0)
+    ax.set_ylabel(plot_params['ylabel'], fontsize=plot_params['fontsize'], labelpad=0)
     return ax
 
 
-def plot_ang_fr(ang_bins, ang_fr_m, plot_mean_vec=False, ax=None, **params):
-    plot_params = dict(lw=3,
+def plot_ang_fr(ang_bins, ang_fr_m, plot_mean_vec=False, bin_weights=None, ax=None, **params):
+    plot_params = dict(lw=2,
+                       c_lw=1,
+                       dot_size=5,
                        color='b',
                        alpha=0.5,
                        fontsize=12,
-                       xtick_locations=np.arange(0, 2 * np.pi, np.pi / 4),
-                       xtick_labels=['E', '', '', '', 'W'],
+                       xticks=np.arange(0, 2 * np.pi, np.pi / 2),
+                       xtick_labels=['E', '', 'W', ''],
                        cmap='magma_r',
-                       cax_pos=[0.95, 0, 0.05, 0.2])
+                       cax_pos=[0.95, 0, 0.1, 0.3],
+                       c_label='FR',
+                       cbar_fontsize=9)
 
     plot_params.update(params)
     if ax is None:
-        f, ax = plt.subplots(projection='polar')
+        f, ax = plt.subplots(subplot_kw={'projection': 'polar'})
+    else:
+        f = ax.figure
 
     norm_ang_fr = ang_fr_m / ang_fr_m.max()
     colors = plt.cm.get_cmap(plot_params['cmap'])(norm_ang_fr)
 
-    ax.scatter(ang_bins, ang_fr_m, color=colors, zorder=2)
+    ax.scatter(ang_bins, ang_fr_m, s=plot_params['dot_size'], color=colors, zorder=2, )
     colorline(np.append(ang_bins, ang_bins[0]), np.append(ang_fr_m, ang_fr_m[0]),
-              colors=np.append(colors, [colors[0]], axis=0), ax=ax)
+              colors=np.append(colors, [colors[0]], axis=0), linewidth=plot_params['c_lw'], ax=ax)
 
     if plot_mean_vec:
-        vec = np.sum(ang_fr_m * np.exp(ang_bins * 1j))
+        if bin_weights is None:
+            w = ang_fr_m
+        else:
+            w = bin_weights * ang_fr_m
+
+        vec = np.sum(w * np.exp(ang_bins * 1j))
         mean_vec_length = np.abs(vec)
         mean_vec_ang = np.angle(vec)
 
         ax.plot([0, mean_vec_ang], [0, mean_vec_length], color=plot_params['color'], lw=plot_params['lw'],
-                solid_capstyle='round')
+                solid_capstyle='round', zorder=1)
 
-    ax.set_xticks(plot_params['xtick_locations'])
+    ax.set_xticks(plot_params['xticks'])
     ax.set_xticklabels(plot_params['xtick_labels'], fontsize=plot_params['fontsize'])
 
     ax.set_yticks([])
     ax.set_ylim([0, np.max(ang_fr_m) * 1.1])
+    # ax.set_ylim([0, np.max(mean_vec_length) * 1.1])
 
     # colorbar to indicate magnitude
-    cax_pos = plot_params['cax_pos']
-    pos = ax.get_position()
-    cax = ax.figure.add_axes(
-        [pos.x0 + pos.width * cax_pos[0], pos.y0 + cax_pos[1], pos.width * cax_pos[2], pos.height * cax_pos[3]])
-    get_color_bar_axis(ax, ang_fr_m, color_map=plot_params['cmap'],
-                       **dict(tick_fontsize=plot_params['fontsize'],
-                              label_fontsize=plot_params['fontsize'],
-                              label='FR'))
+
+    cax_pos_rel = plot_params['cax_pos']
+    ax_pos = ax.get_position()
+    cax_pos_abs = [ax_pos.x0 + ax_pos.width * cax_pos_rel[0],
+                   ax_pos.y0 + ax_pos.height * cax_pos_rel[1],
+                   ax_pos.width * cax_pos_rel[2],
+                   ax_pos.height * cax_pos_rel[3]]
+
+    cax = add_colorbar(f, cax_pos_abs, cmap=plot_params['cmap'],
+                       ticks=[0, 1], ticklabels=np.around([ang_fr_m.min(), ang_fr_m.max()], 0).astype(int),
+                       ticklabel_fontsize=plot_params['cbar_fontsize'],
+                       label=plot_params['c_label'], label_fontsize=plot_params['cbar_fontsize'])
 
     return ax, cax
 
@@ -3475,10 +5049,10 @@ def plot_ang_fr(ang_bins, ang_fr_m, plot_mean_vec=False, ax=None, **params):
 def plot_xy_spks(x, y, spikes, ax=None, **params):
     plot_params = dict(trace_color='0.2',
                        trace_alpha='0.3',
-                       trace_lw = 1,
+                       trace_lw=1,
                        spike_color='r',
                        spike_alpha=0.5,
-                       spike_scale=3,)
+                       spike_scale=3, )
 
     plot_params.update(params)
 
@@ -3487,7 +5061,7 @@ def plot_xy_spks(x, y, spikes, ax=None, **params):
 
     ax.plot(x, y, linewidth=plot_params['trace_lw'],
             color=plot_params['trace_color'], alpha=plot_params['trace_alpha'])
-    ax.scatter(x, y, s=spikes*plot_params['spike_scale'],
+    ax.scatter(x, y, s=spikes * plot_params['spike_scale'],
                color=plot_params['spike_color'], alpha=plot_params['spike_alpha'])
     ax.set_aspect('equal', adjustable='box')
     ax.set_axis_off()
@@ -3509,28 +5083,44 @@ def plot_firing_rate_map(fr_map, cmap='viridis', min_val=0, max_val=None, ax=Non
     """
 
     plot_params = dict(fontsize=12,
-                       cax_pos=[0.95, 0, 0.05, 0.2])
+                       cax_pos=[0.95, 0, 0.05, 0.2],
+                       cbar_fontsize=9)
 
     plot_params.update(params)
 
     if ax is None:
         f, ax = plt.subplots()
+    else:
+        f = ax.figure
 
     if max_val is None:
         max_val = fr_map.max()
 
     im = sns.heatmap(fr_map, cmap=cmap, vmin=min_val, vmax=max_val, ax=ax,
-                     square=True, cbar=False, xticklabels=[], yticklabels=[])
+                     square=True, cbar=False, xticklabels=[], yticklabels=[], rasterized=True)
+    ax.invert_yaxis()
 
     if show_colorbar:
-        cax_pos = plot_params['cax_pos']
-        pos = ax.get_position()
-        cax = ax.figure.add_axes(
-            [pos.x0 + pos.width * cax_pos[0], pos.y0 + cax_pos[1], pos.width * cax_pos[2], pos.height * cax_pos[3]])
-        get_color_bar_axis(ax, fr_map.flatten(), color_map=cmap,
-                           **dict(tick_fontsize=plot_params['fontsize'],
-                                  label_fontsize=plot_params['fontsize'],
-                                  label='FR'))
+        cax_pos_rel = plot_params['cax_pos']
+        ax_pos = ax.get_position()
+        cax_pos_abs = [ax_pos.x0 + ax_pos.width * cax_pos_rel[0],
+                       ax_pos.y0 + ax_pos.height * cax_pos_rel[1],
+                       ax_pos.width * cax_pos_rel[2],
+                       ax_pos.height * cax_pos_rel[3]]
+
+        cax = add_colorbar(f, cax_pos_abs, cmap=cmap,
+                           ticks=[0, 1], ticklabels=np.around([min_val, max_val], 1),
+                           ticklabel_fontsize=plot_params['cbar_fontsize'],
+                           label=plot_params['c_label'], label_fontsize=plot_params['cbar_fontsize'])
+
+        # cax_pos = plot_params['cax_pos']
+        # pos = ax.get_position()
+        # cax = ax.figure.add_axes(
+        #     [pos.x0 + pos.width * cax_pos[0], pos.y0 + cax_pos[1], pos.width * cax_pos[2], pos.height * cax_pos[3]])
+        # get_color_bar_axis(ax, fr_map.flatten(), color_map=cmap,
+        #                    **dict(tick_fontsize=plot_params['fontsize'],
+        #                           label_fontsize=plot_params['fontsize'],
+        #                           label='FR'))
     else:
         cax = None
 
@@ -3686,6 +5276,32 @@ def get_reg_ci(x, y, reg_type='siegel', nboot=100, alpha=0.05, eval_x=None):
     return y_bot, y_top, xx
 
 
+def add_colorbar(fig, pos_in_fig, cmap, ticks=None, ticklabels=None, ticklabel_fontsize=7, label=None, label_fontsize=8,
+                 aspect=3):
+    # colormap
+    cmap_obj = mpl.cm.get_cmap(cmap)
+    norm = mpl.colors.Normalize(vmin=0, vmax=1)
+
+    cax = fig.add_axes(pos_in_fig)
+    plt.colorbar(mpl.cm.ScalarMappable(norm=norm, cmap=cmap_obj), cax=cax)
+    cax.set_aspect(aspect)
+    cax.set_frame_on(False)
+
+    if ticks is None:
+        cax.yaxis.set_ticks([])
+    else:
+        cax.tick_params(labelsize=ticklabel_fontsize, pad=0.5, tickdir='out', length=0.5, width=0.3)
+        cax.yaxis.set_ticks(ticks)
+        cax.set_yticklabels(ticklabels)
+
+    if label is not None:
+        cax.set_ylabel(label, fontsize=label_fontsize, labelpad=0)
+        if ticks is not None:
+            cax.yaxis.set_label_position('left')
+
+    return cax
+
+
 def get_color_bar_axis(cax, color_array, color_map='cividis', **args):
     params = dict(tick_fontsize=7,
                   label_fontsize=7,
@@ -3762,6 +5378,98 @@ def make_segments(x, y):
     points = np.array([x, y]).T.reshape(-1, 1, 2)
     segments = np.concatenate([points[:-1], points[1:]], axis=1)
     return segments
+
+
+def plot_2d_cluster_ellipsoids(clusters_loc, clusters_cov, data=None, std_levels=[1, 2], edgecolor='0.75', alpha=0.5,
+                               linewidths=None,
+                               labels=None, ax=None, legend=False, cl_names=None, cl_colors=None):
+    n_levels = len(std_levels)
+    if isinstance(clusters_loc, list):
+        n_clusters = len(clusters_loc)
+    elif isinstance(clusters_loc, np.ndarray):  # not supper robust here
+        n_clusters = clusters_loc.shape[0]
+    elif isinstance(clusters_loc, dict):
+        n_clusters = len(clusters_loc)
+    else:
+        print("Invalid input")
+        return
+
+    if linewidths is None:
+        linewidths = [1] * n_levels
+
+    cluster_ellipsoids = np.zeros((n_clusters, n_levels), dtype=object)
+
+    for cl in range(n_clusters):
+        for jj, level in enumerate(std_levels):
+            cluster_ellipsoids[cl, jj] = \
+                cmf.get_2d_confidence_ellipse(mu=clusters_loc[cl], cov=clusters_cov[cl], n_std=level)
+
+    if cl_colors is None:
+        cl_colors = mpl.cm.get_cmap("tab10")
+    elif isinstance(cl_colors, str):
+        cl_colors = [cl_colors]
+
+    n_colors = len(cl_colors)
+
+    if ax is None:
+        f, ax = plt.subplots()
+
+    label_patch = []
+    if data is not None:
+        ax.scatter(data[:, 0], data[:, 1], c=np.array(cl_colors)[labels], alpha=0.2)
+        facecolors = ['grey'] * n_clusters
+    else:
+        facecolors = cl_colors
+
+    if cl_names is None:
+        cl_names = ['cl' + str(cl) for cl in range(n_clusters)]
+
+    for cl in range(n_clusters):
+        for jj, level in enumerate(std_levels):
+            patch = PolygonPatch(cluster_ellipsoids[cl, jj], fc=facecolors[np.mod(cl, n_colors)], ec=edgecolor,
+                                 alpha=alpha, linewidth=linewidths[jj])
+            ax.add_patch(patch)
+
+        label_patch.append(mpatches.Patch(color=facecolors[np.mod(cl, n_colors)], label=cl_names[cl], alpha=0.7))
+
+    if legend:
+        ax.legend(handles=label_patch, frameon=False, loc=(1.05, 0))
+
+    _ = ax.axis('scaled')
+
+    return ax
+
+
+def format_numerical_ticks(ticks: list, n_decimals=1):
+
+    ticks2 = copy.deepcopy(ticks)
+    ticklabels = np.zeros(len(ticks), dtype=object)
+
+    for ii, t in enumerate(ticks):
+        if isinstance(t, str):
+            continue
+
+        if t==0:
+            ticklabels[ii] ='0'
+            continue
+
+        t_str = f"{t}"
+        t_split = t_str.split('.')
+
+        if len(t_split) == 1:
+            ticks2[ii] = int(t)
+            ticklabels[ii] = f"{ticks2[ii]}"
+        else:
+            if len(t_split[0]) > 1:
+                ticklabels[ii] = t_split[0]
+                ticks2[ii] = int(t)
+            else:
+                if t >= 0:
+                    ticks2[ii] = np.ceil(t * 10 ** n_decimals) / 10 ** n_decimals  # np.around(t, n_decimals)
+                else:
+                    ticks2[ii] = np.floor(t * 10 ** n_decimals) / 10 ** n_decimals
+                ticklabels[ii] = f"{ticks2[ii]}"
+    return ticks2, ticklabels
 # def plotCounts(counts, names,ax):
 #     nX = len(names)
 #     ab=sns.barplot(x=np.arange(nX),y=counts,ax=ax, ci=[],facecolor=(0.4, 0.6, 0.7, 1))

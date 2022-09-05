@@ -1,4 +1,3 @@
-
 import numpy as np
 import pandas as pd
 from scipy import ndimage, stats, signal
@@ -14,6 +13,7 @@ from joblib import delayed, Parallel
 from pathlib import Path
 import pickle
 import warnings
+from functools import wraps
 
 
 # TODO: 1. move classes out to open field functions
@@ -182,8 +182,8 @@ def spatial_information(pos_prob, fr_map):
     :return:
     spatial information
     """
-    nfr = fr_map/np.nansum(fr_map) # normalized map
-    info_mat = nfr*np.log2(nfr/pos_prob) # information matrix
+    nfr = fr_map / np.nansum(fr_map)  # normalized map
+    info_mat = nfr * np.log2(nfr / pos_prob)  # information matrix
     return np.nansum(info_mat)
 
 
@@ -701,8 +701,9 @@ def get_position_encoding_features(x, y, x_bin_edges, y_bin_edges, feat_type='pc
         feature_design_matrix = np.load(str(feat_mat_fn))
     else:
         # generate & save locally feature mat
-        feature_design_matrix = generate_position_design_matrix(n_x_bins, n_y_bins, **params)
-        np.save(str(feat_mat_fn), feature_design_matrix)
+        if feat_type != 'sparse':
+            feature_design_matrix = generate_position_design_matrix(n_x_bins, n_y_bins, **params)
+            np.save(str(feat_mat_fn), feature_design_matrix)
 
     if feat_type in ['pca', 'nmf']:
         # get feature transformation object, if it exists for the environment
@@ -1087,7 +1088,7 @@ def get_speed_encoding_features(speed, speed_bin_edges):
     return sp_design_matrix, sp_bin_idx, valid_samps
 
 
-def get_binned_sp_fr(sp, fr, sp_bin_size=3, min_speed=0, max_speed=100, sp_bins=None):
+def get_binned_sp_fr(sp, fr, sp_bin_size=2.5, min_speed=0, max_speed=100, sp_bins=None):
     """
     Obtains the speed binned firing rates.
     :param sp: speed array n_samps, floats [cm/s]
@@ -1206,7 +1207,8 @@ def angle_score_traditional(theta, fr, speed=None, min_speed=None, max_speed=Non
     return scores
 
 
-def get_binned_angle_fr(theta, fr, speed=None, min_speed=None, max_speed=None, ang_bin_step=np.pi/36, angle_bins=None):
+def get_binned_angle_fr(theta, fr, speed=None, min_speed=None, max_speed=None, ang_bin_step=np.pi / 18,
+                        angle_bins=None):
     """
     computes angle by firing rate with binning
     :param theta: angle vector [radians]
@@ -2631,11 +2633,13 @@ def get_spatial_map_function(data_type, **params):
                 raise ValueError(f"Missing {p} Param")
 
     if data_type == 'spikes':
+        @wraps(spikes_2_rate_map)
         def spatial_map_function(_spikes, _x, _y):
             out_map = spikes_2_rate_map(_spikes, _x, _y, **params)
             return out_map
 
     elif data_type == 'fr':
+        @wraps(firing_rate_2_rate_map)
         def spatial_map_function(_fr, _x, _y):
             out_map = firing_rate_2_rate_map(_fr, _x, _y, **params)
             return out_map
@@ -2689,11 +2693,19 @@ def var_binned_fr_info(fr, var, var_bins):
     out_df = pd.DataFrame(index=range(n_bins), columns=['bin_center', 'mean', 'std', 'n', 'median', 'ci_95', 'ci_5'])
     for ii, bin_idx in enumerate(range(n_bins)):
         bin_mask = np.logical_and(var >= var_bins[bin_idx], var < var_bins[bin_idx + 1])
-        out_df.loc[ii, 'var'] = (var_bins[bin_idx + 1]+var_bins[bin_idx])/2
-        out_df.loc[ii, 'mean'] = fr[bin_mask].mean()
-        out_df.loc[ii, 'std'] = fr[bin_mask].std()
-        out_df.loc[ii, 'n'] = fr[bin_mask].size
-        out_df.loc[ii, 'median'] = np.median(fr[bin_mask])
-        out_df.loc[ii, 'ci_95'] = np.percentile(fr[bin_mask], 95)
-        out_df.loc[ii, 'ci_5'] = np.percentile(fr[bin_mask], 5)
+        out_df.loc[ii, 'bin_center'] = (var_bins[bin_idx + 1] + var_bins[bin_idx]) / 2
+
+        bin_len = bin_mask.sum()
+        bin_fr = fr[bin_mask]
+        out_df.loc[ii, 'n'] = bin_mask.sum()
+
+        if bin_len > 0:
+            out_df.loc[ii, 'mean'] = bin_fr.mean()
+        if bin_len > 1:
+            out_df.loc[ii, 'std'] = bin_fr.std()
+            out_df.loc[ii, 'median'] = np.median(bin_fr)
+            out_df.loc[ii, 'ci_95'] = np.percentile(bin_fr, 95)
+            out_df.loc[ii, 'ci_5'] = np.percentile(bin_fr, 5)
+
+    out_df = out_df.astype(float)
     return out_df

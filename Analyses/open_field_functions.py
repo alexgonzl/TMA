@@ -4,12 +4,17 @@ import copy
 
 import numpy as np
 import pandas as pd
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import seaborn as sns
+
 import scipy.signal as signal
 from scipy.signal import filtfilt
 from types import SimpleNamespace
 
 from sklearn import linear_model as lm
 import Analyses.spatial_functions as spatial_funcs
+import Analyses.plot_functions as pf
 import Utils.filter_functions as filter_funcs
 import Utils.robust_stats as rs
 
@@ -441,7 +446,8 @@ class SpatialEncodingModelCrossVal:
 
 class AllSpatialEncodingModels:
     def __init__(self, x, y, speed, ha, hd, neural_data, data_type='fr', bias_term=True, n_xval=5,
-                 secs_per_split=20.0, n_jobs=-1, random_seed=42, norm_resp='None', **params):
+                 secs_per_split=20.0, smooth_data=True, smooth_secs=0.5, n_jobs=-1,
+                 random_seed=42, norm_resp='None', norm_agg_features=None, models='all', **params):
         """
         :param x: array length [n_samps], x position of subject
         :param y: array length [n_samps], y position of subject
@@ -468,6 +474,7 @@ class AllSpatialEncodingModels:
 
         self.data_type = data_type
         self.bias_term = bias_term
+        self.norm_agg_features = norm_agg_features
         self.n_xval = n_xval
         self.n_jobs = n_jobs
 
@@ -476,11 +483,27 @@ class AllSpatialEncodingModels:
         # add extra dimension if neural data is a 1d of samples (1 unit data)
         if neural_data.ndim == 1:
             neural_data = neural_data[np.newaxis,]
-
         self.neural_data = neural_data
+
+        if smooth_data:
+            coefs = signal.get_window('hann', int(np.round(smooth_secs / params['time_step'])), fftbins=False)
+            sos_coefs = signal.tf2sos(coefs / coefs.sum(), 1)
+
+            for sigs in ['x', 'y', 'hd', 'ha', 'speed', 'neural_data']:
+                s = getattr(self, sigs)
+                if sigs == 'neural_data':
+                    s = signal.sosfiltfilt(sos_coefs, s, 1)
+                elif sigs in ['hd', 'ha']:
+                    pass
+                    # s = filter_funcs.angle_filtfilt(s,coefs,radians=True)
+                else:
+                    s = signal.sosfiltfilt(sos_coefs, s)
+                setattr(self, sigs, s)
+
         self.n_units = neural_data.shape[0]
         self.n_samples = len(x)
 
+        self.time = np.arange(self.n_samples) * params['time_step']
         self.norm_resp = norm_resp
 
         # get parameters
@@ -498,6 +521,7 @@ class AllSpatialEncodingModels:
         self.params['occ_time_thr'] = 0.02
 
         self.spatial_map_function = spatial_funcs.get_spatial_map_function(self.data_type, **self.params)
+        # global spatial_map_function ## this is for allowing the object to pickle.
 
         # get time series cross validation splits
         self.secs_per_split = secs_per_split
@@ -516,8 +540,15 @@ class AllSpatialEncodingModels:
 
         self.valid_sp_samps = np.ones(self.n_samples, dtype=bool)
 
-        self.models = ['speed', 'hd', 'ha', 'border', 'grid', 'pos']
+        self._all_models = ['speed', 'hd', 'ha', 'border', 'grid', 'pos']
         self.model_codes = {'speed': 's', 'hd': 'd', 'ha': 'a', 'border': 'b', 'grid': 'g', 'pos': 'p'}
+        self.model_codes_r = {v: k for k, v in self.model_codes.items()}
+
+        if models == 'all':
+            self.models = self._all_models
+        else:
+            self.models = [self.model_codes_r[m] for m in models]
+
         self.speed_model = None
         self.pos_model = None
         self.ha_model = None
@@ -526,10 +557,15 @@ class AllSpatialEncodingModels:
         self.grid_model = None
 
         # aggregated models
-        self.agg_codes_submodels_dict = {
-            'all': ['speed', 'hd', 'border', 'grid', 'pos'],
-            'sdp': ['speed', 'hd', 'pos'],
-            'sdbg': ['speed', 'hd', 'border', 'grid']}
+        self.all_agg_models = ['all', 'sdp', 'sdbg']
+
+        if models != 'all':
+            self.agg_codes_submodels_dict = {models: self.models}
+        else:
+            self.agg_codes_submodels_dict = {
+                'all': [self.model_codes_r[m] for m in 'sdbgp'],
+                'sdp': [self.model_codes_r[m] for m in 'sdp'],
+                'sdbg': [self.model_codes_r[m] for m in 'sdbg']}
 
         self.agg_codes = list(self.agg_codes_submodels_dict.keys())
         self.agg_model_names = ['agg_' + agg_code for agg_code in self.agg_codes]
@@ -843,9 +879,17 @@ class AllSpatialEncodingModels:
                     if model in ['speed', 'hd', 'ha']:
                         X_train[within_fold_train_sp_ids_bool, mm] = model_resp[model][0][unit]
                         X_test[within_fold_test_sp_ids_bool, mm] = model_resp[model][1][unit]
+
                     else:
                         X_train[:, mm] = model_resp[model][0][unit]
                         X_test[:, mm] = model_resp[model][1][unit]
+
+                    if self.norm_agg_features == 'zscore':
+                        m = np.nanmean(X_train[within_fold_train_sp_ids_bool, mm])
+                        s = np.nanstd(X_train[within_fold_train_sp_ids_bool, mm])
+                        X_train = (X_train - m) / s
+                        X_test = (X_test - m) / s
+
                 X_train[np.isnan(X_train)] = 0
                 X_test[np.isnan(X_test)] = 0
 
@@ -853,9 +897,9 @@ class AllSpatialEncodingModels:
                 features[fold, unit, 1] = X_test
 
         if self.data_type == 'spikes':
-            model_function = lm.PoissonRegressor(alpha=0, fit_intercept=False)
+            model_function = lm.PoissonRegressor(alpha=0, fit_intercept=self.bias_term)
         else:
-            model_function = lm.LinearRegression(fit_intercept=False)
+            model_function = lm.LinearRegression(fit_intercept=self.bias_term)
 
         model_obj = SpatialEncodingModelCrossVal(features, response, self.x, self.y,
                                                  crossval_samp_ids=self.crossval_samp_ids, n_xval=self.n_xval,
@@ -1000,7 +1044,114 @@ class AllSpatialEncodingModels:
                     coefs[fold, unit] = model_obj.coef_
         return coefs
 
-def cluster_
+    def reconstruct_model_prediction(self, unit, model):
+        n_samps = self.n_samples
+        samps_array = np.arange(n_samps)
+        cross_val_array = self.crossval_samp_ids
+
+        if model in ['speed', 'hd']:
+            valid_samps = np.where(self.valid_sp_samps)[0]
+        else:
+            valid_samps = samps_array
+
+        resp = np.zeros(n_samps) * np.nan
+        for fold in range(self.n_xval):
+            fold_resp = getattr(self, f"{model}_model").predict_model_fold(fold)[1][unit]
+            idx = np.where(cross_val_array == fold)
+            idx = np.intersect1d(idx, valid_samps)
+            resp[idx] = fold_resp
+        return resp
+
+    def get_models_predictions(self, unit, fold=None):
+        samples = np.arange(self.n_samples)
+        if fold is not None:
+            fold_test_ids_bool = self.crossval_samp_ids == fold
+            samples = samples[fold_test_ids_bool]
+
+        models = ['o', 's', 'd', 'p', 'a']
+        model_dict_map = dict(s='speed', d='hd', p='pos', a='agg_sdp')
+
+        # responses
+        resp = {}
+        resp['o'] = self.neural_data[unit][samples]
+        for m in models[1:]:
+            resp[m] = self.reconstruct_model_prediction(unit, model_dict_map[m])[samples]
+        return resp
+
+    def get_models_sm_predictions(self, resps, fold=None, select_samps=None):
+
+        if fold is not None:
+            select_samps = self.crossval_samp_ids == fold
+        elif select_samps is None:
+            select_samps = np.arange(self.n_samples)
+
+        # spatial maps
+        sm = {}
+        for m in resps.keys():
+            r = resps[m][select_samps]
+            r /= np.nanmax(r)
+            r[np.isnan(r)] = 0
+
+            x_win = self.x[select_samps]
+            y_win = self.y[select_samps]
+
+            # sm[m] = sem.spatial_map_function(resp[m],x_win,y_win)
+            sm[m] = spatial_funcs.firing_rate_2_rate_map(r, x_win, y_win,
+                                                         self.params['x_bin_edges_'], self.params['y_bin_edges_'],
+                                                         occ_num_thr=1, spatial_window_size=3, apply_median_filt=False)
+        return sm
+
+    def get_tw_resps(self, unit, fold, time_window=None):
+        samples = np.arange(self.n_samples)
+        fold_test_ids_bool = self.crossval_samp_ids == fold
+        sp_valid_ids_bool = self.valid_sp_samps
+
+        fold_test_samples = samples[fold_test_ids_bool]
+        if time_window is None:
+            time_window = np.arange(len(fold_test_samples))
+            fold_test_window_samples = fold_test_samples
+        else:
+            fold_test_window_samples = fold_test_samples[time_window]
+
+        fold_test_samples_sp = samples[fold_test_ids_bool & sp_valid_ids_bool]
+        fold_test_window_samples_sp = np.intersect1d(fold_test_samples_sp, fold_test_window_samples)
+
+        within_fold_samples = np.arange(len(fold_test_samples))
+        within_fold_window_samples = time_window
+
+        within_fold_samples_sp = np.arange(len(fold_test_samples_sp))
+        within_fold_window_samples_sp = time_window[np.in1d(fold_test_window_samples, fold_test_window_samples_sp)]
+
+        models = ['o', 's', 'd', 'p', 'a']
+
+        # responses
+        resp = {}
+        resp['o'] = self.pos_model.get_response_fold(fold)[1][unit, within_fold_window_samples]
+
+        resp['s'] = self.speed_model.predict_model_fold(fold)[1][unit, within_fold_window_samples_sp]
+        resp['d'] = self.hd_model.predict_model_fold(fold)[1][unit, within_fold_window_samples_sp]
+
+        resp['p'] = self.pos_model.predict_model_fold(fold)[1][unit, within_fold_window_samples]
+        resp['a'] = self.agg_sdp_model.predict_model_fold(fold)[1][unit, within_fold_window_samples]
+
+        # spatial maps
+        sm = {}
+        for m in models:
+            resp[m] = resp[m] / resp[m].max()
+            if m in ['s', 'd']:
+                x_win = self.x[fold_test_window_samples_sp]
+                y_win = self.y[fold_test_window_samples_sp]
+            else:
+                x_win = self.x[fold_test_window_samples]
+                y_win = self.y[fold_test_window_samples]
+
+            # sm[m] = sem.spatial_map_function(resp[m],x_win,y_win)
+            sm[m] = spatial_funcs.firing_rate_2_rate_map(resp[m], x_win, y_win,
+                                                         self.params['x_bin_edges_'], self.params['y_bin_edges_'],
+                                                         occ_num_thr=1, spatial_window_size=3, apply_median_filt=False)
+
+        return resp, sm
+
 
 def get_session_track_data(session_info):
     """
@@ -1242,7 +1393,8 @@ def get_session_fr_maps_cont(session_info):
     return fr_maps
 
 
-def get_session_encoding_models(session_info, models=None):
+def get_session_encoding_models(session_info, models=None, norm_resp='None', n_xval=5,
+                                secs_per_split=20.0, **in_params):
     """
     Loops and computes traditional scores open-field scores for each unit, these include:
         -> speed score: correlation between firing rate and speed
@@ -1257,23 +1409,29 @@ def get_session_encoding_models(session_info, models=None):
     fr = session_info.get_fr()
 
     of_dat = SimpleNamespace(**session_info.get_track_data())
-    task_params = session_info.task_params
+    params = session_info.task_params
+    params.update(in_params)
 
     sem = AllSpatialEncodingModels(x=of_dat.x, y=of_dat.y, speed=of_dat.sp, ha=of_dat.ha,
-                                   hd=of_dat.hd, neural_data=fr, n_jobs=10, **task_params)
-    if models is None:
-        sem.get_models()
-    else:
-        if isinstance(models, str):
-            models = [models]
-        for model in models:
-            model_method = f"get_{model}_model"
-            if hasattr(sem, model_method):
-                getattr(sem, model_method)()
-            else:
-                print(f"Encoding model for {model} does not exists.")
+                                   hd=of_dat.hd, neural_data=fr, n_jobs=10, models=models, norm_resp=norm_resp,
+                                   secs_per_split=secs_per_split, **params)
 
+    sem.get_models()
     sem.get_scores()
+    # if models is None:
+    #     sem.get_models()
+    # else:
+
+    # if isinstance(models, str):
+    #     models = [models]
+    # for model in models:
+    #     model_method = f"get_{model}_model"
+    #     if hasattr(sem, model_method):
+    #         getattr(sem, model_method)()
+    #     else:
+    #         print(f"Encoding model for {model} does not exists.")
+
+    # sem.get_scores()
     return sem
 
 
@@ -1410,4 +1568,3 @@ def default_OF_params():
     params['height'] = params['n_y_bins']
 
     return params
-

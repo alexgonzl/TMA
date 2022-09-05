@@ -9,10 +9,8 @@ from sklearn.covariance import MinCovDet
 
 import matplotlib.pyplot as plt
 import seaborn as sns
-
-import matplotlib.patches as mpatches
 from shapely.geometry import Polygon
-from descartes.patch import PolygonPatch
+
 from itertools import combinations
 
 import warnings
@@ -432,63 +430,6 @@ def get_clusters_all_dists(clusters_loc, clusters_cov, data=None, labels=None,
             dists_mats[metric] = 0.5 * (dists_mats[metric] + dists_mats[metric].T)
 
     return dists_mats
-
-
-def plot_2d_cluster_ellipsoids(clusters_loc, clusters_cov, data=None, std_levels=[1, 2],
-                               labels=None, ax=None, legend=False, cl_names=None, cl_colors=None):
-
-    n_levels = len(std_levels)
-    if isinstance(clusters_loc, list):
-        n_clusters = len(clusters_loc)
-    elif isinstance(clusters_loc, np.ndarray):  # not supper robust here
-        n_clusters = clusters_loc.shape[0]
-    elif isinstance(clusters_loc, dict):
-        n_clusters = len(clusters_loc)
-    else:
-        print("Invalid input")
-        return
-
-    cluster_ellipsoids = np.zeros((n_clusters, n_levels), dtype=object)
-
-    for cl in range(n_clusters):
-        for jj, level in enumerate(std_levels):
-            cluster_ellipsoids[cl, jj] = \
-                get_2d_confidence_ellipse(mu=clusters_loc[cl], cov=clusters_cov[cl], n_std=level)
-
-    if cl_colors is None:
-        cl_colors = colors
-    elif isinstance(cl_colors, str):
-        cl_colors = [cl_colors]
-
-    n_colors = len(cl_colors)
-
-    if ax is None:
-        f, ax = plt.subplots()
-
-    label_patch = []
-    if data is not None:
-        ax.scatter(data[:, 0], data[:, 1], c=np.array(colors)[labels], alpha=0.2)
-        facecolors = ['grey'] * n_clusters
-    else:
-        facecolors = cl_colors
-
-    if cl_names is None:
-        cl_names = ['cl' + str(cl) for cl in range(n_clusters)]
-
-    for cl in range(n_clusters):
-        for jj, level in enumerate(std_levels):
-            patch = PolygonPatch(cluster_ellipsoids[cl, jj], facecolor=facecolors[np.mod(cl, n_colors)], alpha=0.3)
-            ax.add_patch(patch)
-
-        label_patch.append(mpatches.Patch(color=facecolors[np.mod(cl, n_colors)], label=cl_names[cl], alpha=0.7))
-
-    if legend:
-        ax.legend(handles=label_patch, frameon=False, loc=(1.05, 0))
-
-    _ = ax.axis('scaled')
-
-    return ax
-
 
 def find_all_cluster_matches(distance_mat, thr):
     labels = distance_mat.index.values
