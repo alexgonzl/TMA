@@ -475,6 +475,27 @@ def pearson(x, y):
     return r
 
 
+def circ_mean(x):
+    """
+    circular mean
+    :param x: array of angles in radians
+    :return:
+    """
+    return np.angle(np.nansum(np.exp(x*1j)))
+
+def circ_corr(x,y):
+    """
+    circular correlation
+    :param x:
+    :param y:
+    :return:
+    """
+    sx = np.sin(x-circ_mean(x))
+    sy = np.sin(y-circ_mean(y))
+    r = np.nansum(sx*sy) / np.sqrt( np.nansum(sx**2) * np.nansum(sy**2))
+    return r
+
+
 def circ_corrcl(x, y):
     """Correlation coefficient between one circular and one linear variable
     random variables.

@@ -211,6 +211,7 @@ class SummaryInfo:
             matched_of_cell_clusters=results_path / "matched_of_cell_clusters.csv",
             matched_of_cell_cluster_error_table=results_path / "matched_of_cell_cluster_error_table.csv",
             combined_scores_table=results_path / "combined_scores_table.csv",
+            matched_hd_scores_table=results_path / "matched_hd_scores_table.csv",
             of_metric_scores=results_path / 'of_metric_scores_summary_table.csv',
             of_model_scores=results_path / 'of_model_scores_summary_table_agg.csv',
             zone_rates_comps=results_path / 'zone_rates_comps_summary_table.csv',
@@ -332,7 +333,7 @@ class SummaryInfo:
                 subject_info = SubjectInfo(subject)
                 for session in subject_info.sessions:
                     if session in valid_sessions:
-                        session_info = SubjectSessionInfo(subject, session)
+                        session_info = self.get_session(session)
                         n_session_units = session_info.n_units
                         if n_session_units > 0:
                             try:
@@ -347,7 +348,7 @@ class SummaryInfo:
                                                                       'cl_name'])
 
                                 session_table['session'] = session
-                                session_table['subject'] = session_info.subject
+                                session_table['subject'] = subject
                                 session_table['session_unit_id'] = np.arange(n_session_units)
 
                                 session_table['unit_id'] = np.arange(n_session_units) + unit_count
@@ -395,7 +396,7 @@ class SummaryInfo:
                       reward_blank=False,
                       not_inzone_blank=True,
                       valid_transitions_blank=True,
-                      sp_blank=False,
+                      speed_blank=False,
                       trial_end='tE_2')
 
         params.update(remap_params)
@@ -476,7 +477,7 @@ class SummaryInfo:
                       reward_blank=False,
                       not_inzone_blank=True,
                       valid_transitions_blank=True,
-                      sp_blank=False,
+                      speed_blank=False,
                       trial_end='tE_2')
 
         params.update(remap_params)
@@ -1406,7 +1407,13 @@ class SummaryInfo:
 
         return cluster_table
 
-    def get_hd_tm_scores_matched_clusters_data(self):
+    def get_hd_tm_scores_matched_clusters_data(self, overwrite=False):
+
+        fn = self.paths['matched_hd_scores_table']
+        if fn.exists() and not overwrite:
+            out_table = pd.read_csv(fn, index_col=0)
+            return out_table
+
         cluster_table = self.get_matched_of_cell_clusters()
         match_table = self.get_unit_match_table()
 
@@ -1443,6 +1450,9 @@ class SummaryInfo:
             out_table.loc[units_table_idx, ['of_hd_ang', 'of_hd_score']] = session_metric_scores.loc[
                 session_unit_ids, ['hd_ang', 'hd_score']].values
 
+        out_table['of_hd_score'] = out_table['of_hd_score'].astype(float)
+        out_table['of_hd_ang'] = np.angle(np.exp(out_table['of_hd_ang'].astype(float) * 1j))
+
         # TM scores
         segment_scores = self.get_segment_rate_comps()
         remap_scores = self.get_zone_rates_remap()
@@ -1464,6 +1474,37 @@ class SummaryInfo:
                 out_table.loc[ii, ['tm_remap_rw']] = \
                     remap_scores.loc[unit_remap_idx, 'Co_bi-Inco_bi-Even_bi-Odd_bi-corr_zm'].values[0]
 
+        # TM segment condition head-direction analyses
+        tm_conds = ['All', 'CR', 'CL', 'Co', 'Inco']
+        table_cols = [f"tm_{c}" for c in tm_conds]
+
+        out_table[table_cols] = np.nan  # np.zeros((n_matches, len(table_cols)), dtype=complex)
+        out_table['tm_xsamp'] = np.nan
+        for se in unique_TM_sessions:
+            session_unit_ids = match_table.loc[match_table.session_T3 == se, 'session_cl_id_T3']
+            units_table_idx = session_unit_ids.index
+            try:
+                si = self.get_session(se)
+                si.get_trial_analyses(speed_blank=True)
+
+                fr = si.ta.fr[session_unit_ids]
+                v = np.zeros(fr.shape, dtype=complex)
+                for i in range(v.shape[0]):
+                    v[i] = fr[i] * np.exp(si.ta.track_data['ha'] * 1j)
+                out_table.loc[units_table_idx, 'tm_xsamp'] = np.nansum(v, axis=1) / np.nansum(fr, axis=1)
+
+                mr = si.get_bigseg_cond_rates(speed_blank=True)
+                for table_col, cond in zip(table_cols, tm_conds):
+                    a = tmf.tm_hdt_cond(mr.loc[session_unit_ids], cond)
+                    out_table.loc[units_table_idx, table_col] = a['R'].astype(complex).values
+            except:
+                # print(se)
+                # traceback.print_exc(file=sys.stdout)
+                # return
+                pass
+
+        out_table[table_cols] = out_table[table_cols].astype(complex)
+        out_table.to_csv(fn)
         return out_table
 
     def plot(self, fig_id=1, save=False, dpi=1000, root_dir=None, fig_format='jpg'):
@@ -1486,6 +1527,16 @@ class SummaryInfo:
                     f.savefig(paths['figures'] / fn, dpi=dpi, bbox_inches='tight')
         return f
 
+    def print_paper_stats(self, which):
+
+        import Analyses.paper_stats as ps
+        ps = reload(ps)
+
+        lmm_stats = ps.LMM_Stats(self)
+        if which == 'seg_rates':
+            return lmm_stats.segment_rates()
+        elif which=='remap_scores':
+            pass
     @staticmethod
     def _select_table_rows(table, **kwargs):
         idx = np.ones(len(table), dtype=bool)
@@ -2136,6 +2187,7 @@ class SubjectInfo:
             paths['pos_zones'] = paths['Results'] / 'pos_zones.npy'
             paths['pos_zones_invalid_samps'] = paths['Results'] / 'pos_zones_invalid_samps.npy'
             paths['trial_zone_rates'] = paths['Results'] / 'trial_zone_rates.npy'
+            paths['cond_bigseg_rates'] = paths['Results'] / 'cond_bigseg_rates.csv'
             paths['zone_rates_comps'] = paths['Results'] / 'zone_rates_comps.csv'
             paths['zone_rates_remap'] = paths['Results'] / 'zone_rates_remap.csv'
             paths['pop_zone_rates_remap'] = paths['Results'] / 'pop_zone_rates_remap.csv'
@@ -2399,6 +2451,12 @@ class SubjectSessionInfo(SubjectInfo):
             self.unit_type_map = dict(zip(np.arange(self.n_units), unit_type))
 
         self.enc_models = None
+        self.ta = None
+        self.trial_params = dict(reward_blank=False,
+                                 not_inzone_blank=True,
+                                 valid_transitions_blank=True,
+                                 speed_blank=False,
+                                 trial_end='tE_2')
 
         self.session_unit_table = self._session_unit_table()
 
@@ -3040,28 +3098,47 @@ class SubjectSessionInfo(SubjectInfo):
 
         return scores
 
+    def get_trial_analyses(self, **trial_params):
+        self.trial_params.update(trial_params)
+        self.ta = tmf.TrialAnalyses(self, **self.trial_params)
+        return self.ta
+
     def get_trial_zone_rates(self, overwrite=False, **trial_params):
-        params = dict(reward_blank=False,
-                      not_inzone_blank=True,
-                      valid_transitions_blank=True,
-                      sp_blank=False,
-                      trial_end='tE_2')
 
-        params.update(trial_params)
-
+        new_params = _dict_diff(self.trial_params, trial_params)
         fn = self.paths['trial_zone_rates']
-        if len(trial_params) > 0:
-            fn = append_analysis_mods_2_filename(fn, params)
+        if len(new_params) > 0:
+            fn = append_analysis_mods_2_filename(fn, new_params)
 
         if self.task[:2] == 'T3':
 
             if not fn.exists() or overwrite:
-                ta = tmf.TrialAnalyses(self, **params)
-                fr_tz = ta.get_all_trial_zone_rates(occupation_thr=self.task_params['occ_trial_zone_thr'])
+                if self.ta is None:
+                    self.get_trial_analyses(**trial_params)
+                fr_tz = self.ta.get_all_trial_zone_rates(occupation_thr=self.task_params['occ_trial_zone_thr'])
                 np.save(fn, fr_tz['out'])
             else:
                 fr_tz = np.load(fn, allow_pickle=True)
             return fr_tz
+        else:
+            raise NotImplementedError
+
+    def get_bigseg_cond_rates(self, overwrite=False, **trial_params):
+
+        fn = self.paths['cond_bigseg_rates']
+        new_params = _dict_diff(self.trial_params, trial_params)
+        if len(new_params) > 0:
+            fn = append_analysis_mods_2_filename(fn, new_params)
+
+        if self.task[:2] == 'T3':
+            if not fn.exists() or overwrite:
+                if self.ta is None:
+                    self.get_trial_analyses(**trial_params)
+                mr = tmf.mean_segment_rates_analysis(self, self.ta)
+                mr.to_csv(fn)
+            else:
+                mr = pd.read_csv(fn, index_col=0)
+            return mr
         else:
             raise NotImplementedError
 
@@ -3084,7 +3161,7 @@ class SubjectSessionInfo(SubjectInfo):
                       reward_blank=False,
                       not_inzone_blank=True,
                       valid_transitions_blank=True,
-                      sp_blank=False,
+                      speed_blank=False,
                       trial_end='tE_2')
 
         params.update(trial_remap_params)
@@ -3111,7 +3188,7 @@ class SubjectSessionInfo(SubjectInfo):
                       reward_blank=False,
                       not_inzone_blank=True,
                       valid_transitions_blank=True,
-                      sp_blank=False,
+                      speed_blank=False,
                       trial_end='tE_2')
         params.update(trial_remap_params)
 
@@ -3135,7 +3212,7 @@ class SubjectSessionInfo(SubjectInfo):
                       reward_blank=False,
                       not_inzone_blank=True,
                       valid_transitions_blank=True,
-                      sp_blank=False,
+                      speed_blank=False,
                       trial_end='tE_2',
                       n_boot=50)
 
@@ -3162,7 +3239,7 @@ class SubjectSessionInfo(SubjectInfo):
                       reward_blank=False,
                       not_inzone_blank=True,
                       valid_transitions_blank=True,
-                      sp_blank=False,
+                      speed_blank=False,
                       trial_end='tE_2',
                       n_boot=50)
 
@@ -3258,6 +3335,18 @@ def append_analysis_mods_2_filename(fn, params):
         fn = fn.parent / name2
 
     return fn
+
+
+def _dict_diff(a, b):
+    "returns a dictionary with entries that are either different in b or additional"
+    c = {}
+    for k, v in b.items():
+        if k in a:
+            if a[k] != v:
+                c[k] = v
+        else:
+            c[k] = v
+    return c
 
 
 def get_task_params(session_info):

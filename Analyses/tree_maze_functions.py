@@ -1774,24 +1774,20 @@ class TrialAnalyses:
 
         if reward_blank:
             self.blank_reward_samps = np.where(be._make_event_vector('R_blank'))[0]
-            self._blank_data(self.blank_reward_samps)
-
             self.all_blank_samps = np.concatenate((self.all_blank_samps, self.blank_reward_samps))
 
         if valid_transitions_blank:
             self.valid_transitions_samps = self.tmz.check_valid_pos_zones_transitions(self.pz)
             self.blank_transition_samps = np.where(~self.valid_transitions_samps)[0]
-            self._blank_data(self.blank_transition_samps)
-
             self.all_blank_samps = np.concatenate((self.all_blank_samps, self.blank_transition_samps))
 
         if speed_blank:
-            self.valid_sp_samps = (self.track_data['sp'] >= self.track_data['sp'][0]) &\
-                                  (self.track_data['sp'] <= self.track_data['sp'][1])
+            self.valid_sp_samps = (self.track_data['sp'] >= self.sp_valid_limits[0]) &\
+                                  (self.track_data['sp'] <= self.sp_valid_limits[1])
             self.blank_sp_samps = np.where(~self.valid_sp_samps)[0]
-            self._blank_data(self.blank_sp_samps)
-
             self.all_blank_samps = np.concatenate((self.all_blank_samps, self.blank_sp_samps))
+
+        self._blank_data(self.all_blank_samps)
 
         self.x_edges = self.si.task_params['x_bin_edges_'] * 10  # edges are in cm
         self.y_edges = self.si.task_params['y_bin_edges_'] * 10  # edges are in cm
@@ -5464,7 +5460,7 @@ def zone_encoder_comps_dict():
     return out
 
 
-def mean_rates_segment_analysis(session_info, ta=None):
+def mean_segment_rates_analysis(session_info, ta=None):
 
     if ta is None:
         ta = TrialAnalyses(session_info)
@@ -5486,18 +5482,51 @@ def mean_rates_segment_analysis(session_info, ta=None):
             cond_rates = ta.get_trial_segment_rates(trials=cond_trials, segment_type='bigseg', trial_seg=ts)
             for unit in range(ta.n_units):
                 m = cond_rates[unit].mean()
-                n = (~cond_rates[0].isna()).sum()
-                if n > 1:
-                    s = cond_rates[unit].std()
-                    z = m / s
-                else:
-                    z = np.nan
+                n = (~cond_rates[unit].isna()).sum()
+
                 for s in segs:
-                    df.loc[unit, f'{c}_{ts}_{s}_m'] = m[s]
-                    df.loc[unit, f'{c}_{ts}_{s}_z'] = z[s]
                     df.loc[unit, f'{c}_{ts}_{s}_n'] = n[s]
+                    df.loc[unit, f'{c}_{ts}_{s}_m'] = m[s]
+                    if n[s] > 1:
+                        sd = cond_rates[unit][s].std()
+                        z = m[s] / sd
+                    else:
+                        z = np.nan
+                        rz = np.nan
+                    df.loc[unit, f'{c}_{ts}_{s}_z'] = z
+    df = df.astype(float)
     return df
 
+
+def tm_hdt_cond(data, cond, activity_type='z'):
+    """
+    uses the segmented average trial means from the tree maze outwards and inwards trajectories to generate a
+    :param data: output of mean_rates_segment_analysis
+    :param cond: str, should be a listed in condition from trial_analyses
+    :param activity_type: str, ['m','z']. m-> mean, z-> mean/std
+    :return:
+        df with the resultant vector, angle and magnitude by unit.
+    """
+    all_cols = data.columns
+
+    assert activity_type in ['m', 'z']
+    cond_cols = [c for c in all_cols if ((c.split('_')[0] == cond) & (c.split('_')[-1] == activity_type))]
+
+    df = pd.DataFrame(index=range(data.shape[0]))
+    for s, oi in zip([1, -1], ['out', 'in']):
+        for ang, seg in zip([np.pi / 4, np.pi / 2, 3 / 4 * np.pi], ['right', 'stem', 'left']):
+            col = f"{cond}_{oi}_{seg}_{activity_type}"
+            df[f"{seg}_{oi}"] = np.exp(s * ang * 1j) * data[col].values
+
+    R = np.nansum(df, axis=1).astype(complex)/data[cond_cols].sum(axis=1)
+
+    out = pd.DataFrame(index=range(data.shape[0]))
+    out['R'] = R.astype(complex)
+    out['mag'] = np.abs(R).astype(float)
+    out['ang'] = np.angle(R).astype(float)
+    out.loc[out['mag'] == 0, f'ang'] = np.nan
+
+    return out
 def rate_segment_comp_analysis(session_info, comp, ta=None):
     if comp == 'cue':
         cond1 = 'CR'
