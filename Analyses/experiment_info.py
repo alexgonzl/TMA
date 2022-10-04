@@ -48,10 +48,16 @@ subject and session.
 
 
 class SummaryInfo:
-    subjects = ['Li', 'Ne', 'Cl', 'Al', 'Ca', 'Mi']
+    subjects = ['Li', 'Ne', 'Cl', 'Al', 'Ca']
+    subjects_surgery_dates = dict(Li='4/3/18', Ne='4/30/18', Cl='11/14/18', Al='9/19/19', Ca='2/20/19')
     min_n_units = 1
     min_n_trials = 50  # task criteria
     min_pct_coverage = 0.75  # open field criteria
+
+    # sugery criteria:
+    surg_n_trials_thr = 80
+    surg_p_correct_thr = 0.7
+
     invalid_sessions = ['Li_OF_080718']
     figure_names = [f"f{ii}" for ii in range(5)]
 
@@ -70,6 +76,18 @@ class SummaryInfo:
         for s in self.subjects:
             self.sessions_by_subject[s] = self.unit_table[self.unit_table.subject == s].session.unique()
             self.tasks_by_subject[s] = self.unit_table[self.unit_table.subject == s].task.unique()
+
+        self.n_sessions_to_surg_criteria = {}
+        self.get_all_behav_perf()
+
+        self.default_remap_params = dict(zr_method='trial',
+                                         corr_method='kendall')
+
+        self.default_trial_params = dict(reward_blank=False,
+                                         not_inzone_blank=True,
+                                         valid_transitions_blank=True,
+                                         speed_blank=False,
+                                         trial_end='tE_2')
 
     def select_session(self):
         subject_widget = widgets.Dropdown(options=self.subjects)
@@ -167,6 +185,7 @@ class SummaryInfo:
         return valid_track_table
 
     def get_behav_perf(self, overwrite=False):
+        "gets behavior performance with neural recordings."
         if not self.paths['behavior'].exists() or overwrite:
             perf = pd.DataFrame()
             for subject in self.subjects:
@@ -194,6 +213,49 @@ class SummaryInfo:
 
         return perf
 
+    def get_all_behav_perf(self):
+        "gets behavior performance for all sessions, including training"
+
+        p = pd.read_excel(self.paths['all_behavior_perf'], sheet_name=None)
+
+        cols = ['subject', 'subject2', 'expt', 'date', 'session_num',
+                'n_trials', 'n_sw_trials',
+                'n_co_trials', 'n_co_sw_trials',
+                'p_co', 'p_co_sw', 'pre_surg_criteria']
+
+        perf = pd.DataFrame(columns=cols)
+
+        for ii, subject in enumerate(self.subjects):
+            subject_perf = p[subject].copy()
+            subject_perf = subject_perf.rename(columns={'Session#': 'session_num',
+                                                        'Date': 'date',
+                                                        'Experiment': 'expt',
+                                                        'Num Trials': 'n_trials',
+                                                        'Num Correct Trials': 'n_co_trials',
+                                                        'Num Switches': 'n_sw_trials',
+                                                        'Num Correct Switches': 'n_co_sw_trials'})
+
+            subject_perf['subject'] = subject
+            subject_perf['subject2'] = f"$s_{ii + 1}$"
+            subject_perf['p_co'] = subject_perf['n_co_trials'] / subject_perf['n_trials']
+            subject_perf['p_co_sw'] = subject_perf['n_co_sw_trials'] / subject_perf['n_sw_trials']
+
+            # subject_perf.loc[]
+            n_sessions_to_criteria = subject_perf[
+                (subject_perf['n_trials'] >= self.surg_n_trials_thr) & (
+                        subject_perf['p_co'] >= self.surg_p_correct_thr) & (
+                        subject_perf.expt == 'T3g')].session_num.iloc[0]
+
+            subject_perf['pre_surg_criteria'] = 0
+            subject_perf.loc[subject_perf.session_num < n_sessions_to_criteria, 'pre_surg_criteria'] = 1
+
+            subject_perf = subject_perf[cols]
+
+            perf = pd.concat((perf, subject_perf))
+
+            self.n_sessions_to_surg_criteria[subject] = n_sessions_to_criteria
+        return perf
+
     def _get_paths(self, root_path=None):
         if root_path is None:
             results_path = self.main_path / 'Results_Summary'
@@ -203,6 +265,7 @@ class SummaryInfo:
             figures_path = root_path / 'Figures'
 
         paths = dict(
+            all_behavior_perf=results_path / 'all_behavior_perf.xlsx',
             analyses_table=results_path / 'analyses_table.csv',
             valid_track_table=results_path / 'valid_track_table.csv',
             behavior=results_path / 'behavior_session_perf.csv',
@@ -389,21 +452,25 @@ class SummaryInfo:
 
         return seg_rates
 
-    def get_zone_rates_remap(self, overwrite=False, **remap_params):
+    def get_zone_rates_remap(self, overwrite=False, trial_params=None, remap_params=None):
 
-        params = dict(zr_method='trial',
-                      corr_method='kendall',
-                      reward_blank=False,
-                      not_inzone_blank=True,
-                      valid_transitions_blank=True,
-                      speed_blank=False,
-                      trial_end='tE_2')
+        if trial_params is None:
+            trial_params = {}
+        if remap_params is None:
+            remap_params = {}
 
-        params.update(remap_params)
+        # update params if any differences from defaults
+        params = self.default_trial_params | self.default_remap_params
+        delta_trial_params = _dict_diff(self.default_trial_params, trial_params)
+        delta_remap_params = _dict_diff(self.default_remap_params, remap_params)
+        delta_params = {**delta_trial_params, **delta_remap_params}
 
+        # modify fn
         fn = self.paths['zone_rates_remap']
-        if len(remap_params) > 0:
-            fn = append_analysis_mods_2_filename(fn, params)
+        if len(delta_params) > 0:
+            params.update(trial_params)
+            params.update(remap_params)
+            fn = append_analysis_mods_2_filename(fn, delta_params)
 
         if not fn.exists() or overwrite:
             sessions_validity = self.get_track_validity_table()
@@ -419,8 +486,7 @@ class SummaryInfo:
                         n_session_units = session_info.n_units
                         if n_session_units > 0:
                             try:
-                                session_zone_rate_comp_table = session_info.get_zone_rates_remap(overwrite=False,
-                                                                                                 **params)
+                                session_zone_rate_comp_table = session_info.get_zone_rates_remap(**params)
                                 comp_table_columns = session_zone_rate_comp_table.columns
 
                                 session_table = pd.DataFrame(index=np.arange(n_session_units),
@@ -471,20 +537,25 @@ class SummaryInfo:
 
         return zone_rates
 
-    def get_pop_zone_rates_remap(self, overwrite=False, **remap_params):
+    def get_pop_zone_rates_remap(self, overwrite=False, trial_params=None, remap_params=None):
 
-        params = dict(corr_method='kendall',
-                      reward_blank=False,
-                      not_inzone_blank=True,
-                      valid_transitions_blank=True,
-                      speed_blank=False,
-                      trial_end='tE_2')
+        if trial_params is None:
+            trial_params = {}
+        if remap_params is None:
+            remap_params = {}
 
-        params.update(remap_params)
+        # update params if any differences from defaults
+        params = self.default_trial_params | self.default_remap_params
+        delta_trial_params = _dict_diff(self.default_trial_params, trial_params)
+        delta_remap_params = _dict_diff(self.default_remap_params, remap_params)
+        delta_params = {**delta_trial_params, **delta_remap_params}
 
-        fn = self.paths['pop_zone_rates_remap']
-        if len(remap_params) > 0:
-            fn = append_analysis_mods_2_filename(fn, params)
+        # modify fn
+        fn = self.paths['zone_rates_remap']
+        if len(delta_params) > 0:
+            params.update(trial_params)
+            params.update(remap_params)
+            fn = append_analysis_mods_2_filename(fn, delta_params)
 
         if not fn.exists() or overwrite:
             sessions_validity = self.get_track_validity_table()
@@ -1535,8 +1606,9 @@ class SummaryInfo:
         lmm_stats = ps.LMM_Stats(self)
         if which == 'seg_rates':
             return lmm_stats.segment_rates()
-        elif which=='remap_scores':
+        elif which == 'remap_scores':
             pass
+
     @staticmethod
     def _select_table_rows(table, **kwargs):
         idx = np.ones(len(table), dtype=bool)

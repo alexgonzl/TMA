@@ -3847,7 +3847,6 @@ class OpenFieldFigures():
         return f,ax
 
 
-
 class CrossTaskFigures():
     dpi = 1500
     fontsize = 10
@@ -4774,13 +4773,245 @@ class CrossTaskFigures():
                 ax.plot([x_loc] * 2, ci.confidence_interval, color=str(mean_err_lc), lw=mean_err_lw, zorder=9)
 
 
+class SubjectBehavior():
+
+    dpi = 1500
+    subject_palette = 'deep'
+
+    def __init__(self, info=None, fig_path=None):
+
+        if info is None:
+            self.info = ei.SummaryInfo()
+        else:
+            self.info = info
+
+        if fig_path is None:
+            self.fig_path = self.info.paths['figures'] / 'behavior'
+            self.fig_path.mkdir(parents=True, exist_ok=True)
+        else:
+            self.fig_path = fig_path
+
+        self.perf = self.info.get_all_behav_perf()
+        self.update_fontsize()
+
+        self.subjects = self.info.subjects
+        self.n_subjects = len(self.subjects)
+
+        self.subject_colors = {}
+        for ii, s in enumerate(self.subjects):
+            self.subject_colors[s] = sns.palettes.color_palette(self.subject_palette)[ii]
+
+    def update_fontsize(self, fontscale=1, fontsize=10):
+        self.fontsize = fontsize * fontscale
+        self.tick_fontsize = self.fontsize
+        self.legend_fontsize = self.fontsize * 0.77
+        self.label_fontsize = self.fontsize * 1.1
+
+    def plot_lc(self, yvar='p_co', ax=None, figsize=None, save_flag=False, save_format='png'):
+
+        if ax is None:
+            if figsize is None:
+                figsize = (1.5, 1.2)
+            f, ax = plt.subplots(figsize=figsize, dpi=self.dpi)
+        else:
+            f = ax.figure
+
+        perf = self.perf
+
+        if yvar == 'p_co':
+            ylabel = f"$p_{{se}}$ %"
+            size_var = 'n_trials'
+        elif yvar == 'p_co_sw':
+            ylabel = f"sw $p_{{se}}$ %"
+            size_var = 'n_sw_trials'
+
+        sub_table = perf[(perf.pre_surg_criteria == 1)].copy()
+        sub_table.dropna(inplace=True)
+        sub_table['p_co'] *= 100
+        sub_table['p_co_sw'] *= 100
+
+        setup_axes(ax, fontsize=self.fontsize)
+        ax = sns.scatterplot(data=sub_table, x='session_num', y=yvar, hue='subject2', size=size_var,
+                             palette=self.subject_palette, sizes=(1, 10),
+                             alpha=0.5, ax=ax)
+
+        for subject in self.subjects:
+            subject_table = sub_table[sub_table.subject == subject].copy()
+            x = subject_table.session_num
+            y = subject_table[yvar]
+
+            slope, intercept = stats.siegelslopes(y, x)
+
+            xx = np.arange(x.min(), x.max())
+            yy = intercept + slope * xx
+
+            ax.plot(xx, yy, color=self.subject_colors[subject], lw=1)
+
+        ax.set_xlabel("Session #")
+        ax.set_ylim([-2, 102])
+        ax.set_yticks([0, 50, 100])
+        ax.set_xticks([0, 20, 40, 60])
+        ax.set_ylabel(ylabel)
+
+        l = ax.get_legend_handles_labels()
+
+        l[1][0] = 'Subjects'
+        l[1][self.n_subjects + 1] = f'$n_{{trials}}$'
+
+        for ii, ll in enumerate(l[0]):
+            if ii > self.n_subjects:
+                break
+            ll.set_sizes([12])
+
+        ax.legend(handles=l[0], labels=l[1], loc='center left', bbox_to_anchor=[1, 0, 0.2, 1], frameon=False,
+                  fontsize=self.legend_fontsize*0.9, labelspacing=0.05, handlelength=0.5, handletextpad=0.4)
+
+        if save_flag:
+            fn = f"learning_curve_perf_{yvar}.{save_format}"
+            f.savefig(self.fig_path / fn, format=save_format, dpi=self.dpi, facecolor=None,
+                      pad_inches=0, bbox_inches='tight')
+        return f, ax
+
+    def plot_perf_x_subj(self, yvar='p_co', violin=False, ax=None, figsize=None, save_flag=False, save_format='png'):
+
+        if ax is None:
+            if figsize is None:
+                figsize = (1.2, 1.2)
+            f, ax = plt.subplots(figsize=figsize, dpi=self.dpi)
+        else:
+            f = ax.figure
+
+        perf = self.info.get_behav_perf()
+        sub_table = perf[(perf.n_units >= self.info.min_n_units) &
+                         (perf.n_trials >= self.info.min_n_trials)].copy()
+        sub_table[['pct_correct', 'pct_vsw_correct']] *= 100
+
+        if violin:
+            subject_means = sub_table.groupby('subject').median()
+        else:
+            subject_means = sub_table.groupby('subject').mean()
+        subject_means['color'] = [self.subject_colors[ii] for ii in subject_means.index]
+
+        boxplot_lw = 0.75
+        marker_size = 2
+        marker_alpha = 0.75
+        box_plot_median_lc = '0.75'
+        box_plot_median_lw = 1.2
+
+        scatter_spread = 0.12
+        scatter_point_size = 2
+        fontsize = 10
+        median_lw = 1.2
+        median_lc = '0.4'
+        violin_lc = '0.5'
+        violin_plot_lw = 0.5
+        scatter_alpha = 0.8
+        median_w = 0.25
+
+        if yvar == 'p_co':
+            yvar2 = 'pct_correct'
+            ylabel = f"$p_{{se}}$ %"
+            y_ticks = [0, 50, 100]
+            ylims = [-2, 102]
+        elif yvar == 'p_co_sw':
+            yvar2 = 'pct_vsw_correct'
+            ylabel = f"sw $p_{{se}}$ %"
+            y_ticks = [0, 50, 100]
+            ylims = [-2, 102]
+        elif yvar == 'n_units':
+            yvar2 = 'n_units'
+            ylabel = '# units'
+            y_ticks = [0, 25, 50]
+            ylims = [-1, 51]
+        elif yvar == 'n_cells':
+            yvar2 = 'n_cells'
+            ylabel = '# units'
+            y_ticks = [0, 6, 12]
+            ylims = [-1, 15]
+
+        ax_pos = ax.get_position()
+        x0, y0, w, h = ax_pos.x0, ax_pos.y0, ax_pos.width, ax_pos.height
+        x_split = w * 0.75
+        ax.set_position([x0, y0, x_split, h])
+        ax2 = f.add_axes([x0 + x_split, y0, w - x_split, h])
+
+        setup_axes(ax, fontsize=self.fontsize)
+        setup_axes(ax2, fontsize=self.fontsize, spine_list=['bottom'])
+
+        if violin:
+            sns.violinplot(ax=ax, x='subject', y=yvar2, data=sub_table,
+                           color='w', linewidth=violin_plot_lw, inner='quartile', cut=0,bw=0.5)
+            s = np.zeros((len(ax.get_children()), 2)) - 1
+            ax_artists = ax.get_children()
+            for ii, l in enumerate(ax_artists):
+                if isinstance(l, mpl.lines.Line2D):
+                    s[ii] = l._dashSeq
+
+            median_lines_idx = np.where(s[:, 0] == s.max())[0]
+            quartile_lines_idx = np.where(s > 0)[0]
+            quartile_lines_idx = np.setdiff1d(quartile_lines_idx, median_lines_idx)
+
+            for ii in median_lines_idx:
+                ax_artists[ii].set_lw(median_lw)
+                ax_artists[ii].set_ls('-')
+
+            for jj in quartile_lines_idx:
+                ax_artists[jj].remove()
+
+            for ch in ax.get_children():
+                if isinstance(ch, mpl.collections.PolyCollection):
+                    ch.set_edgecolor(violin_lc)
+                elif isinstance(ch, mpl.lines.Line2D):
+                    ch.set_color(median_lc)
+        else:
+            for ii, s in enumerate(self.subjects):
+                xx = (ii-median_w, ii+median_w)
+                yy = subject_means.loc[s, yvar2]
+                #c = subject_means.loc[s, 'color']
+                ax.plot(xx, (yy,yy), color=median_lc, lw=median_lw, zorder=10)
+
+        sns.stripplot(ax=ax, x='subject', y=yvar2, data=sub_table, size=marker_size,
+                      **{'alpha': marker_alpha})
+
+        ax.set_ylim(ylims)
+        ax.set_yticks(y_ticks)
+        ax.set_yticklabels(y_ticks, fontsize=self.fontsize)
+        ax.set_ylabel(ylabel, fontsize=self.fontsize)
+
+        ax.set_xticklabels([f"$s_{ii}$" for ii in range(1, len(self.subjects) + 1)], fontsize=self.fontsize)
+        ax.set_xlabel('Subjects', fontsize=self.fontsize)
+
+        # # hard-coded x location for no overalp
+        x_locs = np.array([0.1, -0.1, 0, 0.15, -0.15])*0.3
+        ax2.scatter(x_locs, subject_means.loc[self.subjects, yvar2], lw=0, zorder=10,
+                    s=marker_size*1.3,
+                    c=subject_means.loc[self.subjects, 'color'])
+        median_w = 0.1
+        ax2.plot((-median_w, median_w), np.ones(2)*subject_means[yvar2].mean(), c=median_lc, lw=median_lw )
+
+        ax2.set_xticks([0])
+        ax2.set_xlim([-0.3, 0.3])
+        ax2.set_ylim(ylims)
+        ax2.set_yticks(y_ticks)
+        ax2.set_yticklabels('')
+        ax2.set_ylabel('')
+        ax2.tick_params(axis='y', left=False)
+        ax2.grid(False, axis='x')
+        ax2.set_xticklabels([r" $\bar s$ "], fontsize=self.fontsize)
+
+        if save_flag:
+            fn = f"task_perf_{yvar}_{violin}.{save_format}"
+            f.savefig(self.fig_path / fn, format=save_format, dpi=self.dpi, facecolor=None,
+                      pad_inches=0, bbox_inches='tight')
+        return f, ax
+
 ################################################################################
 # Plot Functions
 ################################################################################
 def setup_axes(ax, fontsize=10, spine_lw=1, spine_color='k', grid_lw=0.5, spine_list=None, tick_params=None):
-    sns.set_style(rc={"axes.edgecolor": 'k',
-                      'xtick.bottom': True,
-                      'ytick.left': True})
+    # sns.set_style(rc={"axes.edgecolor": 'k',
+    #                   'xtick.bottom': True,
+    #                   'ytick.left': True})
 
     if tick_params is None:
         tick_params = dict(axis="both", direction="out", length=2, width=1, color='0.2', which='major',
