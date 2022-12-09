@@ -356,6 +356,7 @@ class TreeMazeZones:
 
     dir_path = Path(os.path.dirname(os.path.realpath(__file__)))
     layout = plt.imread(dir_path.parent / "TreeMazeLayout_plain.jpg")
+    layout2 = plt.imread(dir_path.parent / "TreeMazeLayout_plain2.png")
     maze_lims = {'x': (-1295, 1295), 'y': (-156, 1526)}
 
     ext_length = 200
@@ -832,7 +833,7 @@ class TreeMazeZones:
 
     def plot_maze(self, axis=None, sub_segs=None, seg_dir=None, zone_labels=False, tm_layout=False, plot_cue=False,
                   seg_color='powderblue', seg_alpha=0.3, lw=1, line_alpha=1, line_color='0.5',
-                  sub_seg_color=None, sub_seg_lw=0.1, cue_color=None, fontsize=10):
+                  sub_seg_color=None, sub_seg_lw=0.1, cue_color=None, fontsize=10, layout_num=2):
         """
         method to plot the maze with various aesthetic options
         :param axis: axis of the figure, if None, creates figure
@@ -973,7 +974,7 @@ class TreeMazeZones:
 
         return axis
 
-    def plot_layout(self, ax=None, cue=False):
+    def plot_layout(self, ax=None, cue=False, layout_num=2):
 
         if ax is None:
             f, ax = plt.subplots(dpi=500)
@@ -997,7 +998,10 @@ class TreeMazeZones:
                   ax_pos.width * w_mod,
                   ax_pos.height * h_mod]
         newax = f.add_axes(ax_pos, anchor='C', zorder=-1)
-        newax.imshow(self.layout)
+        if layout_num==2:
+            newax.imshow(self.layout2)
+        else:
+            newax.imshow(self.layout)
         newax.axis('off')
 
         return ax
@@ -1153,6 +1157,7 @@ class TreeMazeZones:
 
             cax_p = [x0 + w * 0.7, y0 + h * 0.1, w * 0.05, h * 0.15]
             cax = f.add_axes(cax_p)
+            #cax.set_in_layout(False)
 
             pf.get_color_bar_axis(cax, color_array, **cm_params)
 
@@ -1707,6 +1712,11 @@ class TrialAnalyses:
                   'Co-Inco',
                   'Even-Odd',
                   'Even-Odd']
+
+    cond_pairs_segs = ['CR_out-CL_out',
+                       'Co_out-Inco_out',
+                       'Co_in-Inco_in',
+                       'All_out-All_in']
 
     # balanced approached for groups
     bal_cond_pairs = ['CR_bo-CL_bo',
@@ -5233,7 +5243,7 @@ class ZoneDecoder:
 # class DataFolds:
 #     def __init__(self, session_info, n_folds):
 
-def zone_encoding_analyses(session_info, exp_sets, parallel_flag=False, **xval_params) -> pd.DataFrame:
+def zone_encoding_analyses(session_info, exp_sets, parallel_flag=False, n_folds=10, **trial_params) -> pd.DataFrame:
     """
     Fit encoder models with different amounts of lag added to the representation of the current zone.
     Positive lags effectively become a look-ahead model, negative become a past zones models. lags are modeled by sample
@@ -5259,16 +5269,13 @@ def zone_encoding_analyses(session_info, exp_sets, parallel_flag=False, **xval_p
         feature_set.update(exp)
         feature_sets.append(feature_set)
 
-    if xval_params is None:
-        xval_params = dict(n_folds=10)
-
     if parallel_flag:
         parallel = Parallel(n_jobs=5, prefer='threads')
     else:
         parallel = None
 
-    ta = TrialAnalyses(session_info)
-    ze = ZoneEncoder(session_info, trial_analyses=ta, parallel=parallel, **xval_params)
+    ta = TrialAnalyses(session_info, **trial_params)
+    ze = ZoneEncoder(session_info, trial_analyses=ta, parallel=parallel, n_folds=n_folds)
 
     results = pd.DataFrame()
 
@@ -5290,9 +5297,10 @@ def zone_encoding_analyses(session_info, exp_sets, parallel_flag=False, **xval_p
 
 
 def zone_decoder_analyses(session_info, feature_types=None, target_types=None, encoders=None,
-                          encoder_params_sets=None, return_decoders=False, verbose=False):
+                          encoder_params_sets=None, return_decoders=False, verbose=False, **trial_params):
     parallel = Parallel(n_jobs=5, prefer='threads')
 
+    ta = TrialAnalyses(session_info, **trial_params)
     # prepare encoder param dictionary
     if encoders is None:
         if encoder_params_sets is None:
@@ -5317,9 +5325,9 @@ def zone_decoder_analyses(session_info, feature_types=None, target_types=None, e
         # get encoder models
         ze = pd.Series(index=encoder_types)
         for encoder_type in encoder_types:
-            temp = ZoneEncoder(session_info)
+            temp = ZoneEncoder(session_info, trial_analyses=ta, parallel=parallel)
             temp.update_features(**encoder_params_sets[encoder_type])
-            temp.prepare_xval_data()
+            temp._prepare_xval_data()
             temp.get_model_fits()
             ze[encoder_type] = temp
 
@@ -5497,6 +5505,49 @@ def mean_segment_rates_analysis(session_info, ta=None):
     df = df.astype(float)
     return df
 
+def mean_segment_rates_diff_analysis(session_info, ta=None):
+
+    if ta is None:
+        ta = TrialAnalyses(session_info)
+
+    conds = ['All']
+    trial_segs = ['out', 'in']
+    segs = ['left', 'stem', 'right']
+
+    def diff_stats(x, y):
+        x = x[~np.isnan(x)]
+        y = y[~np.isnan(y)]
+
+        md = x.mean() - y.mean()
+        t = ttest_ind(x, y)[0]
+        z = rs.mannwhitney_z(x, y)[0]
+
+        return md, t, z
+
+    cols = []
+    for c in conds:
+        for ts in trial_segs:
+            for s in segs:
+                cols += [f'{c}_{ts}_{s}_m', f'{c}_{ts}_{s}_t', f'{c}_{ts}_{s}_z']
+
+    df = pd.DataFrame(index=range(ta.n_units), columns=cols)
+    for c in conds:
+        cond_trials = ta.get_condition_trials(condition=c)
+        for ts in trial_segs:
+            cond_rates = ta.get_trial_segment_rates(trials=cond_trials, segment_type='bigseg', trial_seg=ts)
+            for unit in range(ta.n_units):
+                for s in segs:
+                    cols = [f'{c}_{ts}_{s}_m', f'{c}_{ts}_{s}_t', f'{c}_{ts}_{s}_z']
+                    s2 = np.setdiff1d(segs, s)
+
+                    x = cond_rates[unit][s].values
+                    y = cond_rates[unit][s2].values.flatten()
+
+                    df.loc[unit, cols] = diff_stats(x, y)
+
+    df = df.astype(float)
+    return df
+
 
 def tm_hdt_cond(data, cond, activity_type='z'):
     """
@@ -5527,6 +5578,8 @@ def tm_hdt_cond(data, cond, activity_type='z'):
     out.loc[out['mag'] == 0, f'ang'] = np.nan
 
     return out
+
+
 def rate_segment_comp_analysis(session_info, comp, ta=None):
     if comp == 'cue':
         cond1 = 'CR'

@@ -36,7 +36,7 @@ class LMM_Stats():
         return out
 
     def remap_scores(self, **remap_params):
-        scores = self.info.get_zone_rates_remap(overwrite=False, **remap_params)
+        scores = self.info.get_zone_rates_remap(overwrite=False, trial_params=None, remap_params=None)
         out = widgets.interactive(self._remap_scores, scores=fixed(scores),
                                   unit_type=['all', 'cell', 'mua'],
                                   metric_type=['zm', 'zt'],
@@ -48,7 +48,7 @@ class LMM_Stats():
 
     def unit_remap_to_beh(self, **remap_params):
         """individual unit scores to behavior"""
-        zrc = self.info.get_zone_rates_remap(overwrite=False, **remap_params)
+        zrc = self.info.get_zone_rates_remap(overwrite=False, trial_params=None, remap_params=None)
         b_table = self.info.get_behav_perf()
         scores = self._combine_tables(zrc, b_table)
 
@@ -123,6 +123,20 @@ class LMM_Stats():
 
         display(out)
         return out
+
+    def conditional_co_inco_rates(self, **trial_params):
+
+        t, z = self.info.get_conditional_correct_bigseg_rates(**trial_params)
+
+        trial_segs = ['out', 'in']
+        unit_types = ['all', 'cell', 'mua']
+
+        out = widgets.interactive(self._conditiona_co_inco_rates, table=fixed(t), z_table=fixed(z), unit_type=unit_types,
+                                  trial_seg=trial_segs,
+                                  )
+        display(out)
+        return out
+
 
     @staticmethod
     def _segment_rates(seg_rates, unit_type, metric_type, comp_type):
@@ -205,6 +219,82 @@ class LMM_Stats():
             print(t.sum())
 
         return m_full
+
+    @staticmethod
+    def _conditiona_co_inco_rates(table, z_table, trial_seg, unit_type):
+
+
+        t = table
+        z = z_table
+
+        full_formula = [[],[]]
+        null_formula = [[],[]]
+        for ii in range(2):
+            full_formula[ii] = 'z ~ ms'
+            null_formula[ii] = 'z ~ ms'
+
+        if unit_type != 'all':
+            t = t[(t.unit_type == unit_type)].copy()
+            z = z[(z.unit_type == unit_type)].copy()
+        else:
+            for ii in range(2):
+                full_formula[ii] += '+ unit_type'
+                null_formula[ii] += '+ unit_type'
+
+        if trial_seg == 'in':
+            print("Test on Inbound Trajectories, conditioned on Outbound")
+            full_formula[0] += '+ zo_p + cond'
+            full_formula[1] += '+ zo_p'
+            null_formula[0] += '+ zo_p'
+        else:
+            print("Test on Outbound Trajectories, conditioned on Inbound")
+            full_formula[0] += '+ zi_p + cond'
+            full_formula[1] += '+ zi_p'
+            null_formula[0] += '+ zi_p'
+
+        t = t[t.ts==trial_seg].dropna()
+        z = z[z.ts==trial_seg].dropna()
+
+        vc_formula = {'task': f"1+C(task)",
+                      'session': f"0+C(session)"}
+
+        print("Non-interaction LMEM:")
+        m = smf.mixedlm(formula=full_formula[0], groups='subject',
+                        vc_formula=vc_formula, re_formula='1', data=t).fit()
+        print(m.summary())
+        print(m.wald_test_terms())
+
+        m_full_ML = smf.mixedlm(formula=full_formula[0],
+                                groups='subject', re_formula="1", vc_formula=vc_formula,
+                                data=t).fit(reml=False)
+        m_null_ML = smf.mixedlm(formula=null_formula[0],
+                                groups='subject', re_formula="1", vc_formula=vc_formula,
+                                data=t).fit(reml=False)
+
+        lrt, chi2_p = LRT(m_full_ML, m_null_ML)
+        print(f"LRT = {lrt:0.2f}; Chi2_p={chi2_p}")
+        print(f"Full Model ML converged = {m_full_ML.converged}")
+        print(f"Null Model ML converged = {m_null_ML.converged}")
+
+        print()
+        print("Interaction LMEM (diff):")
+        m = smf.mixedlm(formula=full_formula[1], groups='subject',
+                        vc_formula=vc_formula, re_formula='1', data=z).fit()
+        print(m.summary())
+        print(m.wald_test_terms())
+
+        m_full_ML = smf.mixedlm(formula=full_formula[1],
+                                groups='subject', re_formula="1", vc_formula=vc_formula,
+                                data=z).fit(reml=False)
+        m_null_ML = smf.mixedlm(formula=null_formula[1],
+                                groups='subject', re_formula="1", vc_formula=vc_formula,
+                                data=z).fit(reml=False)
+
+        lrt, chi2_p = LRT(m_full_ML, m_null_ML)
+        print(f"LRT = {lrt:0.2f}; Chi2_p={chi2_p}")
+        print(f"Full Model ML converged = {m_full_ML.converged}")
+        print(f"Null Model ML converged = {m_null_ML.converged}")
+
 
     @staticmethod
     def _remap_scores(scores, unit_type, metric_type, comp_type):
