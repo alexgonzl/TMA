@@ -4,6 +4,7 @@ import pandas as pd
 import time
 import pickle
 import json
+import copy
 import h5py
 import sys
 import traceback
@@ -58,7 +59,7 @@ class SummaryInfo:
     surg_n_trials_thr = 80
     surg_p_correct_thr = 0.7
 
-    invalid_sessions = ['Li_OF_080718']
+    invalid_sessions = ['Li_OF_080718', 'Cl_T3g_121418_0']
     figure_names = [f"f{ii}" for ii in range(5)]
 
     _root_paths = dict(GD=Path("/home/alexgonzalez/google-drive/TreeMazeProject/"),
@@ -80,14 +81,9 @@ class SummaryInfo:
         self.n_sessions_to_surg_criteria = {}
         self.get_all_behav_perf()
 
-        self.default_remap_params = dict(zr_method='trial',
-                                         corr_method='kendall')
+        self.default_remap_params = _default_trial_remap_params()
 
-        self.default_trial_params = dict(reward_blank=False,
-                                         not_inzone_blank=True,
-                                         valid_transitions_blank=True,
-                                         speed_blank=False,
-                                         trial_end='tE_2')
+        self.default_trial_params = _default_trial_analyses_params()
 
     def select_session(self):
         subject_widget = widgets.Dropdown(options=self.subjects)
@@ -141,6 +137,7 @@ class SummaryInfo:
                             print()
                         else:
                             print(".", end='')
+
                     except KeyboardInterrupt:
                         interrupt_flag = True
                         break
@@ -269,14 +266,23 @@ class SummaryInfo:
             analyses_table=results_path / 'analyses_table.csv',
             valid_track_table=results_path / 'valid_track_table.csv',
             behavior=results_path / 'behavior_session_perf.csv',
+            perf_partitions=results_path / 'perf_partitions.csv',
             units=results_path / 'all_units_table.csv',
             match_table=results_path / "match_table.csv",
+            template_df=results_path / "template_df.csv",
             matched_of_cell_clusters=results_path / "matched_of_cell_clusters.csv",
             matched_of_cell_cluster_error_table=results_path / "matched_of_cell_cluster_error_table.csv",
+            tm_scores=results_path / "tm_scores.csv",
+            of_scores=results_path / "of_scores.csv",
             combined_scores_table=results_path / "combined_scores_table.csv",
             matched_hd_scores_table=results_path / "matched_hd_scores_table.csv",
             of_metric_scores=results_path / 'of_metric_scores_summary_table.csv',
             of_model_scores=results_path / 'of_model_scores_summary_table_agg.csv',
+            bigseg_comps=results_path / 'bigseg_comps.csv',
+            bigseg_cond_rates=results_path / 'bigseg_cond_rates.csv',
+            segment_selective_units=results_path / 'segment_selective_units.csv',
+            segment_selective_unit_rates=results_path / 'segment_selective_unit_rates.csv',
+            comp_selective_unit_rates=results_path / 'comp_selective_unit_rates.csv',
             zone_rates_comps=results_path / 'zone_rates_comps_summary_table.csv',
             zone_rates_remap=results_path / 'zone_rates_remap_summary_table.csv',
             pop_zone_rates_remap=results_path / 'pop_zone_rates_remap_summary_table.csv',
@@ -312,7 +318,7 @@ class SummaryInfo:
         pandas data frame with n_units as index
 
         """
-
+        raise NotImplementedError
         if not self.paths['zone_rates_comps'].exists() or overwrite:
             sessions_validity = self.get_track_validity_table()
             zone_rates = pd.DataFrame()
@@ -378,13 +384,347 @@ class SummaryInfo:
 
         return zone_rates
 
-    def get_bal_conds_seg_rates(self, segment_type='bigseg', overwrite=False):
+    def get_bigseg_cond_rates(self, overwrite=False, **trial_params):
+        fn = self.paths['bigseg_cond_rates']
+        fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
+
+        if fn.exists() and not overwrite:
+            out_table = pd.read_csv(fn, index_col=0)
+            return out_table
+
+        out_df = self.get_data_template_df().copy()
+        out_df = out_df.loc[out_df.task != 'OF', ['subject', 'session', 'task', 'suid', 'unit_type', 'cl_name']]
+
+        data_columns = self.get_session('Li_T3g_052918').get_bigseg_cond_rates().columns
+        out_df[data_columns] = np.nan
+
+        for s in self.subjects:
+            sessions = out_df.loc[out_df.subject == s, 'session']
+            for se in sessions:
+                if se in self.invalid_sessions:
+                    continue
+                si = self.get_session(se)
+                n_se_units = si.n_units
+
+                idx = out_df.session == se
+                assert idx.sum() == n_se_units
+
+                try:
+                    se_data = si.get_bigseg_cond_rates(**params)
+                    out_df.loc[idx, data_columns] = se_data.values
+                except:
+                    pass
+
+        out_df.to_csv(fn)
+        return out_df
+
+    def get_conditional_correct_bigseg_rates(self, **trial_params):
+
+        # load data
+        t = self.get_bigseg_cond_rates(**trial_params)
+        t = t.loc[t['Inco_out_stem_n'] > 5]
+
+        conds = ['Co', 'Inco']
+        trial_segs = ['out', 'in']
+        maze_segs = ['left', 'right']
+        metric = 'z'
+
+        # select data
+        x = t[['subject', 'session', 'task', 'unit_type']].copy()
+        t3 = x.copy()
+        for ms in maze_segs:
+            for ts in trial_segs:
+                a = f"Co_{ts}_{ms}_{metric}"
+                b = f"Inco_{ts}_{ms}_{metric}"
+                x[f'delta_Co_{ts}_{ms}'] = t[a] - t[b]
+                t3[a] = t[a].copy()
+                t3[b] = t[b].copy()
+
+        var_name = 'delta_Co'
+        id_vars = ['uuid', 'subject', 'session', 'task', 'unit_type']
+        value_name = metric
+
+        cols = []
+        cols2 = []
+        for ms in maze_segs:
+            for ts in trial_segs:
+                cols += [f"delta_Co_{ts}_{ms}"]
+                for cond in conds:
+                    cols2 += [f"{cond}_{ts}_{ms}_{metric}"]
+
+        # reformat tables
+        z = x.reset_index().melt(id_vars=id_vars, value_vars=cols,
+                                 value_name=value_name, var_name=var_name)
+
+        t3 = t3.reset_index().melt(id_vars=id_vars, value_vars=cols2,
+                                   value_name=metric, var_name='vars')
+
+        z['ts'] = ''
+        z['ms'] = ''
+        t3['ts'] = ''
+        t3['ms'] = ''
+        t3['cond'] = ''
+        for ms in maze_segs:
+            for ts in trial_segs:
+                col = f"delta_Co_{ts}_{ms}"
+                z.loc[z[var_name] == col, 'ts'] = ts
+                z.loc[z[var_name] == col, 'ms'] = ms
+                for cond in conds:
+                    col = f"{cond}_{ts}_{ms}_{metric}"
+                    t3.loc[t3.vars == col, 'cond'] = cond
+                    t3.loc[t3.vars == col, 'ts'] = ts
+                    t3.loc[t3.vars == col, 'ms'] = ms
+
+        z['zo_p'] = False
+        z['zi_p'] = False
+        t3['zo_p'] = False
+        t3['zi_p'] = False
+        for ms in maze_segs:
+            zo = z.loc[(z.ts == 'out') & (z.z > 0) & (z.ms == ms), 'uuid']
+            z.loc[z.uuid.isin(zo), 'zo_p'] = True
+            t3.loc[t3.uuid.isin(zo), 'zo_p'] = True
+
+            zi = z.loc[(z.ts == 'in') & (z.z > 0) & (z.ms == ms), 'uuid']
+            z.loc[z.uuid.isin(zi), 'zi_p'] = True
+            t3.loc[t3.uuid.isin(zi), 'zi_p'] = True
+
+        return t3, z
+
+    def get_segment_selective_units(self, overwrite=False, **trial_params) -> pd.DataFrame:
+        fn = self.paths['segment_selective_units']
+        fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
+
+        if fn.exists() and not overwrite:
+            out_df = pd.read_csv(fn, index_col=0)
+            return out_df
+
+        df = self.get_bigseg_comps()
+        maze_segments = ['left', 'stem', 'right']
+        trial_segments = ['out', 'in']
+        unit_types = ['cell']
+        n_units = 8
+
+        out_df = pd.DataFrame(index=range(n_units * 2), columns=['ts', 'rank'] + maze_segments)
+        cnt = 0
+        for ts in trial_segments:
+            block_idx = np.arange(n_units) + cnt
+
+            out_df.loc[block_idx, 'ts'] = ts
+            out_df.loc[block_idx, 'rank'] = np.arange(n_units) + 1
+
+            selected_columns = [f'All_{ts}_{s}_z' for s in maze_segments]
+            aa = df.loc[df.unit_type.isin(unit_types), selected_columns].rename(
+                columns={k: v for k, v in zip(selected_columns, maze_segments)})
+            for ss in maze_segments:
+                out_df.loc[block_idx, ss] = aa.sort_values(ss, ascending=False).index[:n_units].values
+            cnt += n_units
+
+        out_df.to_csv(fn)
+        return out_df
+    def get_segment_selective_unit_rates(self, overwrite=False, **trial_params) -> pd.DataFrame:
+        fn1 = self.paths['segment_selective_units']
+        fn2 = self.paths['segment_selective_unit_rates']
+
+        fn1, params = _update_params_and_fn(fn1, self.default_trial_params, trial_params)
+        fn2, _ = _update_params_and_fn(fn2, self.default_trial_params, trial_params)
+
+        if fn2.exists() and not overwrite:
+            zone_rates = pd.read_csv(fn2, index_col=0)
+            return zone_rates
+
+        uuids = self.get_segment_selective_units(**params)
+
+        maze_segments = ['left', 'stem', 'right']
+        trial_segments = ['out', 'in']
+        n_units_per_ts = len(uuids) // 2
+
+        n_total_units = n_units_per_ts * len(maze_segments) * len(trial_segments)
+        selected_units_ids = np.zeros(n_total_units, dtype=int)
+        cnt = 0
+        for ts in trial_segments:
+            for r in range(1, 1 + n_units_per_ts):
+                for s in maze_segments:
+                    idx = uuids.loc[(uuids['ts'] == ts)
+                                    & (uuids['rank'] == r), s].values[0]
+                    selected_units_ids[cnt] = idx
+                    cnt += 1
+
+        tmz = tmf.TreeMazeZones()
+        zone_rates = pd.DataFrame(index=np.arange(n_total_units), columns=['uuid', 'ts'] + tmz.all_segs_names)
+
+        template_df = self.get_data_template_df()
+        cnt = 0
+        for uuid in selected_units_ids:
+            session, suid = template_df.loc[uuid, ['session', 'suid']]
+            si = self.get_session(session)
+
+            ta = tmf.TrialAnalyses(si)
+            for ts in ['out', 'in']:
+                zone_rates.loc[cnt, 'uuid'] = uuid
+                zone_rates.loc[cnt, 'ts'] = ts
+                zone_rates.loc[cnt, tmz.all_segs_names] = ta.get_avg_trial_zone_rates(trial_seg=ts).loc[suid].values
+                cnt += 1
+
+        zone_rates.to_csv(fn2)
+        return zone_rates
+    def get_comp_selective_units(self, comp='cue', overwrite=None, **trial_params) -> pd.DataFrame:
+
+        assert comp in ['cue', 'rw', 'dir']
+
+        if comp=='cue':
+            pos_val = 'CR'
+            neg_val = 'CL'
+        elif comp=='rw':
+            pos_val = 'Co'
+            neg_val = 'Inco'
+        elif comp=='dir':
+            pos_val = 'out'
+            neg_val = 'in'
+        else:
+            raise ValueError
+
+        df = self.get_segment_rate_comps(**trial_params)
+        maze_segments = ['left', 'stem', 'right']
+        n_units = 8
+
+        df = df[df.unit_type=='cell']
+
+        out_df = pd.DataFrame(index=range(n_units * len(maze_segments) * 2),
+                              columns=['ms', comp, 'rank', 'cl_name', 'uz_val'])
+        cnt = 0
+        for ms in maze_segments:
+
+            df_idx = (df.comp == comp) & (df.segment == ms)
+            sorted_df = df[df_idx].sort_values('uz_val')
+            sorted_units = sorted_df.cl_name
+            sorted_vals = sorted_df.uz_val
+
+            out_block_idx = np.arange(n_units) + cnt
+            out_df.loc[out_block_idx, 'ms'] = ms
+            out_df.loc[out_block_idx, comp] = neg_val
+            out_df.loc[out_block_idx, 'rank'] = np.arange(n_units) + 1
+
+            out_df.loc[out_block_idx, 'cl_name'] = sorted_units[:n_units].values
+            out_df.loc[out_block_idx, 'uz_val'] = sorted_vals[:n_units].values
+
+            cnt += n_units
+
+            out_block_idx = np.arange(n_units) + cnt
+            out_df.loc[out_block_idx, 'ms'] = ms
+            out_df.loc[out_block_idx, comp] = pos_val
+            out_df.loc[out_block_idx, 'rank'] = np.arange(n_units) + 1
+
+            out_df.loc[out_block_idx, 'cl_name'] = sorted_units[::-1][:n_units].values
+            out_df.loc[out_block_idx, 'uz_val'] = sorted_vals[::-1][:n_units].values
+
+            cnt += n_units
+
+        temp =  self.get_data_template_df()
+        def foo(x):
+            return temp[temp.cl_name == x].index[0]
+        out_df['uuid'] = out_df.cl_name.map(foo)
+
+        return out_df
+    def get_comp_selective_unit_rates(self, overwrite=False, comp='cue', **trial_params) -> pd.DataFrame:
+
+        fn = self.paths['comp_selective_unit_rates']
+
+        trial_params[comp] = comp
+        fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
+
+        if fn.exists() and not overwrite:
+            zone_rates = pd.read_csv(fn, index_col=0)
+            return zone_rates
+
+        df =  self.get_comp_selective_units(comp=comp, **trial_params)
+
+        maze_segments = ['left', 'stem', 'right']
+        comp_vals = df[comp].unique()
+        n_total_units = len(df)
+        n_selection_units = n_total_units / (len(maze_segments)*len(comp_vals))
+
+        if comp=='cue':
+            conds = np.array(['CL', 'CR'])
+            trial_seg = 'out'
+        elif comp=='rw':
+            conds = np.array(['Co', 'Inco'])
+            trial_seg = 'in'
+        elif comp=='dir':
+            trial_segs = np.array(['out', 'in'])
+        else:
+            raise ValueError
+
+        tmz = tmf.TreeMazeZones()
+        zone_rates = pd.DataFrame(index=np.arange(n_total_units*2), columns=['uuid', 'ms', comp , 'cond'] + tmz.all_segs_names)
+
+        template_df = self.get_data_template_df()
+        cnt = 0
+        for uuid in df['uuid'].unique():
+            session, suid = template_df.loc[uuid, ['session', 'suid']]
+            si = self.get_session(session)
+            ta = tmf.TrialAnalyses(si)
+
+            for ii, idx in enumerate(df.loc[df.uuid==uuid].index):
+                zone_rates.loc[cnt, ['uuid', 'ms', comp]] = df.loc[idx, ['uuid', 'ms', comp]].values
+                zone_rates.loc[cnt+1, ['uuid', 'ms', comp]] = df.loc[idx, ['uuid', 'ms', comp]].values
+
+                if comp=='dir':
+                    trials = ta.get_condition_trials(condition='All')
+                    for kk, ts in enumerate(trial_segs):
+                        zone_rates.loc[cnt, tmz.all_segs_names] = ta.get_avg_trial_zone_rates(trials=trials, trial_seg=ts).loc[suid].values
+                        zone_rates.loc[cnt, 'cond'] = ts
+                        cnt+=1
+                else:
+                    ts = trial_seg
+                    for kk, cond in enumerate(conds):
+                        trials = ta.get_condition_trials(condition=cond)
+                        zone_rates.loc[cnt, tmz.all_segs_names] = ta.get_avg_trial_zone_rates(trials=trials, trial_seg=ts).loc[suid].values
+                        zone_rates.loc[cnt, 'cond'] = cond
+                        cnt+=1
+
+        zone_rates.to_csv(fn)
+        return zone_rates
+
+    def get_bigseg_comps(self, overwrite=False, **trial_params):
+        fn = self.paths['bigseg_comps']
+        fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
+
+        if fn.exists() and not overwrite:
+            out_table = pd.read_csv(fn, index_col=0)
+            return out_table
+
+        out_df = self.get_data_template_df().copy()
+        out_df = out_df.loc[out_df.task != 'OF', ['subject', 'session', 'task', 'suid', 'unit_type', 'cl_name']]
+
+        data_columns = self.get_session('Li_T3g_052918').get_bigseg_comps().columns
+        out_df[data_columns] = np.nan
+
+        for s in self.subjects:
+            sessions = out_df.loc[out_df.subject == s, 'session']
+            for se in sessions:
+                if se in self.invalid_sessions:
+                    continue
+                si = self.get_session(se)
+                n_se_units = si.n_units
+
+                idx = out_df.session == se
+                assert idx.sum() == n_se_units
+
+                try:
+                    se_data = si.get_bigseg_comps(**params)
+                    out_df.loc[idx, data_columns] = se_data.values
+                except:
+                    pass
+
+        out_df.to_csv(fn)
+        return out_df
+
+    def get_bal_conds_seg_rates(self, overwrite=False, segment_type='big_seg', n_boot=50, **trial_params):
 
         fn = self.paths['bal_conds_seg_rates']
-        if segment_type != 'bigseg':
-            name = fn.name.split('.')
-            name2 = name[0] + segment_type + name[1]
-            fn = fn.parent / name2
+        default_params = self.default_trial_params | dict(segment_type='big_seg', n_boot=50)
+        new_params = trial_params | dict(segment_type=segment_type, n_boot=n_boot)
+        fn, params = _update_params_and_fn(fn, default_params, new_params)
 
         if not fn.exists() or overwrite:
             sessions_validity = self.get_track_validity_table()
@@ -395,13 +735,14 @@ class SummaryInfo:
             for subject in self.subjects:
                 subject_info = SubjectInfo(subject)
                 for session in subject_info.sessions:
+                    if session in self.invalid_sessions:
+                        continue
                     if session in valid_sessions:
                         session_info = self.get_session(session)
                         n_session_units = session_info.n_units
                         if n_session_units > 0:
                             try:
-                                session_zone_rate_comp_table = session_info.get_bal_conds_seg_rates(
-                                    segment_type=segment_type)
+                                session_zone_rate_comp_table = session_info.get_bal_conds_seg_rates(**params)
                                 comp_table_columns = session_zone_rate_comp_table.columns
 
                                 session_table = pd.DataFrame(index=np.arange(n_session_units),
@@ -452,25 +793,14 @@ class SummaryInfo:
 
         return seg_rates
 
-    def get_zone_rates_remap(self, overwrite=False, trial_params=None, remap_params=None):
+    def get_zone_rates_remap(self, overwrite=False, remap_params=None, **trial_params):
 
-        if trial_params is None:
-            trial_params = {}
+        fn = self.paths['zone_rates_remap']
+        default_params = self.default_trial_params | self.default_remap_params
         if remap_params is None:
             remap_params = {}
-
-        # update params if any differences from defaults
-        params = self.default_trial_params | self.default_remap_params
-        delta_trial_params = _dict_diff(self.default_trial_params, trial_params)
-        delta_remap_params = _dict_diff(self.default_remap_params, remap_params)
-        delta_params = {**delta_trial_params, **delta_remap_params}
-
-        # modify fn
-        fn = self.paths['zone_rates_remap']
-        if len(delta_params) > 0:
-            params.update(trial_params)
-            params.update(remap_params)
-            fn = append_analysis_mods_2_filename(fn, delta_params)
+        new_params = trial_params | remap_params
+        fn, params = _update_params_and_fn(fn, default_params, new_params)
 
         if not fn.exists() or overwrite:
             sessions_validity = self.get_track_validity_table()
@@ -481,6 +811,8 @@ class SummaryInfo:
             for subject in self.subjects:
                 subject_info = SubjectInfo(subject)
                 for session in subject_info.sessions:
+                    if session in self.invalid_sessions:
+                        continue
                     if session in valid_sessions:
                         session_info = SubjectSessionInfo(subject, session)
                         n_session_units = session_info.n_units
@@ -537,25 +869,15 @@ class SummaryInfo:
 
         return zone_rates
 
-    def get_pop_zone_rates_remap(self, overwrite=False, trial_params=None, remap_params=None):
+    def get_pop_zone_rates_remap(self, overwrite=False, remap_params=None, **trial_params):
 
-        if trial_params is None:
-            trial_params = {}
+        fn = self.paths['pop_zone_rates_remap']
+
+        default_params = self.default_trial_params | self.default_remap_params
         if remap_params is None:
             remap_params = {}
-
-        # update params if any differences from defaults
-        params = self.default_trial_params | self.default_remap_params
-        delta_trial_params = _dict_diff(self.default_trial_params, trial_params)
-        delta_remap_params = _dict_diff(self.default_remap_params, remap_params)
-        delta_params = {**delta_trial_params, **delta_remap_params}
-
-        # modify fn
-        fn = self.paths['zone_rates_remap']
-        if len(delta_params) > 0:
-            params.update(trial_params)
-            params.update(remap_params)
-            fn = append_analysis_mods_2_filename(fn, delta_params)
+        new_params = trial_params | remap_params
+        fn, params = _update_params_and_fn(fn, default_params, new_params)
 
         if not fn.exists() or overwrite:
             sessions_validity = self.get_track_validity_table()
@@ -566,6 +888,8 @@ class SummaryInfo:
             for subject in self.subjects:
                 subject_info = SubjectInfo(subject)
                 for session in subject_info.sessions:
+                    if session in self.invalid_sessions:
+                        continue
                     if session in valid_sessions:
                         session_info = SubjectSessionInfo(subject, session)
                         n_session_units = session_info.n_units
@@ -612,8 +936,11 @@ class SummaryInfo:
 
         return zone_rates
 
-    def get_zone_encoder(self, overwrite=False):
+    def get_zone_encoder(self, overwrite=False, **trial_params):
         fn = self.paths['zone_encoder']
+
+        fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
+
         exp_vars = ['max_lag', 'cue_type', 'rw_type', 'sp_type', 'dir_type', 'trial_seg']
         valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_encoder == 1].index)
 
@@ -624,6 +951,8 @@ class SummaryInfo:
             for subject in self.subjects:
                 subject_info = SubjectInfo(subject)
                 for session in subject_info.sessions:
+                    if session in self.invalid_sessions:
+                        continue
                     session_info = SubjectSessionInfo(subject, session)
 
                     try:
@@ -641,7 +970,7 @@ class SummaryInfo:
 
                         session_unit_table = session_info.session_unit_table
                         # session_encoder_res = session_info.get_zone_encoder_cue()
-                        res = session_info.get_zone_encoder()
+                        res = session_info.get_zone_encoder(**trial_params)
                         res = res[res.split == 'test']
 
                         res = res.groupby(['unit', 'unit_type'] + exp_vars,
@@ -674,8 +1003,10 @@ class SummaryInfo:
 
         return encoder_res
 
-    def get_zone_encoder_comps(self, overwrite=False):
+    def get_zone_encoder_comps(self, overwrite=False, **trial_params):
         fn = self.paths['zone_encoder_comps']
+        fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
+
         exp_vars = ['max_lag', 'cue_type', 'rw_type', 'sp_type', 'dir_type', 'trial_seg']
         valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_encoder == 1].index)
 
@@ -715,6 +1046,8 @@ class SummaryInfo:
             for subject in self.subjects:
                 subject_info = SubjectInfo(subject)
                 for session in subject_info.sessions:
+                    if session in self.invalid_sessions:
+                        continue
                     session_info = SubjectSessionInfo(subject, session)
 
                     try:
@@ -732,7 +1065,7 @@ class SummaryInfo:
 
                         session_unit_table = session_info.session_unit_table
                         # session_encoder_res = session_info.get_zone_encoder_cue()
-                        res = session_info.get_zone_encoder()
+                        res = session_info.get_zone_encoder(**params)
                         res = res[res.split == 'test']
 
                         res_comp = pd.DataFrame(index=range(n_session_units * len(encoder_comps_dict) * 3),
@@ -788,8 +1121,10 @@ class SummaryInfo:
 
         return encoder_res
 
-    def get_segment_rate_comps(self, verbose=False, overwrite=False):
+    def get_segment_rate_comps(self, verbose=False, overwrite=False, **trial_params):
         fn = self.paths['segment_rate_comps']
+        fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
+
         valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_rates_comps == True].index)
 
         comps = ['cue', 'rw', 'dir']
@@ -799,6 +1134,8 @@ class SummaryInfo:
             for subject in self.subjects:
                 subject_info = SubjectInfo(subject)
                 for session in subject_info.sessions:
+                    if session in self.invalid_sessions:
+                        continue
                     session_info = SubjectSessionInfo(subject, session)
 
                     try:
@@ -811,7 +1148,7 @@ class SummaryInfo:
 
                         n_session_units = session_info.n_units
 
-                        ta = tmf.TrialAnalyses(session_info)
+                        ta = tmf.TrialAnalyses(session_info, **trial_params)
 
                         res_dict = {}
                         for comp in comps:
@@ -851,8 +1188,9 @@ class SummaryInfo:
 
         return out_df
 
-    def get_zone_decoder(self, overwrite=False):
+    def get_zone_decoder(self, overwrite=False, **trial_params):
         fn = self.paths['zone_decoder']
+        fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
 
         valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_decoder == True].index)
         if not fn.exists() or overwrite:
@@ -861,6 +1199,8 @@ class SummaryInfo:
             for subject in self.subjects:
                 subject_info = SubjectInfo(subject)
                 for session in subject_info.sessions:
+                    if session in self.invalid_sessions:
+                        continue
                     session_info = SubjectSessionInfo(subject, session)
 
                     try:
@@ -900,8 +1240,9 @@ class SummaryInfo:
         decoder_res['zones'] = decoder_res['zones'].astype(pd.api.types.CategoricalDtype(tmz.zones2))
         return decoder_res
 
-    def get_zone_decoder_2_subj_behav(self, overwrite=False):
+    def get_zone_decoder_2_subj_behav(self, overwrite=False, **trial_params):
         fn = self.paths['zone_decoder_dec']
+        fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
 
         zones2 = tmf.TreeMazeZones().zones2
         stem_zones = zones2[:9]
@@ -913,6 +1254,8 @@ class SummaryInfo:
             for subject in self.subjects:
                 subject_info = SubjectInfo(subject)
                 for session in subject_info.sessions:
+                    if session in self.invalid_sessions:
+                        continue
                     session_info = SubjectSessionInfo(subject, session)
 
                     try:
@@ -928,7 +1271,7 @@ class SummaryInfo:
 
                         n_session_units = session_info.n_units
 
-                        session_decoder_res = session_info.get_zone_decoder()
+                        session_decoder_res = session_info.get_zone_decoder(**trial_params)
                         session_decoder_res = session_decoder_res[session_decoder_res.target_type.isin(['dec', 'cue'])]
                         session_decoder_res['cue_bias'] = session_decoder_res['pred'] == session_decoder_res['cue']
                         session_decoder_res['subj_perf'] = session_decoder_res['correct'] == 1
@@ -1009,6 +1352,8 @@ class SummaryInfo:
             for subject in self.subjects:
                 subject_info = SubjectInfo(subject)
                 for session in subject_info.sessions:
+                    if session in self.invalid_sessions:
+                        continue
                     if 'OF' in session:
                         session_info = SubjectSessionInfo(subject, session)
                         if session_info.n_units > 0:
@@ -1091,6 +1436,8 @@ class SummaryInfo:
         for subject in self.subjects:
             subject_info = SubjectInfo(subject)
             for session in subject_info.sessions:
+                if session in self.invalid_sessions:
+                    continue
                 if 'OF' in session:
                     session_info = SubjectSessionInfo(subject, session)
                     n_session_units = session_info.n_units
@@ -1298,25 +1645,20 @@ class SummaryInfo:
 
         return match_table
 
-    def get_combined_scores_matched_units(self, overwrite=False, match_type='lib',
-                                          of_model_analyses='orig', mean_multi_matches=True, trial_remap_params=None):
-        """
-        combines OF and TM results by matched unit.
-        :param overwrite: bool, if True, re-computes table
-        :param match_type: str, ['lib', 'con']
-        :param trial_remap_params: parameters for trial, will overwrite previous instance of table.
-        :return: table indexed by matched unit
-        """
+    def get_tm_scores(self, overwrite=False, trial_remap_params=None):
+        fn = self.paths['tm_scores']
 
-        fn = self.paths['combined_scores_table']
-        params = dict(match_type=match_type, of_model_analyses=of_model_analyses, mean_multi_matches=mean_multi_matches)
-        fn = append_analysis_mods_2_filename(fn, params)
+        template = self.get_data_template_df().copy()
+
+        default_params = self.default_trial_params | self.default_remap_params
+        if trial_remap_params is None:
+            trial_remap_params = {}
+
+        fn, _ = _update_params_and_fn(fn, default_params, trial_remap_params)
 
         if fn.exists() and not overwrite:
-            match_table = pd.read_csv(fn, index_col=0)
-            return match_table
+            return pd.read_csv(fn, index_col=0)
 
-        match_table = self.get_unit_match_table(match_type=match_type)
         tm_tables = {}
         if trial_remap_params is None:
             trial_remap_params = dict()
@@ -1333,8 +1675,7 @@ class SummaryInfo:
         ########## ----- encoder ----- ##########
         tm_enc_scores = self.get_zone_encoder_comps()
         tm_enc_selection = dict(expt=['cue', 'rw'],
-                                comp='inter_v_fixed',
-                                unit_type='cell')
+                                comp='inter_v_fixed')
         tm_enc_comp_table = self._select_table_rows(tm_enc_scores, **tm_enc_selection)
         tm_enc_comp_table = tm_enc_comp_table.pivot_table(index='cl_name', columns=['expt'],
                                                           values=['uz', 'mean_test', 'mean_null'])
@@ -1354,16 +1695,76 @@ class SummaryInfo:
 
         ########## ----- FR comp ----- ##########
         tm_seg_rates = self.get_segment_rate_comps(**trial_remap_params)
-        tm_fr_comp_table = self._select_table_rows(tm_seg_rates, **dict(unit_type='cell', comp=['cue', 'rw']))
-        tm_fr_comp_table['uz_val'] = np.abs(tm_fr_comp_table['uz_val'])
-        tm_fr_comp_table = tm_fr_comp_table.pivot_table(index='cl_name', columns=['comp'], values=['uz_val'])
-        tm_fr_comp_table.columns = ['fr_uz_cue', 'fr_uz_rw']
+        tm_fr_comp_table = self._select_table_rows(tm_seg_rates, **dict(comp=['cue', 'rw', 'dir']))
+        tm_fr_comp_table = tm_fr_comp_table.pivot_table(index='cl_name', columns=['comp', 'segment'], values='uz_val')
+        tm_fr_comp_table.columns = ["fr_uz_" + "_".join(cc) for cc in tm_fr_comp_table.columns]
 
+        # convert cue segment patterns into correc/incorrect groupings
+        t = tm_fr_comp_table[[s for s in tm_fr_comp_table.columns if 'uz_cue' in s]].dropna()
+        m_correct = pd.Series(index=t.columns, data=np.array([-1, 0, 1]))
+        tc = t.corrwith(m_correct, axis=1, method='kendall')
+        tm_fr_comp_table['fr_uz_tau_cue_correct'] = tc
+
+        # convert rw segment patterns into correct/incorrect groupings
+        t = tm_fr_comp_table[[s for s in tm_fr_comp_table.columns if 'uz_rw' in s]].dropna()
+        tz = (t > 0).sum(axis=1)
+        tz = (tz - 1.5) / 1.5  # normalize to [-1,1]
+        tm_fr_comp_table['fr_uz_tau_rw_correct'] = tz
         tm_tables['fr_comp'] = tm_fr_comp_table
+
+        ### combine
+        tm_columns = []
+        for k, v in tm_tables.items():
+            tm_columns += list(v.columns)
+
+        out_df = pd.DataFrame(index=template.index.values,
+                              columns=list(template.columns) + tm_columns)
+        for c in template.columns:
+            out_df[c] = template[c].copy()
+
+        for kk, table in tm_tables.items():
+            bool_table_match_idx = out_df.cl_name.isin(table.index)
+            idx = out_df.cl_name[bool_table_match_idx]
+            out_df.loc[bool_table_match_idx, table.columns] = table.loc[idx].values.astype(float)
+
+        out_df[tm_columns] = out_df[tm_columns].astype(float)
+        out_df = out_df.loc[out_df.task != 'OF']
+
+        ## add behavior
+        b = self.get_behav_perf()
+
+        def _map_behavior(s, measure):
+            x = b.loc[b.session == s, measure].values
+            if len(x) > 0:
+                return x[0]
+            else:
+                return np.nan
+        b_measures = ['n_trials', 'pct_correct', 'pct_sw_correct']
+        for m in b_measures:
+            out_df[m] = out_df.session.apply(_map_behavior, args=(m,))
+
+        ########## ----- Save ----- ##########
+        out_df.to_csv(fn)
+
+        return out_df
+
+    def get_of_scores(self, model_analyses=None, overwrite=False):
+        fn = self.paths['of_scores']
+
+        template = self.get_data_template_df().copy()
+
+        default_params = dict(model_analyses='orig')
+        if model_analyses is None:
+            params = dict(model_analyses='orig')
+
+        fn, _ = _update_params_and_fn(fn, default_params, params)
+
+        if fn.exists() and not overwrite:
+            return pd.read_csv(fn, index_col=0)
 
         ########## ----- OF results ----- ##########
         of_tables = {}
-        of_metric_scores, of_model_scores = self.get_of_results(model_analyses=of_model_analyses)
+        of_metric_scores, of_model_scores = self.get_of_results(model_analyses=params['model_analyses'])
         of_selection = dict(split='train',
                             metric=['r2', 'map_r', 'agg_sdp_coef', 'coef'],
                             unit_type='cell',
@@ -1385,35 +1786,77 @@ class SummaryInfo:
 
         of_tables['of_metrics'] = of_metric_score_table
 
-        ########## ----- Combine ----- ##########
-
-        tm_columns = []
-        for k, v in tm_tables.items():
-            tm_columns += list(v.columns)
-
+        ### combine
         of_columns = []
         for k, v in of_tables.items():
             of_columns += list(v.columns)
 
-        combined_columns = tm_columns + of_columns
-        combined_table = pd.DataFrame(index=match_table.index.values,
-                                      columns=['match_cl_id', 'subject'] + combined_columns)
-        combined_table['match_cl_id'] = match_table.match_cl_id
-        combined_table['subject'] = match_table.subject
-
-        for kk, table in tm_tables.items():
-            bool_table_match_idx = match_table.cl_name_T3.isin(table.index)
-            idx = match_table.cl_name_T3[bool_table_match_idx]
-            combined_table.loc[bool_table_match_idx, table.columns] = table.loc[idx].values.astype(float)
+        out_df = pd.DataFrame(index=template.index.values,
+                              columns=list(template.columns) + of_columns)
+        for c in template.columns:
+            out_df[c] = template[c].copy()
 
         for kk, table in of_tables.items():
-            bool_table_match_idx = match_table.cl_name_OF.isin(table.index)
-            idx = match_table.cl_name_OF[bool_table_match_idx]
-            combined_table.loc[bool_table_match_idx, table.columns] = table.loc[idx].values.astype(float)
+            bool_table_match_idx = out_df.cl_name.isin(table.index)
+            idx = out_df.cl_name[bool_table_match_idx]
+            out_df.loc[bool_table_match_idx, table.columns] = table.loc[idx].values.astype(float)
 
-        combined_table[combined_columns] = combined_table[combined_columns].astype(float)
-        combined_table.rename(columns={c: f'TM-{c}' for c in tm_columns}, inplace=True)
-        combined_table.rename(columns={c: f'OF-{c}' for c in of_columns}, inplace=True)
+        out_df[of_columns] = out_df[of_columns].astype(float)
+        out_df = out_df.loc[out_df.task == 'OF']
+
+        ########## ----- Save ----- ##########
+        out_df.to_csv(fn)
+
+        return out_df
+
+
+    def get_combined_scores_matched_units(self, overwrite=False, match_type='lib',
+                                          of_model_analyses=None, mean_multi_matches=True, trial_remap_params=None):
+        """
+        combines OF and TM results by matched unit.
+        :param overwrite: bool, if True, re-computes table
+        :param match_type: str, ['lib', 'con']
+        :param trial_remap_params: parameters for trial, will overwrite previous instance of table.
+        :return: table indexed by matched unit
+        """
+
+        fn = self.paths['combined_scores_table']
+        params = dict(match_type=match_type, of_model_analyses=of_model_analyses, mean_multi_matches=mean_multi_matches)
+        fn = append_analysis_mods_2_filename(fn, params)
+
+        default_params = self.default_trial_params | self.default_remap_params | dict(model_analyses='orig')
+        if trial_remap_params is None:
+            trial_remap_params = dict()
+        if of_model_analyses is None:
+            of_params = dict()
+        else:
+            of_params = dict(model_analyses=of_model_analyses)
+        params = trial_remap_params | of_params
+        fn, _ = _update_params_and_fn(fn, default_params, params)
+
+        if fn.exists() and not overwrite:
+            match_table = pd.read_csv(fn, index_col=0)
+            return match_table
+
+        match_table = self.get_unit_match_table(match_type=match_type)
+        tm_table = self.get_tm_scores(trial_remap_params=trial_remap_params)
+        of_table = self.get_of_scores(model_analyses=of_model_analyses)
+
+        tm_columns = tm_table.columns[10:]
+        of_columns = of_table.columns[10:]
+        columns = list(tm_columns) + list(of_columns)
+
+        idx_cols = ['match_cl_id', 'subject', 'session_T3', 'session_OF']
+        combined_table = pd.DataFrame(index = match_table.index.values, columns=idx_cols + columns)
+        combined_table[idx_cols] = match_table[idx_cols].copy()
+
+        bool_idx = match_table.cl_name_T3.isin(tm_table.cl_name)
+        cluster_names = match_table.cl_name_T3[bool_idx]
+        combined_table.loc[bool_idx, tm_columns] = tm_table.set_index('cl_name').loc[cluster_names, tm_columns].values
+
+        bool_idx = match_table.cl_name_OF.isin(of_table.cl_name)
+        cluster_names = match_table.cl_name_OF[bool_idx]
+        combined_table.loc[bool_idx, of_columns] = of_table.set_index('cl_name').loc[cluster_names, of_columns].values
 
         # compute mean across multi session matches
         if mean_multi_matches:
@@ -1478,9 +1921,11 @@ class SummaryInfo:
 
         return cluster_table
 
-    def get_hd_tm_scores_matched_clusters_data(self, overwrite=False):
+    def get_hd_tm_scores_matched_clusters_data(self, overwrite=False, **trial_params):
 
         fn = self.paths['matched_hd_scores_table']
+        fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
+
         if fn.exists() and not overwrite:
             out_table = pd.read_csv(fn, index_col=0)
             return out_table
@@ -1525,8 +1970,8 @@ class SummaryInfo:
         out_table['of_hd_ang'] = np.angle(np.exp(out_table['of_hd_ang'].astype(float) * 1j))
 
         # TM scores
-        segment_scores = self.get_segment_rate_comps()
-        remap_scores = self.get_zone_rates_remap()
+        segment_scores = self.get_segment_rate_comps(**trial_params)
+        remap_scores = self.get_zone_rates_remap(**trial_params)
         for ii in range(n_matches):
             cl_name = match_table.loc[ii, 'cl_name_T3']
 
@@ -1609,6 +2054,48 @@ class SummaryInfo:
         elif which == 'remap_scores':
             pass
 
+    def get_session_perf_partitions(self, overwrite=False):
+        "gets behavior performance partitions"
+        n_partitions = 3
+
+        id_cols = ['subject', 'session', 'task']
+        p_cols = [f"co_p{ii}" for ii in range(1, n_partitions+1)]
+        pc_cols = [f"co_cp{ii}" for ii in range(1, n_partitions+1)]
+        columns = id_cols + p_cols + pc_cols
+
+        fn = self.paths['perf_partitions']
+        if not fn.exists() or overwrite:
+            perf = pd.DataFrame(columns=columns)
+            for subject in self.subjects:
+                for session in self.sessions_by_subject[subject]:
+                    if 'T3' in session:
+                        try:
+                            si = self.get_session(session)
+
+                            sp = pd.DataFrame(index=range(1), columns=columns)
+                            sp.loc[0, id_cols] = subject, session, si.task
+
+                            be = si.get_event_behavior()
+                            trials = np.arange(be.n_trials)
+                            a = be.trial_table
+                            qs = np.quantile(trials, np.linspace(0, 1, n_partitions + 1))
+                            qs[-1] += 1
+
+                            d = np.digitize(trials, qs)
+
+                            sp.loc[0, p_cols] = [a.loc[d == ii, 'correct'].mean() for ii in range(1, n_partitions + 1)]
+                            sp.loc[0, pc_cols] = [a.loc[d <= ii, 'correct'].mean() for ii in range(1, n_partitions + 1)]
+
+                            perf = pd.concat((perf, sp), ignore_index=True)
+                        except:
+                            pass
+
+            perf.to_csv(fn)
+        else:
+            perf = pd.read_csv(fn, index_col=0)
+
+        return perf
+
     @staticmethod
     def _select_table_rows(table, **kwargs):
         idx = np.ones(len(table), dtype=bool)
@@ -1622,6 +2109,47 @@ class SummaryInfo:
     def get_session(self, session):
         subject = session.split('_')[0]
         return SubjectSessionInfo(subject, session)
+
+    def get_data_template_df(self, overwrite=False):
+        fn = self.paths['template_df']
+
+        if fn.exists() and not overwrite:
+            df = pd.read_csv(fn, index_col=0)
+            return df
+
+        template_columns = ['subject', 'session', 'task', 'date', 'suid', 'unit_type', 'tt', 'cl', 'depth', 'cl_name']
+        template_df = pd.DataFrame(index=pd.Series(name='uuid'), columns=template_columns)
+        out_df = template_df.copy()
+
+        uuid_cnt = 0
+        for s in self.subjects:
+            for se in self.sessions_by_subject[s]:
+                si = self.get_session(se)
+                n_se_units = si.n_units
+
+                se_df = pd.DataFrame(index=pd.Series(np.arange(n_se_units) + uuid_cnt, name='uuid'),
+                                     columns=template_columns)
+                se_df[['subject', 'session', 'task', 'date']] = s, se, si.task, si.date
+                se_df['suid'] = np.arange(n_se_units)
+
+                se_df['unit_type'] = se_df['suid'].map(si.unit_type_map)
+
+                se_df['tt'] = se_df['suid'].map(lambda x: si.cluster_ids[str(x)][1]).astype(int)
+                se_df['cl'] = se_df['suid'].map(lambda x: si.cluster_ids[str(x)][2]).astype(int)
+
+                for suid in se_df['suid']:
+                    tt = se_df.loc[se_df.suid == suid, 'tt'].values[0]
+                    cl = se_df.loc[se_df.suid == suid, 'cl'].values[0]
+                    d = si.sessions_tt_positions.loc[se, f"tt_{tt}"]
+                    se_df.loc[se_df.suid == suid, 'depth'] = d
+                    se_df.loc[se_df.suid == suid, 'cl_name'] = f"{se}-tt{tt}_d{d}_cl{cl}"
+
+                uuid_cnt += n_se_units
+                out_df = out_df.append(se_df)
+
+        out_df.to_csv(fn)
+
+        return out_df
 
 
 class SubjectInfo:
@@ -2258,7 +2786,9 @@ class SubjectInfo:
             paths['not_valid_pos_samps'] = paths['Results'] / 'not_valid_pos_samps.npy'
             paths['pos_zones'] = paths['Results'] / 'pos_zones.npy'
             paths['pos_zones_invalid_samps'] = paths['Results'] / 'pos_zones_invalid_samps.npy'
+
             paths['trial_zone_rates'] = paths['Results'] / 'trial_zone_rates.npy'
+            paths['bigseg_comps'] = paths['Results'] / 'bigseg_comps.csv'
             paths['cond_bigseg_rates'] = paths['Results'] / 'cond_bigseg_rates.csv'
             paths['zone_rates_comps'] = paths['Results'] / 'zone_rates_comps.csv'
             paths['zone_rates_remap'] = paths['Results'] / 'zone_rates_remap.csv'
@@ -2524,11 +3054,8 @@ class SubjectSessionInfo(SubjectInfo):
 
         self.enc_models = None
         self.ta = None
-        self.trial_params = dict(reward_blank=False,
-                                 not_inzone_blank=True,
-                                 valid_transitions_blank=True,
-                                 speed_blank=False,
-                                 trial_end='tE_2')
+        self.trial_params = _default_trial_analyses_params()
+        self.remap_params = _default_trial_remap_params()
 
         self.session_unit_table = self._session_unit_table()
 
@@ -2595,9 +3122,9 @@ class SubjectSessionInfo(SubjectInfo):
                 'binned_spikes': (self.get_binned_spikes, self.paths['cluster_binned_spikes'].exists()),
                 'fr': (self.get_fr, self.paths['cluster_fr'].exists()),
                 'scores': (self.get_scores, self.paths['cluster_OF_metrics'].exists()),
-                'encoding_models': (self.get_encoding_models, self.paths['cluster_OF_encoding_models'].exists()),
+                'encoding_models': (self.get_of_encoding_models, self.paths['cluster_OF_encoding_models'].exists()),
                 'encoding_models2': (
-                    self.get_encoding_models_scores2, self.paths['cluster_OF_encoding_models2'].exists())
+                    self.get_of_encoding_models_scores2, self.paths['cluster_OF_encoding_models2'].exists())
             }
         elif self.task[:2] == 'T3':
             analyses = {
@@ -2608,6 +3135,7 @@ class SubjectSessionInfo(SubjectInfo):
                 'pos_zones': (self.get_pos_zones, self.paths['pos_zones'].exists()),
                 'event_table': (self.get_event_behavior, self.paths['event_table'].exists()),
                 'trial_zone_rates': (self.get_trial_zone_rates, self.paths['trial_zone_rates'].exists()),
+                'bigseg_comps': (self.get_bigseg_comps, self.paths['bigseg_comps'].exists()),
                 'zone_rates_comps': (self.get_zone_rates_comps, self.paths['zone_rates_comps'].exists()),
                 'zone_rates_remap': (self.get_zone_rates_remap, self.paths['zone_rates_remap'].exists()),
                 'pop_zone_rates_remap': (self.get_pop_zone_rates_remap, self.paths['pop_zone_rates_remap'].exists()),
@@ -3070,7 +3598,7 @@ class SubjectSessionInfo(SubjectInfo):
 
         return scores
 
-    def get_encoding_model(self, model):
+    def get_of_encoding_model(self, model):
         """
         :param model: one or more of ['speed', 'hd', 'ha', 'border', 'position', 'grid']
         :return:dictionary containing model coefficients, training and test performance
@@ -3088,7 +3616,7 @@ class SubjectSessionInfo(SubjectInfo):
             else:
                 print()
 
-    def get_encoding_models(self, overwrite=False, save_flag=False, load_flag=False, **params):
+    def get_of_encoding_models(self, overwrite=False, save_flag=False, load_flag=False, **params):
         """
         obtains a object with all the models
         :returns: enc_models object
@@ -3118,7 +3646,7 @@ class SubjectSessionInfo(SubjectInfo):
 
         return self.enc_models
 
-    def get_encoding_models_scores(self, overwrite=False):
+    def get_of_encoding_models_scores(self, overwrite=False):
         """
         obtains a series of pandas data frames quantifying the extent of coding to environmental variables
         :param overwrite:
@@ -3131,7 +3659,7 @@ class SubjectSessionInfo(SubjectInfo):
         if self.task == 'OF':
             if not self.paths['cluster_OF_encoding_models'].exists() or overwrite:
                 params = dict(smooth_data=False)
-                sem = self.get_encoding_models(**params)
+                sem = self.get_of_encoding_models(**params)
                 # get scores and save
                 scores = sem.scores
                 scores.to_csv(self.paths['cluster_OF_encoding_models'])
@@ -3143,7 +3671,7 @@ class SubjectSessionInfo(SubjectInfo):
 
         return scores
 
-    def get_encoding_models_scores2(self, overwrite=False):
+    def get_of_encoding_models_scores2(self, overwrite=False):
         """
         obtains a series of pandas data frames quantifying the extent of coding to environmental variables
         :param overwrite:
@@ -3158,7 +3686,7 @@ class SubjectSessionInfo(SubjectInfo):
                 params = dict(models='sdp',
                               norm_resp='zscore',
                               secs_per_split=30.0)
-                sem = self.get_encoding_models(**params)
+                sem = self.get_of_encoding_models(**params)
                 # get scores and save
                 scores = sem.scores
                 scores.to_csv(self.paths['cluster_OF_encoding_models2'])
@@ -3177,16 +3705,13 @@ class SubjectSessionInfo(SubjectInfo):
 
     def get_trial_zone_rates(self, overwrite=False, **trial_params):
 
-        new_params = _dict_diff(self.trial_params, trial_params)
         fn = self.paths['trial_zone_rates']
-        if len(new_params) > 0:
-            fn = append_analysis_mods_2_filename(fn, new_params)
+        fn, params = _update_params_and_fn(fn, self.trial_params, trial_params)
 
         if self.task[:2] == 'T3':
-
             if not fn.exists() or overwrite:
                 if self.ta is None:
-                    self.get_trial_analyses(**trial_params)
+                    self.get_trial_analyses(**params)
                 fr_tz = self.ta.get_all_trial_zone_rates(occupation_thr=self.task_params['occ_trial_zone_thr'])
                 np.save(fn, fr_tz['out'])
             else:
@@ -3195,22 +3720,19 @@ class SubjectSessionInfo(SubjectInfo):
         else:
             raise NotImplementedError
 
-    def get_bigseg_cond_rates(self, overwrite=False, **trial_params):
-
-        fn = self.paths['cond_bigseg_rates']
-        new_params = _dict_diff(self.trial_params, trial_params)
-        if len(new_params) > 0:
-            fn = append_analysis_mods_2_filename(fn, new_params)
+    def get_bigseg_comps(self, overwrite=False, **trial_params):
+        fn = self.paths['bigseg_comps']
+        fn, params = _update_params_and_fn(fn, self.trial_params, trial_params)
 
         if self.task[:2] == 'T3':
             if not fn.exists() or overwrite:
                 if self.ta is None:
-                    self.get_trial_analyses(**trial_params)
-                mr = tmf.mean_segment_rates_analysis(self, self.ta)
-                mr.to_csv(fn)
+                    self.get_trial_analyses(**params)
+                md = tmf.mean_segment_rates_diff_analysis(self, self.ta)
+                md.to_csv(fn)
             else:
-                mr = pd.read_csv(fn, index_col=0)
-            return mr
+                md = pd.read_csv(fn, index_col=0)
+            return md
         else:
             raise NotImplementedError
 
@@ -3226,21 +3748,32 @@ class SubjectSessionInfo(SubjectInfo):
         else:
             raise NotImplementedError
 
-    def get_zone_rates_remap(self, overwrite=False, **trial_remap_params):
+    def get_bigseg_cond_rates(self, overwrite=False, **trial_params):
 
-        params = dict(zr_method='trial',
-                      corr_method='kendall',
-                      reward_blank=False,
-                      not_inzone_blank=True,
-                      valid_transitions_blank=True,
-                      speed_blank=False,
-                      trial_end='tE_2')
+        fn = self.paths['cond_bigseg_rates']
+        fn, params = _update_params_and_fn(fn, self.trial_params, trial_params)
 
-        params.update(trial_remap_params)
+        if self.task[:2] == 'T3':
+            if not fn.exists() or overwrite:
+                if self.ta is None:
+                    self.get_trial_analyses(**params)
+                mr = tmf.mean_segment_rates_analysis(self, self.ta)
+                mr.to_csv(fn)
+            else:
+                mr = pd.read_csv(fn, index_col=0)
+            return mr
+        else:
+            raise NotImplementedError
+
+    def get_zone_rates_remap(self, overwrite=False, remap_params=None, **trial_params):
 
         fn = self.paths['zone_rates_remap']
-        if len(trial_remap_params) > 0:
-            fn = append_analysis_mods_2_filename(fn, params)
+
+        default_params = self.trial_params | self.remap_params
+        if remap_params is None:
+            remap_params = {}
+        new_params = trial_params | remap_params
+        fn, params = _update_params_and_fn(fn, default_params, new_params)
 
         if self.task[:2] == 'T3':
             if not fn.exists() or overwrite:
@@ -3255,18 +3788,14 @@ class SubjectSessionInfo(SubjectInfo):
         else:
             raise NotImplementedError
 
-    def get_pop_zone_rates_remap(self, overwrite=False, **trial_remap_params):
-        params = dict(corr_method='kendall',
-                      reward_blank=False,
-                      not_inzone_blank=True,
-                      valid_transitions_blank=True,
-                      speed_blank=False,
-                      trial_end='tE_2')
-        params.update(trial_remap_params)
-
+    def get_pop_zone_rates_remap(self, overwrite=False, remap_params=None, **trial_params):
         fn = self.paths['pop_zone_rates_remap']
-        if len(trial_remap_params) > 0:
-            fn = append_analysis_mods_2_filename(fn, params)
+
+        default_params = self.trial_params | self.remap_params
+        if remap_params is None:
+            remap_params = {}
+        new_params = trial_params | remap_params
+        fn, params = _update_params_and_fn(fn, default_params, new_params)
 
         if self.task[:2] == 'T3':
             if not fn.exists() or overwrite:
@@ -3279,20 +3808,13 @@ class SubjectSessionInfo(SubjectInfo):
         else:
             raise NotImplementedError
 
-    def get_bal_conds_seg_rates(self, overwrite=False, **trial_params):
-        params = dict(segment_type='bigseg',
-                      reward_blank=False,
-                      not_inzone_blank=True,
-                      valid_transitions_blank=True,
-                      speed_blank=False,
-                      trial_end='tE_2',
-                      n_boot=50)
-
-        params.update(trial_params)
+    def get_bal_conds_seg_rates(self, overwrite=False, segment_type='big_seg', n_boot=50, **trial_params):
 
         fn = self.paths['bal_conds_seg_rates']
-        if len(trial_params) > 0:
-            fn = append_analysis_mods_2_filename(fn, params)
+
+        default_params = self.trial_params | dict(segment_type='big_seg', n_boot=50)
+        new_params = trial_params | dict(segment_type=segment_type, n_boot=n_boot)
+        fn, params = _update_params_and_fn(fn, default_params, new_params)
 
         if self.task[:2] == 'T3':
 
@@ -3306,20 +3828,12 @@ class SubjectSessionInfo(SubjectInfo):
         else:
             raise NotImplementedError
 
-    def get_bal_conds_seg_boot_rates(self, overwrite=False, **trial_params):
-        params = dict(segment_type='subseg',
-                      reward_blank=False,
-                      not_inzone_blank=True,
-                      valid_transitions_blank=True,
-                      speed_blank=False,
-                      trial_end='tE_2',
-                      n_boot=50)
-
-        params.update(trial_params)
-
+    def get_bal_conds_seg_boot_rates(self, overwrite=False, segment_type='subseg', n_boot=50, **trial_params):
         fn = self.paths['bal_conds_seg_boot_rates']
-        if len(trial_params) > 0:
-            fn = append_analysis_mods_2_filename(fn, params)
+
+        default_params = self.trial_params | dict(segment_type='subseg', n_boot=50)
+        new_params = trial_params | dict(segment_type=segment_type, n_boot=n_boot)
+        fn, params = _update_params_and_fn(fn, default_params, new_params)
 
         if self.task[:2] == 'T3':
             if not fn.exists() or overwrite:
@@ -3333,9 +3847,12 @@ class SubjectSessionInfo(SubjectInfo):
         else:
             raise NotImplementedError
 
-    def get_zone_encoder(self, overwrite=False):
+    def get_zone_encoder(self, overwrite=False, **trial_params):
+
+        fn = self.paths['zone_encoder']
+        fn, params = _update_params_and_fn(fn, self.trial_params, trial_params)
+
         if self.task[:2] == 'T3':
-            fn = self.paths['zone_encoder']
             if not fn.exists() or overwrite:
                 exp_sets = [dict(max_lag=lag) for lag in [-50, 0, 50]]
 
@@ -3376,49 +3893,6 @@ class SubjectSessionInfo(SubjectInfo):
             return df
         else:
             raise NotImplementedError
-
-
-def append_analysis_mods_2_filename(fn, params):
-    """
-    appends a string extension to a filename that reflects the values in the params dictionary
-    :param fn: pathlib path instance
-    :param params: dictionary of analyses modifications
-    :return: modified fn
-    """
-    # experiment string
-    exp_str = '_'
-    #
-    # if ~isinstance(params, dict):
-    #     print("invalid input")
-    #     return fn
-    for k, v in params.items():
-        if k == 'parallel':
-            continue
-        if type(v) == 'str':
-            exp_str += v
-        elif type(v) == bool:
-            exp_str += str(int(v))
-        else:
-            exp_str += str(v)
-
-    if len(params) > 0:
-        name = fn.name.split('.')
-        name2 = name[0] + exp_str + '.' + name[1]
-        fn = fn.parent / name2
-
-    return fn
-
-
-def _dict_diff(a, b):
-    "returns a dictionary with entries that are either different in b or additional"
-    c = {}
-    for k, v in b.items():
-        if k in a:
-            if a[k] != v:
-                c[k] = v
-        else:
-            c[k] = v
-    return c
 
 
 def get_task_params(session_info):
@@ -3707,6 +4181,72 @@ def get_task_params(session_info):
         task_params['height'] = task_params['n_y_bins']
 
     return task_params
+
+
+def append_analysis_mods_2_filename(fn, params):
+    """
+    appends a string extension to a filename that reflects the values in the params dictionary
+    :param fn: pathlib path instance
+    :param params: dictionary of analyses modifications
+    :return: modified fn
+    """
+    # experiment string
+    exp_str = '_'
+    #
+    # if ~isinstance(params, dict):
+    #     print("invalid input")
+    #     return fn
+    for k, v in params.items():
+        if k == 'parallel':
+            continue
+        exp_str += k[0]
+        if type(v) == 'str':
+            exp_str += v
+        elif type(v) == bool:
+            exp_str += str(int(v))
+        else:
+            exp_str += str(v)
+
+    if len(params) > 0:
+        name = fn.name.split('.')
+        name2 = name[0] + exp_str + '.' + name[1]
+        fn = fn.parent / name2
+
+    return fn
+
+
+def _dict_diff(a, b):
+    "returns a dictionary with entries that are either different in b or additional"
+    c = {}
+    for k, v in b.items():
+        if k in a:
+            if a[k] != v:
+                c[k] = v
+        else:
+            c[k] = v
+    return c
+
+
+def _default_trial_analyses_params():
+    return dict(reward_blank=False,
+                not_inzone_blank=True,
+                valid_transitions_blank=True,
+                speed_blank=False,
+                trial_end='tE_2')
+
+
+def _default_trial_remap_params():
+    return dict(zr_method='trial', corr_method='kendall')
+
+
+def _update_params_and_fn(fn, old_params, new_params):
+    params_delta = _dict_diff(old_params, new_params)
+    params = copy.deepcopy(old_params)
+    if len(params_delta) > 0:
+        fn = append_analysis_mods_2_filename(fn, params_delta)
+        params.update(new_params)
+
+    return fn, params
 
 # def save_dict_to_hdf5(dic, filename):
 #     """
