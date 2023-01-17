@@ -1,4 +1,12 @@
-# TreeMazeAnalyses2
+# TreeMazeAnalyses
+
+## Pre-print
+https://www.biorxiv.org/content/10.1101/2022.12.15.520660v1
+
+## Processed Timeseries by session data on Dandi:
+https://dandiarchive.org/dandiset/000405
+
+## Additional Metadata Files on the metadata folder.
 
 ## Installation on development
 1) Download zip or git clone.
@@ -7,14 +15,14 @@
 3) activate the environment:
 '$ souce activate new_env'
 4) change directory to the clonned treemaze directory and install:
-'$ cd TreeMazeAnalyses2'
+'$ cd TMA'
 '$ python setup.py develop'
 5) install requirements
 '$ pip install -r requirements.txt'
 6) copy notebooks outside of package, eg:
-'$ cp ~Documents/TreeMazeAnalyses2/Analyses/Notebooks/* ~/Documents/Notebooks/*'
+'$ cp ~Documents/TMA/Analyses/Notebooks/* ~/Documents/Notebooks/*'
 7) use it! open python and try:
-import treemazeanalysese2
+import TMA
 
 
 8) Depending on your setup, link to a google drive for access to the data:
