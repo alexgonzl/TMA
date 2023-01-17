@@ -12,6 +12,7 @@ import datetime
 from importlib import reload
 import warnings
 from joblib import delayed, Parallel
+from typing import Union
 
 import Analyses.spike_functions as spike_funcs
 import Analyses.spatial_functions as spatial_funcs
@@ -25,8 +26,12 @@ import Analyses.plot_functions as pf
 import scipy.signal as signal
 
 import ipywidgets as widgets
-from ipywidgets import interact, fixed, interact_manual
 from IPython.display import display
+
+from pynwb import NWBFile, TimeSeries, NWBHDF5IO
+from pynwb.core import DynamicTable, NWBContainer
+from pynwb.file import Subject
+from datetime import datetime
 
 """
 Classes in this file will have several retrieval processes to acquire the required information for each
@@ -85,6 +90,8 @@ class SummaryInfo:
 
         self.default_trial_params = _default_trial_analyses_params()
 
+        self.tdf = self.get_data_template_df()
+
     def select_session(self):
         subject_widget = widgets.Dropdown(options=self.subjects)
         session_widget = widgets.Dropdown(options=self.sessions_by_subject[subject_widget.value])
@@ -103,6 +110,19 @@ class SummaryInfo:
         o = widgets.interactive(get_session, subject=subject_widget, task=task_widget, session=session_widget)
         display(o)
         return o
+
+    def get_info_from_cl_name(self, cl_name):
+        return self.tdf[self.tdf.cl_name == cl_name]
+
+    def get_si_suid_from_cl_name(self, cl_name):
+        unit_info = self.get_info_from_cl_name(cl_name)
+        return unit_info['session'], unit_info['suid']
+
+    def get_cl_name_from_se_suid(self, session, suid):
+        return self.tdf.loc[(self.tdf.session == session) & (self.tdf.suid == suid), 'cl_name']
+
+    def get_uuid_from_se_suid(self, session, suid):
+        return self.tdf[(self.tdf.session == session) & (self.tdf.suid == suid)].index[0]
 
     def run_analyses(self, task='all', which='all', verbose=False, overwrite=False,
                      overwrite_old=False, overwrite_old_days=1, parallel=False, n_jobs=5, **params):
@@ -261,6 +281,8 @@ class SummaryInfo:
             results_path = root_path / 'Results_Summary'
             figures_path = root_path / 'Figures'
 
+        metadata = Path(__file__).parent.absolute().parents[0] / 'metadata'
+
         paths = dict(
             all_behavior_perf=results_path / 'all_behavior_perf.xlsx',
             analyses_table=results_path / 'analyses_table.csv',
@@ -280,7 +302,6 @@ class SummaryInfo:
             of_model_scores=results_path / 'of_model_scores_summary_table_agg.csv',
             bigseg_comps=results_path / 'bigseg_comps.csv',
             bigseg_cond_rates=results_path / 'bigseg_cond_rates.csv',
-            segment_selective_units=results_path / 'segment_selective_units.csv',
             segment_selective_unit_rates=results_path / 'segment_selective_unit_rates.csv',
             comp_selective_unit_rates=results_path / 'comp_selective_unit_rates.csv',
             zone_rates_comps=results_path / 'zone_rates_comps_summary_table.csv',
@@ -292,11 +313,16 @@ class SummaryInfo:
             segment_rate_comps=results_path / 'segment_rate_comps.csv',
             zone_encoder_lag=results_path / 'zone_encoder_lag.csv',
             zone_encoder_cue=results_path / 'zone_encoder_cue.csv',
+            zone_encoder_rate_coefs=results_path / 'zone_encoder_rate_coefs.csv',
             zone_decoder=results_path / 'zone_decoder.csv',
-            zone_decoder_dec=results_path / 'zone_decoder_dec.csv',
+            zone_neural_decoder=results_path / 'zone_neural_decoder.csv',
+            zone_decoder_cue=results_path / 'zone_decoder_cue.csv',
+            zone_decoder_dec_rw=results_path / 'zone_decoder_dec_rw.csv',
+
         )
         paths['results'] = results_path
         paths['figures'] = figures_path
+        paths['metadata'] = metadata
 
         return paths
 
@@ -383,6 +409,40 @@ class SummaryInfo:
             zone_rates = pd.read_csv(self.paths['zone_rates_comps'], index_col=0)
 
         return zone_rates
+
+    def get_bigseg_comps(self, overwrite=False, **trial_params):
+        fn = self.paths['bigseg_comps']
+        fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
+
+        if fn.exists() and not overwrite:
+            out_table = pd.read_csv(fn, index_col=0)
+            return out_table
+
+        out_df = self.get_data_template_df().copy()
+        out_df = out_df.loc[out_df.task != 'OF', ['subject', 'session', 'task', 'suid', 'unit_type', 'cl_name']]
+
+        data_columns = self.get_session('Li_T3g_052918').get_bigseg_comps().columns
+        out_df[data_columns] = np.nan
+
+        for s in self.subjects:
+            sessions = out_df.loc[out_df.subject == s, 'session']
+            for se in sessions:
+                if se in self.invalid_sessions:
+                    continue
+                si = self.get_session(se)
+                n_se_units = si.n_units
+
+                idx = out_df.session == se
+                assert idx.sum() == n_se_units
+
+                try:
+                    se_data = si.get_bigseg_comps(**params)
+                    out_df.loc[idx, data_columns] = se_data.values
+                except:
+                    pass
+
+        out_df.to_csv(fn)
+        return out_df
 
     def get_bigseg_cond_rates(self, overwrite=False, **trial_params):
         fn = self.paths['bigseg_cond_rates']
@@ -490,49 +550,50 @@ class SummaryInfo:
 
         return t3, z
 
-    def get_segment_selective_units(self, overwrite=False, **trial_params) -> pd.DataFrame:
-        fn = self.paths['segment_selective_units']
+    def get_segment_selective_units(self, n_units=8, **trial_params) -> pd.DataFrame:
+
+        df = self.get_bigseg_comps(**trial_params)
+        maze_segments = ['left', 'stem', 'right']
+        trial_segments = ['out', 'in']
+        unit_type = 'cell'
+
+        df = df[df.unit_type == unit_type]
+
+        out_df = pd.DataFrame(index=range(n_units * len(maze_segments) * len(trial_segments)),
+                              columns=['rank', 'uuid', 'cl_name', 'ts', 'ms', 'val'])
+        cnt = 0
+        for ts in trial_segments:
+            for ms in maze_segments:
+                out_block_idx = np.arange(n_units) + cnt
+
+                out_df.loc[out_block_idx, 'rank'] = np.arange(n_units) + 1
+                out_df.loc[out_block_idx, 'ms'] = ms
+                out_df.loc[out_block_idx, 'ts'] = ts
+
+                col = f'All_{ts}_{ms}_z'
+                sorted_df = df.sort_values(col).dropna().iloc[:n_units]
+                out_df.loc[out_block_idx, 'uuid'] = sorted_df.index.values
+                out_df.loc[out_block_idx, 'cl_name'] = sorted_df.cl_name.values
+                out_df.loc[out_block_idx, 'val'] = sorted_df[col].values
+
+                cnt += n_units
+
+        return out_df
+
+    def get_segment_selective_unit_rates(self, overwrite=False, n_units=8, **trial_params) -> pd.DataFrame:
+
+        fn = self.paths['segment_selective_unit_rates']
+
         fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
 
         if fn.exists() and not overwrite:
-            out_df = pd.read_csv(fn, index_col=0)
-            return out_df
-
-        df = self.get_bigseg_comps()
-        maze_segments = ['left', 'stem', 'right']
-        trial_segments = ['out', 'in']
-        unit_types = ['cell']
-        n_units = 8
-
-        out_df = pd.DataFrame(index=range(n_units * 2), columns=['ts', 'rank'] + maze_segments)
-        cnt = 0
-        for ts in trial_segments:
-            block_idx = np.arange(n_units) + cnt
-
-            out_df.loc[block_idx, 'ts'] = ts
-            out_df.loc[block_idx, 'rank'] = np.arange(n_units) + 1
-
-            selected_columns = [f'All_{ts}_{s}_z' for s in maze_segments]
-            aa = df.loc[df.unit_type.isin(unit_types), selected_columns].rename(
-                columns={k: v for k, v in zip(selected_columns, maze_segments)})
-            for ss in maze_segments:
-                out_df.loc[block_idx, ss] = aa.sort_values(ss, ascending=False).index[:n_units].values
-            cnt += n_units
-
-        out_df.to_csv(fn)
-        return out_df
-    def get_segment_selective_unit_rates(self, overwrite=False, **trial_params) -> pd.DataFrame:
-        fn1 = self.paths['segment_selective_units']
-        fn2 = self.paths['segment_selective_unit_rates']
-
-        fn1, params = _update_params_and_fn(fn1, self.default_trial_params, trial_params)
-        fn2, _ = _update_params_and_fn(fn2, self.default_trial_params, trial_params)
-
-        if fn2.exists() and not overwrite:
-            zone_rates = pd.read_csv(fn2, index_col=0)
+            zone_rates = pd.read_csv(fn, index_col=0)
             return zone_rates
 
-        uuids = self.get_segment_selective_units(**params)
+        # TODO: need to update this function after changing segment_selective units data structure
+        raise NotImplementedError
+
+        uuids = self.get_segment_selective_units(n_units=n_units, **trial_params)
 
         maze_segments = ['left', 'stem', 'right']
         trial_segments = ['out', 'in']
@@ -565,19 +626,20 @@ class SummaryInfo:
                 zone_rates.loc[cnt, tmz.all_segs_names] = ta.get_avg_trial_zone_rates(trial_seg=ts).loc[suid].values
                 cnt += 1
 
-        zone_rates.to_csv(fn2)
+        zone_rates.to_csv(fn)
         return zone_rates
-    def get_comp_selective_units(self, comp='cue', overwrite=None, **trial_params) -> pd.DataFrame:
+
+    def get_comp_selective_units(self, comp='cue', n_units=8, **trial_params) -> pd.DataFrame:
 
         assert comp in ['cue', 'rw', 'dir']
 
-        if comp=='cue':
+        if comp == 'cue':
             pos_val = 'CR'
             neg_val = 'CL'
-        elif comp=='rw':
+        elif comp == 'rw':
             pos_val = 'Co'
             neg_val = 'Inco'
-        elif comp=='dir':
+        elif comp == 'dir':
             pos_val = 'out'
             neg_val = 'in'
         else:
@@ -585,15 +647,13 @@ class SummaryInfo:
 
         df = self.get_segment_rate_comps(**trial_params)
         maze_segments = ['left', 'stem', 'right']
-        n_units = 8
 
-        df = df[df.unit_type=='cell']
+        df = df[df.unit_type == 'cell']
 
         out_df = pd.DataFrame(index=range(n_units * len(maze_segments) * 2),
                               columns=['ms', comp, 'rank', 'cl_name', 'uz_val'])
         cnt = 0
         for ms in maze_segments:
-
             df_idx = (df.comp == comp) & (df.segment == ms)
             sorted_df = df[df_idx].sort_values('uz_val')
             sorted_units = sorted_df.cl_name
@@ -619,12 +679,13 @@ class SummaryInfo:
 
             cnt += n_units
 
-        temp =  self.get_data_template_df()
         def foo(x):
-            return temp[temp.cl_name == x].index[0]
+            return self.tdf[self.tdf.cl_name == x].index[0]
+
         out_df['uuid'] = out_df.cl_name.map(foo)
 
         return out_df
+
     def get_comp_selective_unit_rates(self, overwrite=False, comp='cue', **trial_params) -> pd.DataFrame:
 
         fn = self.paths['comp_selective_unit_rates']
@@ -636,26 +697,27 @@ class SummaryInfo:
             zone_rates = pd.read_csv(fn, index_col=0)
             return zone_rates
 
-        df =  self.get_comp_selective_units(comp=comp, **trial_params)
+        df = self.get_comp_selective_units(comp=comp, **trial_params)
 
         maze_segments = ['left', 'stem', 'right']
         comp_vals = df[comp].unique()
         n_total_units = len(df)
-        n_selection_units = n_total_units / (len(maze_segments)*len(comp_vals))
+        n_selection_units = n_total_units / (len(maze_segments) * len(comp_vals))
 
-        if comp=='cue':
+        if comp == 'cue':
             conds = np.array(['CL', 'CR'])
             trial_seg = 'out'
-        elif comp=='rw':
+        elif comp == 'rw':
             conds = np.array(['Co', 'Inco'])
             trial_seg = 'in'
-        elif comp=='dir':
+        elif comp == 'dir':
             trial_segs = np.array(['out', 'in'])
         else:
             raise ValueError
 
         tmz = tmf.TreeMazeZones()
-        zone_rates = pd.DataFrame(index=np.arange(n_total_units*2), columns=['uuid', 'ms', comp , 'cond'] + tmz.all_segs_names)
+        zone_rates = pd.DataFrame(index=np.arange(n_total_units * 2),
+                                  columns=['uuid', 'ms', comp, 'cond'] + tmz.all_segs_names)
 
         template_df = self.get_data_template_df()
         cnt = 0
@@ -664,60 +726,28 @@ class SummaryInfo:
             si = self.get_session(session)
             ta = tmf.TrialAnalyses(si)
 
-            for ii, idx in enumerate(df.loc[df.uuid==uuid].index):
+            for ii, idx in enumerate(df.loc[df.uuid == uuid].index):
                 zone_rates.loc[cnt, ['uuid', 'ms', comp]] = df.loc[idx, ['uuid', 'ms', comp]].values
-                zone_rates.loc[cnt+1, ['uuid', 'ms', comp]] = df.loc[idx, ['uuid', 'ms', comp]].values
+                zone_rates.loc[cnt + 1, ['uuid', 'ms', comp]] = df.loc[idx, ['uuid', 'ms', comp]].values
 
-                if comp=='dir':
+                if comp == 'dir':
                     trials = ta.get_condition_trials(condition='All')
                     for kk, ts in enumerate(trial_segs):
-                        zone_rates.loc[cnt, tmz.all_segs_names] = ta.get_avg_trial_zone_rates(trials=trials, trial_seg=ts).loc[suid].values
+                        zone_rates.loc[cnt, tmz.all_segs_names] = \
+                            ta.get_avg_trial_zone_rates(trials=trials, trial_seg=ts).loc[suid].values
                         zone_rates.loc[cnt, 'cond'] = ts
-                        cnt+=1
+                        cnt += 1
                 else:
                     ts = trial_seg
                     for kk, cond in enumerate(conds):
                         trials = ta.get_condition_trials(condition=cond)
-                        zone_rates.loc[cnt, tmz.all_segs_names] = ta.get_avg_trial_zone_rates(trials=trials, trial_seg=ts).loc[suid].values
+                        zone_rates.loc[cnt, tmz.all_segs_names] = \
+                            ta.get_avg_trial_zone_rates(trials=trials, trial_seg=ts).loc[suid].values
                         zone_rates.loc[cnt, 'cond'] = cond
-                        cnt+=1
+                        cnt += 1
 
         zone_rates.to_csv(fn)
         return zone_rates
-
-    def get_bigseg_comps(self, overwrite=False, **trial_params):
-        fn = self.paths['bigseg_comps']
-        fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
-
-        if fn.exists() and not overwrite:
-            out_table = pd.read_csv(fn, index_col=0)
-            return out_table
-
-        out_df = self.get_data_template_df().copy()
-        out_df = out_df.loc[out_df.task != 'OF', ['subject', 'session', 'task', 'suid', 'unit_type', 'cl_name']]
-
-        data_columns = self.get_session('Li_T3g_052918').get_bigseg_comps().columns
-        out_df[data_columns] = np.nan
-
-        for s in self.subjects:
-            sessions = out_df.loc[out_df.subject == s, 'session']
-            for se in sessions:
-                if se in self.invalid_sessions:
-                    continue
-                si = self.get_session(se)
-                n_se_units = si.n_units
-
-                idx = out_df.session == se
-                assert idx.sum() == n_se_units
-
-                try:
-                    se_data = si.get_bigseg_comps(**params)
-                    out_df.loc[idx, data_columns] = se_data.values
-                except:
-                    pass
-
-        out_df.to_csv(fn)
-        return out_df
 
     def get_bal_conds_seg_rates(self, overwrite=False, segment_type='big_seg', n_boot=50, **trial_params):
 
@@ -1240,6 +1270,165 @@ class SummaryInfo:
         decoder_res['zones'] = decoder_res['zones'].astype(pd.api.types.CategoricalDtype(tmz.zones2))
         return decoder_res
 
+    def get_zone_decoder_cue(self, overwrite=False, **trial_params):
+        fn = self.paths['zone_decoder_cue']
+        fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
+
+        valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_decoder == True].index)
+        if not fn.exists() or overwrite:
+            decoder_res = pd.DataFrame()
+
+            for subject in self.subjects:
+                subject_info = SubjectInfo(subject)
+                for session in subject_info.sessions:
+                    if session in self.invalid_sessions:
+                        continue
+                    session_info = SubjectSessionInfo(subject, session)
+
+                    try:
+                        if session not in valid_sessions:
+                            continue
+
+                        if session_info.n_units == 0:
+                            # skip if no units
+                            continue
+
+                        if not session_info.paths['zone_decoder_cue'].exists():
+                            continue
+
+                        n_session_units = session_info.n_units
+
+                        t = session_info.get_zone_decoder_cue()
+                        t.loc[t['feature_add'].isna(), 'feature_add'] = 'None'
+                        session_decoder_res = t.groupby(['target_type', 'zones', 'feature_add'], observed=True)[
+                            'acc', 'bac', 'dist', 'logit_dist', 'ldn', 'pr_target'].mean().reset_index()
+                        session_decoder_res['subject'] = subject
+                        session_decoder_res['session'] = session
+                        session_decoder_res['task'] = session_info.task
+                        session_decoder_res['n_units'] = n_session_units
+
+                    except:
+                        print(f'Error Processing Session {session}')
+                        traceback.print_exc(file=sys.stdout)
+                        continue
+                    decoder_res = decoder_res.append(session_decoder_res)
+
+            decoder_res = decoder_res.reset_index(drop=True)
+            decoder_res.to_csv(fn)
+        else:
+            decoder_res = pd.read_csv(fn, index_col=0)
+
+        tmz = tmf.TreeMazeZones()
+        decoder_res['zones'] = decoder_res['zones'].astype(pd.api.types.CategoricalDtype(tmz.zones2))
+        return decoder_res
+
+    def get_zone_decoder_dec_rw(self, overwrite=False, **trial_params):
+        fn = self.paths['zone_decoder_dec_rw']
+        fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
+
+        valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_decoder == True].index)
+        if not fn.exists() or overwrite:
+            decoder_res = pd.DataFrame()
+
+            for subject in self.subjects:
+                subject_info = SubjectInfo(subject)
+                for session in subject_info.sessions:
+                    if session in self.invalid_sessions:
+                        continue
+                    session_info = SubjectSessionInfo(subject, session)
+
+                    try:
+                        if session not in valid_sessions:
+                            continue
+
+                        if session_info.n_units == 0:
+                            # skip if no units
+                            continue
+
+                        if not session_info.paths['zone_decoder_dec_rw'].exists():
+                            continue
+
+                        n_session_units = session_info.n_units
+
+                        t = session_info.get_zone_decoder_dec_rw()
+                        t.loc[t['feature_add'].isna(), 'feature_add'] = 'None'
+                        t['cue_match'] = t['cue'] == t['pred']
+                        session_decoder_res = \
+                            t.groupby(['target_type', 'zones', 'feature_add', 'trial_type', 'fold'], observed=True)[
+                                'acc', 'bac', 'dist', 'logit_dist', 'ldn', 'pr_target', 'correct', 'cue_match'].mean().reset_index()
+                        session_decoder_res['subject'] = subject
+                        session_decoder_res['session'] = session
+                        session_decoder_res['task'] = session_info.task
+                        session_decoder_res['n_units'] = n_session_units
+
+                    except:
+                        print(f'Error Processing Session {session}')
+                        traceback.print_exc(file=sys.stdout)
+                        continue
+                    decoder_res = decoder_res.append(session_decoder_res)
+
+            decoder_res = decoder_res.reset_index(drop=True)
+            decoder_res.to_csv(fn)
+        else:
+            decoder_res = pd.read_csv(fn, index_col=0)
+
+        tmz = tmf.TreeMazeZones()
+        decoder_res['zones'] = decoder_res['zones'].astype(pd.api.types.CategoricalDtype(tmz.zones2))
+        return decoder_res
+
+    def get_zone_neural_decoder(self, overwrite=False, **trial_params):
+        fn = self.paths['zone_neural_decoder']
+        fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
+
+        valid_sessions = list(self.analyses_table.loc[self.analyses_table.zone_decoder == True].index)
+        if not fn.exists() or overwrite:
+            decoder_res = pd.DataFrame()
+
+            for subject in self.subjects:
+                subject_info = SubjectInfo(subject)
+                for session in subject_info.sessions:
+                    if session in self.invalid_sessions:
+                        continue
+                    session_info = SubjectSessionInfo(subject, session)
+
+                    try:
+                        if session not in valid_sessions:
+                            continue
+
+                        if session_info.n_units == 0:
+                            # skip if no units
+                            continue
+
+                        if not session_info.paths['zone_neural_decoder'].exists():
+                            continue
+
+                        n_session_units = session_info.n_units
+
+                        t = session_info.get_zone_neural_decoder()
+                        t.loc[t['feature_add'].isna(), 'feature_add'] = 'None'
+                        session_decoder_res = \
+                            t.groupby(['target_type', 'zones', 'feature_add', 'trial_type', 'fold'], observed=True)[
+                                'acc', 'bac', 'dist', 'logit_dist', 'ldn', 'pr_target', 'correct'].mean().reset_index()
+                        session_decoder_res['subject'] = subject
+                        session_decoder_res['session'] = session
+                        session_decoder_res['task'] = session_info.task
+                        session_decoder_res['n_units'] = n_session_units
+
+                    except:
+                        print(f'Error Processing Session {session}')
+                        traceback.print_exc(file=sys.stdout)
+                        continue
+                    decoder_res = decoder_res.append(session_decoder_res)
+
+            decoder_res = decoder_res.reset_index(drop=True)
+            decoder_res.to_csv(fn)
+        else:
+            decoder_res = pd.read_csv(fn, index_col=0)
+
+        tmz = tmf.TreeMazeZones()
+        decoder_res['zones'] = decoder_res['zones'].astype(pd.api.types.CategoricalDtype(tmz.zones2))
+        return decoder_res
+
     def get_zone_decoder_2_subj_behav(self, overwrite=False, **trial_params):
         fn = self.paths['zone_decoder_dec']
         fn, params = _update_params_and_fn(fn, self.default_trial_params, trial_params)
@@ -1601,6 +1790,7 @@ class SummaryInfo:
                                             'session_T3', 'session_OF',
                                             'cl_id_T3', 'cl_id_OF',
                                             'cl_name_T3', 'cl_name_OF',
+                                            'uuid_T3', 'uuid_OF',
                                             'session_cl_id_T3', 'session_cl_id_OF',
                                             'match_pair_number'])
 
@@ -1632,11 +1822,15 @@ class SummaryInfo:
                     match_table.loc[cnt, 'cl_id_T3'] = unit_table.loc[ii].cl_id
                     match_table.loc[cnt, 'session_cl_id_T3'] = unit_table.loc[ii].session_cl_id
                     match_table.loc[cnt, 'cl_name_T3'] = unit_table.loc[ii].unique_cl_name
+                    _, uuid = self.get_si_suid_from_cl_name(unit_table.loc[ii].unique_cl_name)
+                    match_table.loc[cnt, 'uuid_T3'] = uuid.index[0]
 
                     match_table.loc[cnt, 'session_OF'] = unit_table.loc[jj].session
                     match_table.loc[cnt, 'cl_id_OF'] = unit_table.loc[jj].cl_id
                     match_table.loc[cnt, 'session_cl_id_OF'] = unit_table.loc[jj].session_cl_id
                     match_table.loc[cnt, 'cl_name_OF'] = unit_table.loc[jj].unique_cl_name
+                    _, uuid = self.get_si_suid_from_cl_name(unit_table.loc[jj].unique_cl_name)
+                    match_table.loc[cnt, 'uuid_OF'] = uuid.index[0]
 
                     match_pair_cnt += 1
                     cnt += 1
@@ -1739,6 +1933,7 @@ class SummaryInfo:
                 return x[0]
             else:
                 return np.nan
+
         b_measures = ['n_trials', 'pct_correct', 'pct_sw_correct']
         for m in b_measures:
             out_df[m] = out_df.session.apply(_map_behavior, args=(m,))
@@ -1809,7 +2004,6 @@ class SummaryInfo:
 
         return out_df
 
-
     def get_combined_scores_matched_units(self, overwrite=False, match_type='lib',
                                           of_model_analyses=None, mean_multi_matches=True, trial_remap_params=None):
         """
@@ -1847,7 +2041,7 @@ class SummaryInfo:
         columns = list(tm_columns) + list(of_columns)
 
         idx_cols = ['match_cl_id', 'subject', 'session_T3', 'session_OF']
-        combined_table = pd.DataFrame(index = match_table.index.values, columns=idx_cols + columns)
+        combined_table = pd.DataFrame(index=match_table.index.values, columns=idx_cols + columns)
         combined_table[idx_cols] = match_table[idx_cols].copy()
 
         bool_idx = match_table.cl_name_T3.isin(tm_table.cl_name)
@@ -2059,8 +2253,8 @@ class SummaryInfo:
         n_partitions = 3
 
         id_cols = ['subject', 'session', 'task']
-        p_cols = [f"co_p{ii}" for ii in range(1, n_partitions+1)]
-        pc_cols = [f"co_cp{ii}" for ii in range(1, n_partitions+1)]
+        p_cols = [f"co_p{ii}" for ii in range(1, n_partitions + 1)]
+        pc_cols = [f"co_cp{ii}" for ii in range(1, n_partitions + 1)]
         columns = id_cols + p_cols + pc_cols
 
         fn = self.paths['perf_partitions']
@@ -2151,6 +2345,138 @@ class SummaryInfo:
 
         return out_df
 
+    def get_zone_encoder_rate(self, overwrite=False):
+
+        fn = self.paths['zone_encoder_rate_coefs']
+
+        df = self.get_data_template_df().copy()
+        df = df[df.task != 'OF']
+        df = df[['subject', 'session', 'task', 'unit_type', 'cl_name']]
+        df['cue'] = np.nan
+        df['rw'] = np.nan
+        for s in self.subjects:
+            for session in self.sessions_by_subject[s]:
+                try:
+                    si = self.get_session(session)
+                    vals = si.get_zone_encoder_rate_coefs()
+                    df_index = df.session == session
+                    df.loc[df_index, 'cue'] = vals['cue'].values
+                    df.loc[df_index, 'rw'] = vals['rw'].values
+                except:
+                    pass
+        df.to_csv(fn)
+        return df
+
+    def session_data_to_nwb(self, session, name_id: Union[str, None] = None, file_path: Union[Path, None] = None):
+        f = session_to_nwb(self, session, name_id)
+        if (name_id is not None) and (file_path is not None):
+            f.subject = Subject(subject_id=name_id[:2], age='P26W', description='', sex='M', species='Rattus norvegicus')
+
+            name_ext = name_id+'.nwb'
+            with NWBHDF5IO(file_path / name_ext, "w") as io:
+                io.write(f)
+
+        return f
+
+    def save_sessions_to_nwb(self, file_path: Path):
+        for ss, subject in enumerate(self.subjects):
+            for se, session in enumerate(self.sessions_by_subject[subject]):
+                name_id = f"s{ss}_se{se}"
+                try:
+                    _ = self.session_data_to_nwb(session, name_id, file_path)
+                except:
+                    traceback.print_exc(file=sys.stdout)
+
+    def experiment_metadata_tables(self, overwrite=False):
+
+        
+        fn = self.paths['metadata'] / 'session_table.csv'
+        if fn.exists() and not overwrite:
+            session_table = pd.read_csv(fn, index_col=0)
+        else:
+            # session table
+            str_cols = ['name', 'subject', 'session', 'task', 'task_orig']
+            session_table = pd.DataFrame(columns=str_cols + ['n_cells', 'n_mua'])
+            cnt = 0
+            for ss, subject in enumerate(self.subjects):
+                for se, session in enumerate(self.sessions_by_subject[subject]):
+                    si = self.get_session(session)
+                    name_id = f"s{ss}se{se}"
+    
+                    session_table.loc[cnt, 'name'] = name_id
+                    session_table.loc[cnt, 'subject'] = subject
+                    session_table.loc[cnt, 'session'] = session
+                    session_table.loc[cnt, 'task_orig'] = si.task
+                    session_table.loc[cnt, 'task'] = 'OF' if 'OF' in si.task else 'T3'
+                    session_table.loc[cnt, 'n_cells'] = si.n_cells
+                    session_table.loc[cnt, 'n_mua'] = si.n_mua
+    
+                    cnt += 1
+            session_table[str_cols].astype('string')
+            session_table.to_csv(fn)
+
+        fn = self.paths['metadata'] / 'unit_table.csv'
+        if fn.exists() and not overwrite:
+            unit_table = pd.read_csv(fn, index_col=0)
+        else:
+            # unit match table
+            unit_table = self.get_unit_match_table()
+            unit_table = unit_table[['match_cl_id', 'subject', 'session_T3', 'session_OF', 'cl_name_T3',
+                                     'cl_name_OF', 'uuid_T3', 'uuid_OF', 'match_pair_number']]
+
+            c = self.get_matched_of_cell_clusters()
+            f1 = lambda a: c.loc[a, 'Cluster']
+            unit_table['of_cluster_id'] = unit_table.match_cl_id.map(f1)
+
+            f1 = lambda a: c.loc[a, 'UMAP-1']
+            unit_table['of_umap1'] = unit_table.match_cl_id.map(f1)
+
+            f1 = lambda a: c.loc[a, 'UMAP-2']
+            unit_table['of_umap2'] = unit_table.match_cl_id.map(f1)
+
+            unit_table.to_csv(fn)
+
+        fn = self.paths['metadata'] / 'perf_table.csv'
+        if fn.exists() and not overwrite:
+            perf_table = pd.read_csv(fn, index_col=0)
+        else:
+            # task performance table
+            perf_table = self.get_behav_perf().set_index('session')
+            perf_table['session'] = perf_table.index
+            perf_table['name'] = perf_table.index.map(session_table.set_index('session')['name'])
+            perf_table = perf_table.dropna(subset=['name'])
+            perf_table = perf_table.set_index('name')
+
+            perf_table.to_csv(fn)
+
+        return session_table, unit_table, perf_table
+    def experiment_metadata_to_nwb(self, file_path: Path=None):
+
+        md = NWBFile(identifier='metadata',
+                     session_description='experiment metadata',
+                     session_start_time=datetime(2018, 1, 1),
+                     experimenter='Gonzalez, Alex',
+                     lab='Giocomo',
+                     institution='Stanford')
+
+        tables = self.experiment_metadata_tables()
+        # session table
+        md.add_acquisition(DynamicTable.from_dataframe(name='session_table', df=tables(0)))
+        #md.add_scratch(data=d, name='session_table', description='table containing information for each session')
+        #md.add_acquisition
+
+        #unit match table
+        md.add_scratch(DynamicTable.from_dataframe(name='unit_task_match_table', df=tables(1)))
+
+        # task performance table
+        md.add_scratch(DynamicTable.from_dataframe(name='behavioral_perf_table', df=tables(2)))
+
+        if file_path is not None:
+            name_id = 'metadata.nwb'
+            with NWBHDF5IO(file_path / name_id, "w") as io:
+                io.write(md)
+
+        return md
 
 class SubjectInfo:
 
@@ -2797,10 +3123,15 @@ class SubjectInfo:
             paths['bal_conds_seg_boot_rates'] = paths['Results'] / 'bal_conds_seg_boot_rates.csv'
 
             paths['zone_encoder'] = paths['Results'] / 'zone_encoder.csv'
+            paths['zone_encoder_rate_coefs'] = paths['Results'] / 'zone_encoder_rate_coefs.csv'
             paths['zone_encoder_lag'] = paths['Results'] / 'zone_encoder_lag.csv'
             paths['zone_encoder_cue'] = paths['Results'] / 'zone_encoder_cue.csv'
 
             paths['zone_decoder'] = paths['Results'] / 'zone_decoder.csv'
+            paths['zone_decoder_cue'] = paths['Results'] / 'zone_decoder_cue.csv'
+            paths['zone_decoder_rw'] = paths['Results'] / 'zone_decoder_rw.csv'
+            paths['zone_neural_decoder'] = paths['Results'] / 'zone_neural_decoder.csv'
+            paths['zone_decoder_dec_rw'] = paths['Results'] / 'zone_decoder_dec_rw.csv'
 
             paths['zone_analyses'] = paths['Results'] / 'ZoneAnalyses.pkl'
             paths['TrialInfo'] = paths['Results'] / 'TrInfo.pkl'
@@ -3142,9 +3473,11 @@ class SubjectSessionInfo(SubjectInfo):
                 'bal_conds_seg_rates': (self.get_bal_conds_seg_rates, self.paths['bal_conds_seg_rates'].exists()),
                 'bal_conds_seg_boot_rates': (self.get_bal_conds_seg_boot_rates, np.nan),
                 'zone_encoder': (self.get_zone_encoder, self.paths['zone_encoder'].exists()),
-                # 'zone_encoder_lag': (self.get_zone_encoder_lag, self.paths['zone_encoder_lag'].exists()),
-                # 'zone_encoder_cue': (self.get_zone_encoder_cue, self.paths['zone_encoder_cue'].exists()),
+                'zone_encoder_rate_coefs': (
+                    self.get_zone_encoder_rate_coefs, self.paths['zone_encoder_rate_coefs'].exists()),
                 'zone_decoder': (self.get_zone_decoder, self.paths['zone_decoder'].exists()),
+                'zone_neural_decoder': (self.get_zone_neural_decoder, self.paths['zone_neural_decoder'].exists()),
+                'zone_decoder_dec_rw': (self.get_zone_decoder_dec_rw, self.paths['zone_decoder_dec_rw'].exists()),
 
             }
         else:
@@ -3856,15 +4189,15 @@ class SubjectSessionInfo(SubjectInfo):
             if not fn.exists() or overwrite:
                 exp_sets = [dict(max_lag=lag) for lag in [-50, 0, 50]]
 
-                exp_sets += [dict(cue_type=cue_type, max_lag=0) for cue_type in ['fixed', 'inter']]
+                # exp_sets += [dict(cue_type=cue_type, max_lag=0) for cue_type in ['fixed', 'inter']]
                 exp_sets += [dict(cue_type=cue_type, max_lag=50) for cue_type in ['fixed', 'inter']]
 
-                exp_sets += [dict(rw_type=rw_type, trial_seg='in', max_lag=0) for rw_type in ['none', 'fixed', 'inter']]
+                # exp_sets += [dict(rw_type=rw_type, trial_seg='in', max_lag=0) for rw_type in ['none', 'fixed', 'inter']]
                 exp_sets += [dict(rw_type=rw_type, trial_seg='in', max_lag=50) for rw_type in
                              ['none', 'fixed', 'inter']]
 
-                exp_sets += [dict(dir_type=dir_type, trial_seg='all', max_lag=0) for dir_type in
-                             ['none', 'fixed', 'inter']]
+                # exp_sets += [dict(dir_type=dir_type, trial_seg='all', max_lag=0) for dir_type in
+                #             ['none', 'fixed', 'inter']]
                 exp_sets += [dict(dir_type=dir_type, trial_seg='all', max_lag=50) for dir_type in
                              ['none', 'fixed', 'inter']]
 
@@ -3873,6 +4206,32 @@ class SubjectSessionInfo(SubjectInfo):
             else:
                 df = pd.read_csv(fn, index_col=0)
             return df
+        else:
+            raise NotImplementedError
+
+    def get_zone_encoder_rate_coefs(self, overwrite=False, **trial_params):
+
+        fn = self.paths['zone_encoder_rate_coefs']
+        fn, params = _update_params_and_fn(fn, self.trial_params, trial_params)
+
+        if self.task[:2] == 'T3':
+            if not fn.exists() or overwrite:
+                ze = tmf.ZoneEncoder(self, feature_params=dict(max_lag=50, cue_type='fixed'),
+                                     norm_response='z', n_folds=5)
+                ze.get_model_fits()
+                X = pd.DataFrame(data=ze.get_avg_coefs(), columns=ze.feature_names)
+
+                ze.update_features(**dict(max_lag=50, rw_type='fixed', trial_seg='in'))
+                ze.get_model_fits()
+                Y = pd.DataFrame(data=ze.get_avg_coefs(), columns=ze.feature_names)
+
+                Z = pd.DataFrame(0.0, index=range(ze.n_units), columns=['cue', 'rw'])
+                Z['cue'] = X['RC'] - X['LC']
+                Z['rw'] = Y['RW'] - Y['NR']
+                Z.to_csv(fn)
+            else:
+                Z = pd.read_csv(fn, index_col=0)
+            return Z
         else:
             raise NotImplementedError
 
@@ -3893,6 +4252,125 @@ class SubjectSessionInfo(SubjectInfo):
             return df
         else:
             raise NotImplementedError
+
+    def get_zone_neural_decoder(self, overwrite=False, verbose=False, **trial_params):
+        if self.task[:2] == 'T3':
+            fn = self.paths['zone_neural_decoder']
+            fn, params = _update_params_and_fn(fn, self.trial_params, trial_params)
+
+            if not fn.exists() or overwrite:
+                df = tmf.zone_neural_decoder_analyses(self, verbose=verbose, **params)
+                df.to_csv(fn)
+            else:
+                df = pd.read_csv(fn, index_col=0)
+                tmz = tmf.TreeMazeZones()
+                df['zones'] = df['zones'].astype(pd.api.types.CategoricalDtype(tmz.zones2))
+            return df
+        else:
+            raise NotImplementedError
+
+    def get_zone_decoder_dec_rw(self, overwrite=False, verbose=False, **trial_params):
+        if self.task[:2] == 'T3':
+            fn = self.paths['zone_decoder_dec_rw']
+            fn, params = _update_params_and_fn(fn, self.trial_params, trial_params)
+
+            if not fn.exists() or overwrite:
+                df = tmf.zone_decoder_dec_rw_analyses(self, verbose=verbose, **params)
+                df.to_csv(fn)
+            else:
+                df = pd.read_csv(fn, index_col=0)
+                tmz = tmf.TreeMazeZones()
+                df['zones'] = df['zones'].astype(pd.api.types.CategoricalDtype(tmz.zones2))
+            return df
+        else:
+            raise NotImplementedError
+
+
+def datestr2datetime(datestr):
+    month = datestr[:2]
+    day = datestr[2:4]
+    year = datestr[4:]
+    return datetime(int(year), int(month), int(day))
+
+
+def session_to_nwb(info, session, name_id=None):
+    si = info.get_session(session)
+    task = si.task
+    fr = si.get_fr()
+
+    if name_id is None:
+        name_id = session
+
+    # file declaration
+    f = NWBFile(
+        session_description=task,
+        identifier=name_id,
+        session_id=session,
+        session_start_time=datestr2datetime(si.date),
+        experimenter='Gonzalez, Alex',
+        lab='Giocomo',
+        institution="Stanford")
+
+    # firing rates for units
+    x = TimeSeries(
+        name='firing_rates',
+        data=fr.T,
+        unit='uv',
+        starting_time=0.0,
+        resolution=si.params['time_step'],
+        rate=1 / si.params['time_step'])
+    f.add_acquisition(x)
+
+    if task != 'OF':
+        b = si.get_event_behavior()
+        trial_table = b.trial_table
+        event_table = b.event_table
+
+        # video tracking data
+        x = TimeSeries(
+            name='track_data',
+            data=si.get_track_data()[1:].to_numpy(),
+            description='columns=x,y,hd',
+            unit='mm',
+            starting_time=0.0,
+            rate=si.params['time_step'])
+        f.add_acquisition(x)
+
+        # trial table
+        t = DynamicTable.from_dataframe(name='trial_table', df=trial_table)
+        f.add_acquisition(t)
+
+        # behavioral event table
+        t = DynamicTable.from_dataframe(name='event_table', df=event_table)
+        f.add_acquisition(t)
+    else:
+        # video tracking data
+        t = si.get_track_data()
+        cols = ['x', 'y', 'hd', 'sp', 'ha']
+        tt = pd.DataFrame(columns=cols)
+        for co in cols:
+            tt[co] = t[co]
+
+        x = TimeSeries(
+            name='track_data',
+            data=tt.to_numpy(),
+            description='columns=x,y,hd,sp,ha',
+            unit='mm',
+            starting_time=0.0,
+            rate=si.params['time_step'])
+        f.add_acquisition(x)
+
+    # unit info table
+    d = pd.DataFrame(index=range(si.n_units), columns=['uuid', 'cl_name', 'unit_type'])
+    for unit in range(si.n_units):
+        uuid = info.get_uuid_from_se_suid(session, unit)
+        cl_name = info.tdf.loc[uuid, 'cl_name']
+        cell_type = info.tdf.loc[uuid, 'unit_type']
+        d.loc[unit] = uuid, cl_name, cell_type
+    t = DynamicTable.from_dataframe(name='unit_table', df=d)
+    f.add_acquisition(t)
+
+    return f
 
 
 def get_task_params(session_info):

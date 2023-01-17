@@ -55,8 +55,6 @@ def umap_cluster(data, z_score=False, n_clusters=None, umap_params_in=None, clus
     return dat
 
 
-
-
 def umap_kmeans_cluster_error_table(data, z_score=False):
     """
     Experiment to find optimal number of clusters

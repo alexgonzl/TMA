@@ -998,7 +998,7 @@ class TreeMazeZones:
                   ax_pos.width * w_mod,
                   ax_pos.height * h_mod]
         newax = f.add_axes(ax_pos, anchor='C', zorder=-1)
-        if layout_num==2:
+        if layout_num == 2:
             newax.imshow(self.layout2)
         else:
             newax.imshow(self.layout)
@@ -1157,7 +1157,7 @@ class TreeMazeZones:
 
             cax_p = [x0 + w * 0.7, y0 + h * 0.1, w * 0.05, h * 0.15]
             cax = f.add_axes(cax_p)
-            #cax.set_in_layout(False)
+            # cax.set_in_layout(False)
 
             pf.get_color_bar_axis(cax, color_array, **cm_params)
 
@@ -1792,7 +1792,7 @@ class TrialAnalyses:
             self.all_blank_samps = np.concatenate((self.all_blank_samps, self.blank_transition_samps))
 
         if speed_blank:
-            self.valid_sp_samps = (self.track_data['sp'] >= self.sp_valid_limits[0]) &\
+            self.valid_sp_samps = (self.track_data['sp'] >= self.sp_valid_limits[0]) & \
                                   (self.track_data['sp'] <= self.sp_valid_limits[1])
             self.blank_sp_samps = np.where(~self.valid_sp_samps)[0]
             self.all_blank_samps = np.concatenate((self.all_blank_samps, self.blank_sp_samps))
@@ -2897,7 +2897,8 @@ class TrialAnalyses:
                 cnt += 1
         return out
 
-    def all_zone_remapping_analyses(self, corr_method='kendall', n_boot=100, n_jobs=5, zr_method='trial', parallel=False):
+    def all_zone_remapping_analyses(self, corr_method='kendall', n_boot=100, n_jobs=5, zr_method='trial',
+                                    parallel=False):
         """
         Runs zone_rate_maps_comparison_analyses and zone_rate_maps_bal_conds_boot_corr and puts them into a single
         data frame.
@@ -3387,8 +3388,7 @@ class TrialAnalyses:
 
         params2 = dict(median_lw=1, violin_lw=0.75, fontsize=8,
                        point_scale=0.5, err_lw=1, point_dodge=0.25, legend=False)
-        if len(params) > 0:
-            params2.update(params)
+        params2.update(params)
 
         if comp == 'cue':
             conds = ['CR', 'CL']
@@ -3431,18 +3431,25 @@ class TrialAnalyses:
             y = df[(df.segment == seg) & (df.cond == conds[1])]['FR'].dropna()
 
             z = rs.mannwhitney_z(x, y)
-            seg_uz[ii] = np.around(z, 2)
+            seg_uz[ii] = np.around(z, 1)
 
         for ii in range(3):
-            ax.text((ii + 0.5) / 3, 1, seg_uz[ii], ha='center', va='bottom', fontsize=params2['fontsize'] * 0.75,
+            ax.text((ii + 0.5) / 3, 1, seg_uz[ii], ha='center', va='bottom', fontsize=params2['legend_fontsize'],
+                    rotation=30,
                     transform=ax.transAxes)
 
-        ax.text(-0.05, 1, f"$U_Z$", ha='right', va='bottom', fontsize=params2['fontsize'], transform=ax.transAxes)
+        # ax.text(-0.05, 1, f"$U_Z$", ha='right', va='bottom', fontsize=params2['fontsize'], transform=ax.transAxes)
 
         pf.sns.despine(ax=ax)
         ax.tick_params(axis='both', bottom=True, left=True,
-                       labelsize=params2['fontsize'] * 0.75, pad=1, length=2,
+                       labelsize=params2['fontsize'], pad=1, length=2,
                        width=1, color='0.2', which='major')
+        ax.tick_params(axis='x', rotation=30)
+
+        y_max = ax.get_ylim()[1]
+        ax.set_ylim([0, y_max])
+        ax.set_yticks([y_max / 2, y_max])
+        ax.set_yticklabels(['', int(y_max)])
 
         for sp in ['bottom', 'left']:
             ax.spines[sp].set_linewidth(1)
@@ -3456,7 +3463,7 @@ class TrialAnalyses:
             ax.get_legend().remove()
 
         ax.set_xlabel("Segment", fontsize=params2['fontsize'], labelpad=0)
-        ax.set_ylabel(f"FR [spk/s]", fontsize=params2['fontsize'], labelpad=0)
+        ax.set_ylabel(f"FR", fontsize=params2['fontsize'], labelpad=-5)
 
         ylims = ax.get_ylim()
         yh = ylims[1] - ylims[0]
@@ -3489,6 +3496,171 @@ class TrialAnalyses:
                                        spike_scale=params2['spike_scale'],
                                        trajectories_params=params2['trajectories_params'],
                                        spike_trajectories=params2['spike_trajectories'])
+
+    def plot_unit_comp_summary(self, unit, comp, figsize=None, z_val=None, **in_params):
+        params = dict(cm_params=dict(color_map='viridis',
+                                     n_color_bins=25, nans_2_zeros=True, div=False,
+                                     label='FR'),
+                      zone_rates_lw=0.05, zone_rates_lc='0.75',
+                      dist_n_boot=50, dist_test_color='b', dist_null_color='0.5',
+                      dist_lw=0.9, dist_v_lw=0.7, spike_scale=0.3,
+                      fontsize=10, legend_fontsize=7, dpi=1500)
+
+        n_boot = 50
+
+        params.update(in_params)
+        if figsize is None:
+            figsize = (2.5, 2)
+        f = plt.figure(figsize=figsize, dpi=params['dpi'])
+
+        gs = pf.mpl.gridspec.GridSpec(2, 3, wspace=0.0, hspace=0.01, width_ratios=[0.33, 0.33, 0.33],
+                                      top=1, bottom=0, right=1, left=0)
+        cnt = 0
+        ax = np.zeros(6, dtype=object)
+        for row in range(2):
+            for col in range(3):
+                ax[cnt] = f.add_axes(gs[row, col].get_position(f))
+                cnt += 1
+
+        # ----------- conditions -------------#
+        if comp == 'cue':
+            cond_pair_name = 'CR_bo-CL_bo'
+            left_cond = 'CL_bo'
+            right_cond = 'CR_bo'
+            r_name = 'RC'
+            l_name = 'LC'
+            trial_segs = ['out'] * 2
+        elif comp == 'rw':
+            cond_pair_name = 'Co_bi-Inco_bi'
+            left_cond = 'Co_bi'
+            right_cond = 'Inco_bi'
+            r_name = 'NRW'
+            l_name = 'RW'
+            trial_segs = ['in'] * 2
+        else:
+            raise
+
+        cond_pair = [left_cond.split('_')[0], right_cond.split('_')[0]]
+        cond_names = [l_name, r_name]
+
+        # get trials
+        trial_sets = {}
+        for cond in cond_pair:
+            t = self.trial_condition_table[cond]
+            trial_sets[cond] = np.where(t)[0]
+
+        # ---- traces + spikes ---- #
+        x, y, _ = self.get_trial_track_pos()
+        spikes = self.get_trial_neural_data(data_type='spikes')[unit]
+
+        for ii, cond in enumerate(cond_pair):
+            self.tmz.plot_spk_trajectories(x=x[trial_sets[cond]], y=y[trial_sets[cond]],
+                                           spikes=spikes[trial_sets[cond]], ax=ax[ii],
+                                           spike_scale=params['spike_scale'],
+                                           trajectories_params=dict(color='0.4', lw=0.2, alpha=0.1,
+                                                                    rasterized=True),
+                                           spike_trajectories=dict(color='r', alpha=0.1, linewidth=0,
+                                                                   rasterized=True))
+            ax[ii].set_title(cond_names[ii], fontsize=params['fontsize'], pad=1)
+            ax[ii].set_rasterized(True)
+
+        # ---- zone rate mean heat maps ---- #
+        lw = params['zone_rates_lw']
+        line_color = params['zone_rates_lc']
+        cm_params = params['cm_params']
+        cm_params['tick_fontsize'] = params['legend_fontsize']
+        cm_params['label_fontsize'] = params['legend_fontsize']
+
+        zr = pd.DataFrame(index=range(2), columns=self.tmz.all_segs_names)
+        max_val = 0
+        for ii, cond in enumerate(cond_pair):
+            zr.loc[ii] = self.get_unit_trial_zone_rates(unit=unit,
+                                                        trials=trial_sets[cond],
+                                                        trial_seg=trial_segs[ii]).mean().astype(float).fillna(0)
+            max_val = max(max_val, zr.loc[ii].max())
+        zr = zr.astype(float)
+        for ii, ax_ii in enumerate([3, 4]):
+            self.tmz.plot_zone_activity(zr.loc[ii], ax=ax[ax_ii],  # legend=(ii + 1) % 2,
+                                        min_value=0, max_value=max_val,
+                                        lw=lw, line_color=line_color, legend=(ii == 0), **cm_params)
+            ax[ax_ii].set_rasterized(True)
+
+        # ---------- condition comparison ---------- #
+        ax_ii = 2
+        p = ax[ax_ii].get_position()
+        x_delta = 0.26 * p.width
+        y_delta = 0.25 * p.height
+        h_delta = 0.4 * p.height
+
+        p2 = [p.x0 + x_delta, p.y0 + y_delta, p.width - x_delta, p.height - h_delta]
+        ax[ax_ii].set_position(p2)
+
+        self.plot_unit_seg_cond_comp(unit=unit, comp=comp, ax=ax[ax_ii], **dict(fontsize=params['legend_fontsize'],
+                                                                                legend_fontsize=params[
+                                                                                                    'legend_fontsize'] * 0.8))
+        ax[ax_ii].set_xlabel('')
+
+        # ---- distributions of correlations  ---- #
+        ax_ii = 5
+        p = ax[ax_ii].get_position()
+        x_delta = 0.26 * p.width
+        y_delta = 0.2 * p.height
+        h_delta = 0.6 * p.height
+        p2 = [p.x0 + x_delta, p.y0 + y_delta, p.width - x_delta, p.height - h_delta]
+        ax[ax_ii].set_position(p2)
+
+        test_cond_pair = cond_pair_name
+        null_cond_pair = self.test_null_bal_cond_pairs[test_cond_pair]
+        n_boot = params['dist_n_boot']
+        test_boot_corr_dist = self.unit_zrm_boot_corr(unit_id=unit,
+                                                      bal_cond_pair=test_cond_pair, n_boot=n_boot)
+        null_boot_corr_dist = self.unit_zrm_boot_corr(unit_id=unit,
+                                                      bal_cond_pair=null_cond_pair, n_boot=n_boot)
+
+        pf.plot_kde_dist(data=test_boot_corr_dist, v_lines=np.nanmean(test_boot_corr_dist), label=f"{r_name}-{l_name}",
+                         color=params['dist_test_color'], lw=params['dist_lw'], v_lw=params['dist_v_lw'], ax=ax[ax_ii])
+        pf.plot_kde_dist(data=null_boot_corr_dist, v_lines=np.nanmean(null_boot_corr_dist), label=f"Null",
+                         color=params['dist_null_color'], lw=params['dist_lw'], v_lw=params['dist_v_lw'], ax=ax[ax_ii])
+
+        ax[ax_ii].get_yaxis().set_ticks([])
+        ax[ax_ii].set_xticks([0, 0.5, 1])
+        ax[ax_ii].set_xticklabels([0, '', 1], fontsize=params['legend_fontsize'])
+        ax[ax_ii].set_xlabel(r"$\tau$", fontsize=params['legend_fontsize'], labelpad=0)
+        ax[ax_ii].xaxis.set_label_coords(0.5, -0.1, transform=ax[ax_ii].transAxes)
+
+        pf.sns.despine(ax=ax[ax_ii])
+        ax[ax_ii].tick_params(axis='both', bottom=True, left=True,
+                              labelsize=params['legend_fontsize'], pad=1, length=2,
+                              width=1, color='0.2', which='major', grid_color='white')
+
+        for sp in ['bottom']:
+            ax[ax_ii].spines[sp].set_linewidth(1)
+            ax[ax_ii].spines[sp].set_color('0.2')
+        ax[ax_ii].spines['left'].set_visible(False)
+        ax[ax_ii].set_ylabel('')
+
+        # remap score
+        leg_buffer = 0
+        if z_val is not None:
+            ax[ax_ii].text(0.5, 1.0, r"$\bar{z}_{\Delta \tau}$=" + str(np.around(z_val, 1)),
+                           fontsize=params['legend_fontsize'],
+                           ha='center', va='bottom', transform=ax[ax_ii].transAxes)
+            ax[ax_ii].grid(False)
+            leg_buffer = 0.05
+
+        legend_elements = [plt.Line2D([0], [0], color=params['dist_test_color'],
+                                      label=f"{r_name}-{l_name}", lw=params['dist_lw']),
+                           plt.Line2D([0], [0], color=params['dist_null_color'],
+                                      label="Null", lw=params['dist_lw']),
+                           ]
+        legend_params = dict(handlelength=0.3, handletextpad=0.3, bbox_to_anchor=[0.5, 1.0 + leg_buffer],
+                             loc='lower center',
+                             frameon=False, fontsize=params['legend_fontsize'], markerscale=0.6, labelspacing=0.2,
+                             ncol=2,
+                             columnspacing=0.7)
+        ax[ax_ii].legend(handles=legend_elements, **legend_params)
+
+        return f
 
     # def plot_unit_trial_zone_rate_cond(self, unit, trials=None, cond=None, trial_seg='out', ax=None, **params):
 
@@ -3597,10 +3769,12 @@ class ZoneEncoder:
                                   rw_type='none',
                                   sp_type='none',
                                   dir_type='none',
-                                  trial_seg='out')
+                                  trial_seg='out',
+                                  trial_balance='cue')
 
     model_params = dict(model_type='LR',
                         add_sample_weights=True,
+                        sample_weights_cond='correct',
                         metrics=['r2'])
 
     trial_params = dict(trial_end='tE_2',
@@ -3622,7 +3796,8 @@ class ZoneEncoder:
 
     # TODO:  add time dependend model (RNN)
     def __init__(self, session_info, data_type='fr', trial_analyses=None, trial_params=None,
-                 model_params=None, feature_params=None, parallel=None, **xval_params):
+                 model_params=None, feature_params=None, parallel=None, norm_response=None, train_correct_only=False,
+                 **xval_params):
 
         self.params.update(xval_params)
         self.parallel = parallel
@@ -3651,14 +3826,23 @@ class ZoneEncoder:
         if trial_analyses is None:
             trial_analyses = TrialAnalyses(session_info, **self.trial_params)
 
+        if train_correct_only:
+            self.model_params['sample_weights_cond'] = 'cue'
+            self.feature_params['trial_balance'] = 'correct_only'
+            self.n_folds = 2
+
+        if self.feature_params['trial_balance'] == 'correct':
+            self.model_params['sample_weights_cond'] = 'cue'
+
         self.ta = trial_analyses
         self.update_features(**self.feature_params)
+        self.norm_response = norm_response
+        self.get_response_params()
 
     # setup functions
     def update_features(self, **feature_params):
-        if feature_params is None:
-            self.feature_params = dict(self.feature_params_default)
-        else:
+        self.feature_params = dict(self.feature_params_default)
+        if feature_params is not None:
             self.feature_params.update(feature_params)
 
         feature_params = self.feature_params
@@ -3681,7 +3865,7 @@ class ZoneEncoder:
             feature_names += ['RC_' + z for z in self._zone_names]
 
         if feature_params['rw_type'] == 'fixed':
-            feature_names += ['RW', 'NR']
+            feature_names += ['RW', 'NRW']
         elif feature_params['rw_type'] == 'inter':
             feature_names = ['RW_' + z for z in self._zone_names]
             feature_names += ['NR_' + z for z in self._zone_names]
@@ -3708,6 +3892,7 @@ class ZoneEncoder:
         self._reset_model_fits()
         self.features_by_trial = self._get_features_all_trials()
         self._prepare_xval_data()
+        self.get_response_params()
 
     def update_trial_data(self):
         ta = self.ta
@@ -3777,9 +3962,22 @@ class ZoneEncoder:
         self.trial_pos = self.ta.get_trial_track_pos(trial_seg=self.trial_seg)
 
     # trial xval functions
-    def get_xval_table(self, trial_balance='cue'):
+    def get_xval_table(self):
+        trial_balance = self.feature_params['trial_balance']
         self.xval_trial_table = pd.DataFrame()
-        self.get_cue_balanced_xval_table()
+        if trial_balance == 'cue':
+            self.get_cue_balanced_xval_table()
+        elif trial_balance == 'correct':
+            self.get_co_balanced_xval_table()
+        elif trial_balance == 'correct_only':
+            t = pd.DataFrame(np.nan, index=range(self.ta.n_trials), columns=[0])
+            t.loc[self.valid_trials, 0] = 'test'
+            t.loc[self.trial_table.correct == 1, 0] = 'train'
+            t.loc[self.valid_trials, 1] = 'train'
+            t.loc[self.trial_table.correct == 1, 1] = 'test'
+            self.xval_trial_table = t
+        else:
+            raise NotImplementedError
         return self.xval_trial_table
 
     def get_cue_balanced_xval_table(self):
@@ -3831,6 +4029,50 @@ class ZoneEncoder:
         self.xval_trial_table = xval_table
         return xval_table
 
+    def get_co_balanced_xval_table(self):
+        np.random.seed(self.params['seed'])
+
+        n_folds = self.n_folds
+
+        Co_trials = self.all_trials[self.trial_table.correct == 1]
+        Co_trials = np.intersect1d(self.valid_trials, Co_trials)
+        In_trials = self.all_trials[self.trial_table.correct == 0]
+        In_trials = np.intersect1d(self.valid_trials, In_trials)
+
+        n_Co_trials = len(Co_trials)
+        n_In_trials = len(In_trials)
+
+        n_train_trials_by_co = min(n_Co_trials * (n_folds - 1) // n_folds, n_In_trials * (n_folds - 1) // n_folds)
+        n_train_trials_by_co = 2 * (n_train_trials_by_co // 2)
+
+        Co_trials_2 = Co_trials.copy()
+        np.random.shuffle(Co_trials_2)
+        Co_test_trials = np.array_split(Co_trials_2, n_folds)
+
+        In_trials_2 = In_trials.copy()
+        np.random.shuffle(In_trials_2)
+        In_test_trials = np.array_split(In_trials_2, n_folds)
+
+        xval_table = pd.DataFrame(index=self.all_trials, columns=np.arange(n_folds))
+        for fold in range(n_folds):
+            Co_test = Co_test_trials[fold]
+            In_test = In_test_trials[fold]
+
+            Co_train = np.setdiff1d(Co_trials, Co_test)
+            Co_train = np.random.choice(Co_train, n_train_trials_by_co, replace=False)
+
+            In_train = np.setdiff1d(In_trials, In_test)
+            In_train = np.random.choice(In_trials, n_train_trials_by_co, replace=False)
+
+            xval_table.loc[Co_train, fold] = 'train'
+            xval_table.loc[In_train, fold] = 'train'
+
+            xval_table.loc[Co_test, fold] = 'test'
+            xval_table.loc[In_test, fold] = 'test'
+
+        self.xval_trial_table = xval_table
+        return xval_table
+
     def get_fold_trials(self, fold_num, split):
         """
         returns trials for a given xval fold and data split
@@ -3850,10 +4092,47 @@ class ZoneEncoder:
         Y = np.hstack(self.trial_neural_data[:, trials].flatten()).reshape(self.n_units, -1).T
         return Y
 
+    def get_response_params(self):
+        self.fold_response_params = pd.DataFrame(data=np.nan, index=range(self.n_folds * self.n_units),
+                                                 columns=['fold', 'unit', 'mean', 'std', 'max'])
+
+        t = self.fold_response_params
+
+        units = np.arange(self.n_units)
+        cnt = 0
+        for fold in range(self.n_folds):
+            block_idx = units + cnt
+            Y = self.get_fold_response(fold, split='train')
+            means = Y.mean(axis=0)
+            stds = Y.std(axis=0)
+            maxes = Y.max(axis=0)
+            t.loc[block_idx, 'fold'] = fold
+            t.loc[block_idx, 'unit'] = units
+            t.loc[block_idx, 'mean'] = means
+            t.loc[block_idx, 'std'] = stds
+            t.loc[block_idx, 'max'] = maxes
+
+            cnt += self.n_units
+
     def get_fold_response(self, fold_num=0, split='test'):
         trials = self.get_fold_trials(fold_num, split)
         Y = self.get_response_trials(trials)
         Y = self._remove_bad_samps(Y, fold_num, split)
+
+        return Y
+
+    def get_fold_norm_response(self, fold_num=0, split='test'):
+        Y = self.get_fold_response(fold_num=fold_num, split=split)
+        if self.norm_response is not None:
+            t = self.fold_response_params.copy()
+            t = t[t.fold == fold_num]
+            if self.norm_response == 'z':
+                m = t['mean'].values
+                s = t['std'].values
+                Y = (Y - m) / s
+            elif self.norm_response == 'max':
+                m = t['max'].values
+                Y = Y / m
         return Y
 
     # feature functions
@@ -4014,10 +4293,10 @@ class ZoneEncoder:
                     # binary signal for the trial indicating rw identity
                     if tr in RW_trials:
                         x_tr['RW'] = 1
-                        x_tr['NR'] = 0
+                        x_tr['NRW'] = 0
                     else:
                         x_tr['RW'] = 0
-                        x_tr['NR'] = 1
+                        x_tr['NRW'] = 1
 
                 if sp_type == 'cont':
                     x_tr['SP'] = self.trial_pos[2][tr]
@@ -4127,7 +4406,7 @@ class ZoneEncoder:
 
         def _worker(fold):
             Xtr = self.get_fold_features(fold_num=fold, split='train')
-            Ytr = self.get_fold_response(fold_num=fold, split='train')
+            Ytr = self.get_fold_norm_response(fold_num=fold, split='train')
             samp_weights = self.samp_weight_splits['train'][fold]
             return fit_func(Xtr, Ytr, samp_weights)
 
@@ -4185,7 +4464,7 @@ class ZoneEncoder:
             return None
 
         X = self.get_fold_features(fold_num, split)
-        Y = self.get_fold_response(fold_num, split)  # self.response_splits[split][fold_num]
+        Y = self.get_fold_norm_response(fold_num, split)  # self.response_splits[split][fold_num]
         samp_weights = self.samp_weight_splits[split][fold_num]
 
         Y_hat = self.model_fits[fold_num].predict(X)
@@ -4253,7 +4532,7 @@ class ZoneEncoder:
                 warnings.simplefilter(action='ignore', category=[FutureWarning, RuntimeWarning])
 
                 for fold_num in range(self.n_folds):
-                    Y = self.get_fold_response(fold_num, split).T.flatten()
+                    Y = self.get_fold_norm_response(fold_num, split).T.flatten()
                     Y_hat = self.get_fold_prediction(fold_num, split).T.flatten()
                     Z = self.get_fold_zone_ts(fold_num, split)
                     Zn = self.tmz.all_zone_sequences.loc[Z, 'zones2'].values.flatten()
@@ -4412,8 +4691,7 @@ class ZoneEncoder:
         for split in ['train', 'test']:
             for fold in range(self.n_folds):
                 if self.model_params['add_sample_weights']:
-                    trials = self.get_fold_trials(fold, split)
-                    samp_weights = self._get_co_inco_fold_sample_weights(fold, split)
+                    samp_weights = self._get_fold_sample_weights(fold, split)
                     samp_weights = self._remove_bad_samps(samp_weights, fold, split)
                     self.samp_weight_splits[split][fold] = samp_weights
                 else:
@@ -4460,34 +4738,38 @@ class ZoneEncoder:
 
         return data2
 
-    def _get_co_inco_fold_sample_weights(self, fold_num, split):
+    def _get_fold_sample_weights(self, fold_num, split):
 
         all_trials = self.all_trials
         trial_table = self.trial_table
 
-        co_trials = all_trials[trial_table.correct == 1]
-        inco_trials = all_trials[trial_table.correct == 0]
+        if self.model_params['sample_weights_cond'] == 'cue':
+            a_trials = all_trials[trial_table.cue == 'L']
+            b_trials = all_trials[trial_table.cue == 'R']
+        elif self.model_params['sample_weights_cond'] == 'correct':
+            a_trials = all_trials[trial_table.correct == 1]
+            b_trials = all_trials[trial_table.correct == 0]
 
         fold_trials = self.get_fold_trials(fold_num=fold_num, split=split)
         n_fold_trials = len(fold_trials)
 
-        co_fold_trials = np.intersect1d(fold_trials, co_trials)
-        inco_fold_trials = np.intersect1d(fold_trials, inco_trials)
+        a_fold_trials = np.intersect1d(fold_trials, a_trials)
+        b_fold_trials = np.intersect1d(fold_trials, b_trials)
 
-        n_co_train_trials = len(co_fold_trials)
-        n_inco_train_trials = len(inco_fold_trials)
+        n_a_train_trials = len(a_fold_trials)
+        n_b_train_trials = len(b_fold_trials)
 
-        co_weight = n_inco_train_trials / n_fold_trials
-        inco_weight = n_co_train_trials / n_fold_trials
+        a_weight = n_b_train_trials / n_fold_trials
+        b_weight = n_a_train_trials / n_fold_trials
 
         samp_weights = np.empty(0)
         for tr in fold_trials:
             n_trial_samps = len(self.trial_zones[tr])
 
-            if trial_table.correct[tr] == 1:
-                trial_samp_weight = co_weight
+            if tr in a_trials:
+                trial_samp_weight = a_weight
             else:
-                trial_samp_weight = inco_weight
+                trial_samp_weight = b_weight
 
             samp_weights = np.concatenate((samp_weights, trial_samp_weight * np.ones(n_trial_samps)))
 
@@ -4527,7 +4809,7 @@ class ZoneDecoder:
     logistc_params = dict(class_weight='balanced', n_jobs=10, penalty='none', multi_class='multinomial',
                           max_iter=50, tol=1e-3, solver='saga')
     feature_types = ['neural', 'encoder', 'residuals']
-    target_types = ['zones', 'cue', 'dec', 'first_goal', 'rw_goal']
+    target_types = ['zones', 'cue', 'dec', 'rw', 'first_goal', 'rw_goal']
     overall_metrics = ['ac', 'bac', 'auc', 'll', 'll_ch', 'll_score']
 
     min_p = 1e-10
@@ -4540,6 +4822,7 @@ class ZoneDecoder:
                  model_target_type=None,
                  session_info=None,
                  parallel=None,
+                 feature_adds=None,
                  decoder_type='logistic', **decoder_params):
 
         if zone_encoder is None:
@@ -4565,13 +4848,15 @@ class ZoneDecoder:
         self.goal_ts_splits = {'train': {}, 'test': {}}
         self.cue_ts_splits = {'train': {}, 'test': {}}
         self.dec_ts_splits = {'train': {}, 'test': {}}
+        self.rw_ts_splits = {'train': {}, 'test': {}}
 
         self._reset_fits()
         self.update_decoder_params(decoder_type=decoder_type, **decoder_params)
         self.decoder_setup(feature_type=feature_type,
                            target_type=target_type,
                            model_feature_type=model_feature_type,
-                           model_target_type=model_target_type)
+                           model_target_type=model_target_type,
+                           feature_adds=feature_adds)
 
         # goal_dists = pd.DataFrame(np.zeros((4, 4)), index=self.tmz.goal_wells, columns=self.tmz.goal_wells)
         # goal_dists.loc['G1'] = [0, 1, 2, 2]
@@ -4580,7 +4865,8 @@ class ZoneDecoder:
         # self.goal_dists = goal_dists
         # self.zone_dists = self.tmz.all_zone_dists
 
-    def decoder_setup(self, feature_type, target_type, model_feature_type=None, model_target_type=None):
+    def decoder_setup(self, feature_type, target_type,
+                      model_feature_type=None, model_target_type=None, feature_adds=None):
         """
         function call to set up the decoder features and targets.
         :param feature_type: what feature type to use, see ZoneDecoder().feature_types
@@ -4633,6 +4919,9 @@ class ZoneDecoder:
             dist_mat.iloc[2:] = np.roll(dist_mat.iloc[:2], 2)
         elif self.target_type == 'zones':
             dist_mat = self.tmz.all_zone_dists
+        elif self.target_type == 'rw':
+            dist_mat = pd.DataFrame(~np.eye(2, dtype=bool), index=['RW', 'NRW'], columns=['RW', 'NRW'])
+            dist_mat = dist_mat.astype(float)
         else:
             # undefined case
             dist_mat = 0
@@ -4644,6 +4933,60 @@ class ZoneDecoder:
         self.zone_perf_table = None
         self.trial_zone_perf_table = None
         self.trial_zone_cummulative_perf_table = None
+
+        self.feature_add_func = self._get_feature_adds(feature_adds)
+
+    def _get_feature_adds(self, feature_adds):
+        func = None
+
+        def _noisy_feature(x, split):
+            if split == 'train':
+                y = 0.4 + 0.2 * x
+                return np.random.normal(y, 0.1, len(y))
+            else:
+                return 0.5 * np.ones(len(x))
+
+        def _static_feature(x, split):
+            return x
+
+        self._feature_map_func = _static_feature
+        if feature_adds is not None:
+            if 'goal' in feature_adds:
+                raise NotImplementedError
+                self._get_goal_ts(goal_target=feature_adds)
+                func = self.get_fold_goal_ts
+            elif feature_adds == 'cue':
+                self._get_cue_ts()
+                func = self.get_fold_cue_ts
+                self._feature_map = dict(R=1, L=0)
+            elif feature_adds == 'cue_noisy':
+                self._get_cue_ts()
+                func = self.get_fold_cue_ts
+                self._feature_map = dict(R=1, L=0)
+                self._feature_map_func  = _noisy_feature
+
+            elif feature_adds == 'dec':
+                self._get_dec_ts()
+                func = self.get_fold_dec_ts
+                self._feature_map = dict(R=1, L=0)
+
+            elif feature_adds == 'dec_noisy':
+                self._get_dec_ts()
+                func = self.get_fold_dec_ts
+                self._feature_map = dict(R=1, L=0)
+                self._feature_map_func  = _noisy_feature
+
+            elif feature_adds == 'rw':
+                self._get_rw_ts()
+                func = self.get_fold_rw_ts
+                self._feature_map = dict(RW=1, NRW=0)
+            elif feature_adds == 'rw_noisy':
+                self._get_rw_ts()
+                func = self.get_fold_rw_ts
+                self._feature_map = dict(RW=1, NRW=0)
+                self._feature_map_func  = _noisy_feature
+
+        return func
 
     def _get_feature_func(self, feature_type):
         if feature_type == 'encoder':
@@ -4672,6 +5015,10 @@ class ZoneDecoder:
             self._get_dec_ts()
             func = self.get_fold_dec_ts
             self.model_target_classes = ['L', 'R']
+        elif target_type == 'rw':
+            self._get_rw_ts()
+            func = self.get_fold_rw_ts
+            self.model_target_classes = ['RW', 'NRW']
         else:
             raise NotImplementedError
         return func
@@ -4687,6 +5034,8 @@ class ZoneDecoder:
             classes = ['L', 'R']
         elif target_type == 'dec':
             classes = ['L', 'R']
+        elif target_type == 'rw':
+            classes = ['RW', 'NRW']
         else:
             raise NotImplementedError
         return classes
@@ -4758,19 +5107,36 @@ class ZoneDecoder:
                 trial_info_table.loc[tr, 'first_goal'] = first_goal_visited
                 trial_info_table.loc[tr, 'last_goal'] = last_goal_visited
 
+        trial_info_table['rw'] = 'NRW'
+        trial_info_table.loc[trial_info_table.correct == 1, 'rw'] = 'RW'
+
         self.trial_info_table = trial_info_table
         return trial_info_table
 
+    def _add_features(self, X, fold_num, split):
+        if self.feature_add_func is not None:
+            a = self.feature_add_func(fold_num, split)
+            a = pd.Series(a).map(self._feature_map).values
+            a = self._feature_map_func(a, split)
+            a = np.expand_dims(a, 1)
+            X = np.hstack((X, a))
+        return X
+
     def get_fold_enc_prediction_features(self, fold_num, split):
-        return self.ze.get_fold_prediction(fold_num=fold_num, split=split)
+        X = self.ze.get_fold_prediction(fold_num=fold_num, split=split)
+        X = self._add_features(X, fold_num, split)
+        return X
 
     def get_fold_enc_residuals(self, fold_num, split):
-        out = self.ze.get_fold_prediction(fold_num=fold_num, split=split) - \
-              self.ze.get_fold_response(fold_num=fold_num, split=split)
-        return out
+        X = self.ze.get_fold_prediction(fold_num=fold_num, split=split) - \
+            self.ze.get_fold_norm_response(fold_num=fold_num, split=split)
+        X = self._add_features(X, fold_num, split)
+        return X
 
     def get_fold_response_features(self, fold_num, split):
-        return self.ze.get_fold_response(fold_num, split)
+        X = self.ze.get_fold_norm_response(fold_num, split)
+        X = self._add_features(X, fold_num, split)
+        return X
 
     def get_fold_zone_ts(self, fold_num, split):
         return self.zone_ts_splits[split][fold_num]
@@ -4783,6 +5149,9 @@ class ZoneDecoder:
 
     def get_fold_dec_ts(self, fold_num, split):
         return self.dec_ts_splits[split][fold_num]
+
+    def get_fold_rw_ts(self, fold_num, split):
+        return self.rw_ts_splits[split][fold_num]
 
     def _get_goal_ts(self, goal_target='first_goal'):
         for fold in range(self.n_folds):
@@ -4822,6 +5191,20 @@ class ZoneDecoder:
                 dec_vec = self.ze._remove_bad_samps(dec_vec, fold, split)
 
                 self.dec_ts_splits[split][fold] = dec_vec
+
+    def _get_rw_ts(self):
+        for fold in range(self.n_folds):
+            for split in ['train', 'test']:
+                trials = self.ze.get_fold_trials(fold, split)
+                rw_vec = np.empty(0)
+                for tr in trials:
+                    rw = self.trial_info_table.loc[tr, 'rw']
+                    d = self.trial_info_table.loc[tr, 'dur']
+                    rw_vec = np.append(rw_vec, [rw] * d)
+
+                rw_vec = self.ze._remove_bad_samps(rw_vec, fold, split)
+
+                self.rw_ts_splits[split][fold] = rw_vec
 
     def get_decoder_model_fit(self):
         """
@@ -4932,6 +5315,8 @@ class ZoneDecoder:
 
             all_df = all_df.reset_index(drop=True)
             all_df['zones'] = all_df['zones'].astype(pd.api.types.CategoricalDtype(zone_names))
+            lch = logit(1 / len(zone_names))
+            all_df['ldn'] = 1 - all_df.logit_dist / (logit(all_df.pr_pred) - lch)
 
             self.trial_zone_perf_table = all_df
             return all_df
@@ -5031,7 +5416,7 @@ class ZoneDecoder:
 
             X = {}
             for target_class in self.target_classes:
-                X[target_class] = evidence_table.pivot(index='trial', columns='zones', values=target_class)
+                X[target_class] = evidence_table.pivot_table(index='trial', columns='zones', values=target_class)
                 X[target_class] = logit(X[target_class])
                 X[target_class] = X[target_class].fillna(0)
                 X[target_class] = X[target_class].cumsum(axis=1)
@@ -5085,6 +5470,8 @@ class ZoneDecoder:
                     Y_hat = res.pred[idx]
                     res.loc[idx, 'bac'] = sk_metrics.balanced_accuracy_score(Y, Y_hat)
 
+            lch = logit(1 / len(self.target_classes))
+            res['ldn'] = 1 - res.logit_dist / (logit(res.pr_pred) - lch)
         self.trial_zone_cummulative_perf_table = res
         return res
 
@@ -5242,6 +5629,70 @@ class ZoneDecoder:
 
 # class DataFolds:
 #     def __init__(self, session_info, n_folds):
+
+def get_unit_zr_boot_comp_dists(ta, unit, comp, n_boot):
+    if comp == 'cue':
+        test_null_pair = dict(test=['CR', 'CL'], null=['Even', 'Odd'])
+        pair_trial_segs = dict(test='out', null='out')
+    elif comp == 'rw':
+        test_null_pair = dict(test=['Co', 'Inco'], null=['Even', 'Odd'])
+        pair_trial_segs = dict(test='in', null='in')
+
+    mzr_boot_by_cond = {}
+    taus = pd.DataFrame(index=range(n_boot), columns=list(test_null_pair.keys()))
+    for k, conds in test_null_pair.items():
+        trial_seg = pair_trial_segs[k]
+
+        cond_pair = [f'{c}_b{trial_seg[0]}' for c in conds]
+        cond_sets = {}
+        for cond in cond_pair:
+            cond_sets.update(ta.bal_cond_sets[cond]['cond_set'])
+
+        cond_boot_trials = ta.get_trials_boot_cond_set(cond_sets, n_boot=n_boot)
+
+        for cond in conds:
+            mzr_boot_by_cond[cond] = pd.DataFrame(index=range(n_boot), columns=ta.tmz.all_segs_names)
+            for boot in range(n_boot):
+                trials = cond_boot_trials[cond][:, boot]
+                mzr_boot_by_cond[cond].loc[boot] = ta.get_unit_trial_zone_rates(unit=unit,
+                                                                                trials=trials,
+                                                                                trial_seg='out').mean()
+            mzr_boot_by_cond[cond] = mzr_boot_by_cond[cond].astype(float)
+
+        for boot in range(n_boot):
+            x = mzr_boot_by_cond[conds[0]].loc[boot]
+            y = mzr_boot_by_cond[conds[1]].loc[boot]
+            taus.loc[boot, k] = rs.kendall(x, y)
+
+    taus_m = taus.melt(value_name='tau', var_name='split')
+    taus_m['tau'] = taus_m['tau'].astype('float')
+
+    return mzr_boot_by_cond, taus_m
+
+
+def convert_unit_boot_zr_2_segs(boot_rate_cond_dict):
+    conds = list(boot_rate_cond_dict.keys())
+    n_boot = len(boot_rate_cond_dict[conds[0]])
+    tmz = TreeMazeZones()
+
+    seg_boot_rates = pd.DataFrame(index=range(n_boot * 3 * 2), columns=['seg', 'cond', 'uz'])
+    cond_block_len = n_boot * 3
+    cnt = 0
+    for cond in conds:
+        block_idx = np.arange(cond_block_len) + cnt
+        x = tmz.subseg_pz_mat_transform(boot_rate_cond_dict[cond].fillna(0), 'bigseg')
+        x *= (1 / tmz.subseg2bigseg.sum(axis=0))
+        x = x.melt(var_name='seg', value_name='uz')
+        x['cond'] = cond
+
+        seg_boot_rates.loc[block_idx, 'seg'] = x['seg'].values
+        seg_boot_rates.loc[block_idx, 'cond'] = x['cond'].values
+        seg_boot_rates.loc[block_idx, 'uz'] = x['uz'].values
+
+        cnt += cond_block_len
+    seg_boot_rates['uz'] = seg_boot_rates['uz'].astype(float)
+    return seg_boot_rates
+
 
 def zone_encoding_analyses(session_info, exp_sets, parallel_flag=False, n_folds=10, **trial_params) -> pd.DataFrame:
     """
@@ -5425,6 +5876,152 @@ def zone_decoder_analyses(session_info, feature_types=None, target_types=None, e
     return res_table
 
 
+def zone_neural_decoder_analyses(session_info, verbose=True, **trial_params):
+    ta = TrialAnalyses(session_info, **trial_params)
+
+    parallel = Parallel(n_jobs=5, prefer='threads')
+
+    experiments = [dict(feature_type='neural', target_type='zones', trial_type='out', feature_add='None'),
+                   dict(feature_type='neural', target_type='zones', trial_type='out_co', feature_add='None'),
+                   dict(feature_type='neural', target_type='zones', trial_type='out', feature_add='cue'),
+                   dict(feature_type='neural', target_type='zones', trial_type='out_co', feature_add='cue'),
+                   dict(feature_type='neural', target_type='zones', trial_type='in', feature_add='None'),
+                   dict(feature_type='neural', target_type='zones', trial_type='in', feature_add='rw')]
+
+    ze = {'out': ZoneEncoder(session_info=session_info, trial_analyses=ta, n_folds=5, parallel=parallel),
+          'out_co': ZoneEncoder(session_info=session_info, trial_analyses=ta, train_correct_only=True,
+                                parallel=parallel),
+          'in': ZoneEncoder(session_info=session_info, trial_analyses=ta, n_folds=5, parallel=parallel,
+                            feature_params=dict(trial_seg='in', trial_balance='correct'))}
+
+    res_table = pd.DataFrame(columns=['feature_type', 'target_type', 'feature_add', 'trial_type',
+                                      'fold', 'trial', 'cue', 'dec', 'correct', 'long',
+                                      'zones', 'target', 'pred', 'acc', 'bac',
+                                      'dist', 'pr_target', 'pr_pred', 'logit_dist', 'ldn'])
+    cnt = 0
+    for exp in experiments:
+        target = exp['target_type']
+        trial_type = exp['trial_type']
+        feature = exp['feature_type']
+        feature_add = exp['feature_add']
+
+        try:
+            if verbose:
+                t0 = time.time()
+                print(
+                    f"Decoder Fitting: fea={feature}, fea_add={feature_add}, target={target}, trial_type={trial_type}",
+                    end='  ')
+
+            decoder = ZoneDecoder(zone_encoder=ze[trial_type],
+                                  feature_type=feature,
+                                  target_type=target,
+                                  feature_adds=feature_add,
+                                  parallel=parallel
+                                  )
+
+            decoder.get_decoder_model_fit()
+            decoder.get_trial_zone_evidence_table()
+            decoder.get_cummulative_trial_decoder2()
+            decoder_results_table = decoder.trial_zone_perf_table.drop(
+                columns=decoder.target_classes).copy()
+
+            decoder_results_table['target_type'] = target
+            decoder_results_table['feature_type'] = feature
+            decoder_results_table['feature_add'] = feature_add
+            decoder_results_table['trial_type'] = trial_type
+
+            decoder_results_table['cue'] = decoder_results_table.trial.map(decoder.ta.trial_table.cue)
+            decoder_results_table['dec'] = decoder_results_table.trial.map(decoder.ta.trial_table.dec)
+            decoder_results_table['correct'] = decoder_results_table.trial.map(decoder.ta.trial_table.correct)
+            decoder_results_table['long'] = decoder_results_table.trial.map(decoder.ta.trial_table.long)
+
+            res_table = pd.concat((res_table, decoder_results_table[res_table.columns]))
+
+            cnt += 1
+
+            if verbose:
+                t1 = time.time()
+                print(f"Fitting Complete. {(t1 - t0): 0.2f}s")
+
+        except:
+            if verbose:
+                traceback.print_exc(file=sys.stdout)
+            pass
+
+    res_table['zones'] = res_table['zones'].astype(pd.api.types.CategoricalDtype(TreeMazeZones().zones2))
+
+    return res_table
+
+def zone_decoder_dec_rw_analyses(session_info, verbose=True, **trial_params):
+    ta = TrialAnalyses(session_info, **trial_params)
+
+    parallel = Parallel(n_jobs=5, prefer='threads')
+
+    experiments = [dict(feature_type='neural', target_type='dec', trial_type='out', feature_add='None'),
+                   dict(feature_type='neural', target_type='dec', trial_type='out_co', feature_add='None'),
+                   dict(feature_type='neural', target_type='rw', trial_type='in', feature_add='None')]
+
+    ze = {'out': ZoneEncoder(session_info=session_info, trial_analyses=ta, n_folds=5, parallel=parallel),
+          'out_co': ZoneEncoder(session_info=session_info, trial_analyses=ta, train_correct_only=True, parallel=parallel),
+          'in': ZoneEncoder(session_info=session_info, trial_analyses=ta, n_folds=5, parallel=parallel,
+                            feature_params=dict(trial_seg='in', trial_balance='correct'))}
+
+    res_table = pd.DataFrame(columns=['feature_type', 'target_type', 'feature_add', 'trial_type',
+                                      'fold', 'trial', 'cue', 'dec', 'correct', 'long',
+                                      'zones', 'target', 'pred', 'acc', 'bac',
+                                      'dist', 'pr_target', 'pr_pred', 'logit_dist', 'ldn'])
+    cnt = 0
+    for exp in experiments:
+        target = exp['target_type']
+        trial_type = exp['trial_type']
+        feature = exp['feature_type']
+        feature_add = exp['feature_add']
+
+        try:
+            if verbose:
+                t0 = time.time()
+                print(f"Decoder Fitting: fea={feature}, fea_add={feature_add}, target={target}, trial_type={trial_type}", end='  ')
+
+            decoder = ZoneDecoder(zone_encoder=ze[trial_type],
+                                  feature_type=feature,
+                                  target_type=target,
+                                  feature_adds=feature_add,
+                                  parallel=parallel
+                                  )
+
+            decoder.get_decoder_model_fit()
+            decoder.get_trial_zone_evidence_table()
+            decoder.get_cummulative_trial_decoder2()
+            decoder_results_table = decoder.trial_zone_cummulative_perf_table.copy()
+
+            decoder_results_table['target_type'] = target
+            decoder_results_table['feature_type'] = feature
+            decoder_results_table['feature_add'] = feature_add
+            decoder_results_table['trial_type'] = trial_type
+
+            decoder_results_table['cue'] = decoder_results_table.trial.map(decoder.ta.trial_table.cue)
+            decoder_results_table['dec'] = decoder_results_table.trial.map(decoder.ta.trial_table.dec)
+            decoder_results_table['correct'] = decoder_results_table.trial.map(decoder.ta.trial_table.correct)
+            decoder_results_table['long'] = decoder_results_table.trial.map(decoder.ta.trial_table.long)
+
+            res_table = pd.concat((res_table, decoder_results_table[res_table.columns]))
+
+            cnt += 1
+
+            if verbose:
+                t1 = time.time()
+                print(f"Fitting Complete. {(t1 - t0): 0.2f}s")
+
+        except:
+            if verbose:
+                traceback.print_exc(file=sys.stdout)
+            pass
+
+    res_table['zones'] = res_table['zones'].astype(pd.api.types.CategoricalDtype(TreeMazeZones().zones2))
+
+    return res_table
+
+
 def zone_encoder_comps_dict():
     out = dict(
         lag=dict(
@@ -5469,7 +6066,6 @@ def zone_encoder_comps_dict():
 
 
 def mean_segment_rates_analysis(session_info, ta=None):
-
     if ta is None:
         ta = TrialAnalyses(session_info)
 
@@ -5505,8 +6101,8 @@ def mean_segment_rates_analysis(session_info, ta=None):
     df = df.astype(float)
     return df
 
-def mean_segment_rates_diff_analysis(session_info, ta=None):
 
+def mean_segment_rates_diff_analysis(session_info, ta=None):
     if ta is None:
         ta = TrialAnalyses(session_info)
 
@@ -5569,7 +6165,7 @@ def tm_hdt_cond(data, cond, activity_type='z'):
             col = f"{cond}_{oi}_{seg}_{activity_type}"
             df[f"{seg}_{oi}"] = np.exp(s * ang * 1j) * data[col].values
 
-    R = np.nansum(df, axis=1).astype(complex)/data[cond_cols].sum(axis=1)
+    R = np.nansum(df, axis=1).astype(complex) / data[cond_cols].sum(axis=1)
 
     out = pd.DataFrame(index=range(data.shape[0]))
     out['R'] = R.astype(complex)
