@@ -1,4 +1,6 @@
 # TreeMazeAnalyses
+Alexander Gonzalez, Lisa M Giocomo. Parahippocampal neurons encode task-relevant information for goal-directed navigation.
+eLife2024;13:RP85646 DOI: https://doi.org/10.7554/eLife.85646.4
 
 ## Pre-print
 https://www.biorxiv.org/content/10.1101/2022.12.15.520660v1
